@@ -33,3 +33,7 @@ tmp/
 seeds/
 *.seed
 *.ndjson
+oracle/musashi/m68kops.*
+oracle/musashi/m68kmake
+oracle/disc-oracle
+oracle/*.o
