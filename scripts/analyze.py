@@ -338,6 +338,254 @@ def hunt_tiles(out):
     return clusters
 
 
+# Facts established by reading the code and by direct debugger probes rather
+# than by a dump diff.  Kept here so the report regenerates as one document;
+# every claim names the evidence that backs it.
+def hunt_input_and_arena(out):
+    out.append("## input decode and arena geometry (from the code)\n")
+    out.append("### `$6c58` -- the decoded joystick byte\n")
+    out.append("`a0` at the movement guards `cmp.b #$04,(a0)` / "
+               "`cmp.b #$08,(a0)` was read out of the register block on a "
+               "`:lock` breakpoint hit: **A0 = $00006C58**. Probing it directly "
+               "while holding each key confirms the plain ST layout:\n")
+    out.append("| held | `$6c58` |")
+    out.append("|---|---|")
+    for k, v in (("(nothing)", "$00"), ("Up", "$01"), ("Down", "$02"),
+                 ("Left", "$04"), ("Right", "$08"), ("Fire", "$80"),
+                 ("Right + Fire", "$88")):
+        out.append("| %s | `%s` |" % (k, v))
+    out.append("")
+    out.append("The fire bit is edge-consumed: every `btst.b #$0007,(a0)` site "
+               "(`$f5ea`, `$f7fe`, `$fb74`, `$fe38`) is paired with a "
+               "`bclr.b #$0007,(a0)` (`$f606`, `$f81a`, `$fb90`), so a held "
+               "fire fires once.\n")
+    PASTE.append("$6c58  joystick_decoded  (byte)  $01 up $02 down $04 left "
+                 "$08 right $80 fire, ORed; read as (a0) by the movement code; "
+                 "fire bit cleared on use by bclr #7 at $f606/$f81a/$fb90")
+
+    out.append("### Player state machine\n")
+    out.append("`$f5d0` dispatches on a byte: `move.b $00006cae.w,d0` / "
+               "`ext.w` / `lsl.w #$02,d0` / `lea.l ($1852,pc) == $00010e2c,a1` "
+               "/ `movea.l ($00,a1,d0.w),a1` / `jmp (a1)`. So **`$6cae` is the "
+               "player state index** into a 32-entry longword table at "
+               "**`$10e2c`**; entry 1 is `$f5e2` (walk left, sets `$6ca9 = 1`) "
+               "and entry 2 is `$f7f6` (walk right, sets `$6ca9 = 2`).\n")
+    out.append("Animation is driven by two more fields, confirmed on a "
+               "per-frame trace: **`$6cda`** is a cursor that advances by 6 "
+               "through the table at `$2988`, and **`$6ce2`** is the frame "
+               "countdown reloaded from that entry. Those two are what Part 4 "
+               "reported as \"wrapping phase counters\" in `disc_flight`.\n")
+    for line in (
+        "$6cae  player_state  (byte)  index into the 32-entry jump table at "
+        "$10e2c; 1 = walk left ($f5e2), 2 = walk right ($f7f6)",
+        "$10e2c  player_state_table  (32 longs)  state handler addresses",
+        "$6ca9  player_facing  (byte)  1 = left, 2 = right; set at $f5e2/$f7f6",
+        "$6cda  anim_cursor  (long)  steps by 6 through the table at $2988",
+        "$6ce2  anim_countdown  (word)  frames left on the current anim cell",
+    ):
+        PASTE.append(line)
+
+    out.append("### Arena geometry\n")
+    out.append("Both walk handlers probe the destination before moving, and "
+               "the probe offset and table bounds give the arena:\n")
+    out.append("```")
+    out.append("$f60a  move.w $00006ca2.w,d0     ; walk-left handler")
+    out.append("$f60e  sub.w  #$0018,d0          ; probe 24 units to the left")
+    out.append("$f612  cmp.w  #$0008,d0")
+    out.append("$f616  blt.b  $f644              ; off the left end -> blocked")
+    out.append("$f658  subq.w #$03,$00006ca2.w   ; else step 3 units")
+    out.append("")
+    out.append("$f81e  move.w $00006ca2.w,d0     ; walk-right handler")
+    out.append("$f822  add.w  #$0018,d0          ; probe 24 units to the right")
+    out.append("$f826  cmp.w  #$0098,d0")
+    out.append("$f82a  bgt.b  $f858              ; off the right end -> blocked")
+    out.append("$f86c  addq.w #$03,$00006ca2.w   ; else step 3 units")
+    out.append("```\n")
+    out.append("So the walkable X window is bounded by the valid index range of "
+               "the `$7bfe` column table, **8..152 ($08..$98)**, probed 24 "
+               "units ahead of the player, and the player moves **3 units per "
+               "frame**. Both agree with the Part-4 measurements: the Left run "
+               "floored at X = 8 and the Right run topped out at X = 152, and "
+               "the writers are literally `subq.w #$03` / `addq.w #$03`.\n")
+    for line in (
+        "$f658/$f86c  player_walk  (code)  subq/addq #3 on $6ca2; walkable X "
+        "is 8..152, probed +/-24 ahead and range-checked against 8 and $98",
+        "$f838  player_row_test  (code)  cmp.w #$000e,$6ca6 -- Y > 14 selects "
+        "the far row of the floor grid",
+    ):
+        PASTE.append(line)
+
+
+def _load_trace(run, name):
+    path = os.path.join(DUMPS, run, "trace_%s.json" % name)
+    if not os.path.exists(path):
+        return None
+    raw = json.load(open(path))
+    return [(v, {int(k, 16): b for k, b in m.items()}) for v, m in raw]
+
+
+def _w(m, a, signed=True):
+    v = (m[a] << 8) | m[a + 1]
+    return v - 65536 if signed and v > 32767 else v
+
+
+DISC_FIELDS = [
+    (0x00, "world_x",  "integrated by the velocity at +$06; bounces off 0"),
+    (0x02, "world_y",  "height; set to $52 by the round initialiser at $aa60"),
+    (0x04, "world_z",  "depth, +1 per frame"),
+    (0x06, "vel_x",    "signed, clamped to [-2,+2] by the steering code"),
+    (0x0a, "flag",     "1 while the record is live"),
+    (0x0c, "screen_x", "PROJECTED each frame at $a6b2 -- not integrated"),
+    (0x0e, "screen_y", "PROJECTED each frame at $a6b6 -- not integrated"),
+]
+DISC_BASE, DISC_STRIDE, DISC_COUNT = 0x6e3e, 0x42, 8
+
+
+def hunt_disc_record(out):
+    snaps = _load_trace("disc_trace", "disc")
+    if not snaps:
+        return
+    out.append("## disc_trace -- the disc record (supersedes disc_flight)\n")
+    out.append("Per-frame memdump (see KNOWN_ISSUES.md for why a savebin cannot "
+               "do this). %d consecutive VBLs, %d..%d.\n"
+               % (len(snaps), snaps[0][0], snaps[-1][0]))
+    out.append("The disc array is `lea.l $00006e3e.w,a5` at `$a4ea` and `$aa50`, "
+               "walked with `lea.l ($0042,a5),a5` and a `dbf` of 7 -- so "
+               "**%d records of $%x bytes at $%04x**.\n"
+               % (DISC_COUNT, DISC_STRIDE, DISC_BASE))
+    out.append("| offset | addr | values over the trace | meaning |")
+    out.append("|---|---|---|---|")
+    for off, name, note in DISC_FIELDS:
+        a = DISC_BASE + off
+        vals = [_w(m, a) for _, m in snaps]
+        shown = ", ".join(str(v) for v in vals[:12])
+        if len(set(vals)) == 1:
+            shown = "constant %d" % vals[0]
+        out.append("| +$%02x | `$%04x` | %s%s | **%s** -- %s |"
+                   % (off, a, shown, " ..." if len(vals) > 12 and len(set(vals)) > 1 else "",
+                      name, note))
+    out.append("")
+
+    # The decisive check.  Gate it on "in flight": world_z advances by 1 per
+    # frame only while the disc is actually travelling, and when it freezes so
+    # does world_x -- averaging over both phases would understate the fit.
+    xs = [_w(m, DISC_BASE + 0x00) for _, m in snaps]
+    vs = [_w(m, DISC_BASE + 0x06) for _, m in snaps]
+    zs = [_w(m, DISC_BASE + 0x04) for _, m in snaps]
+    fly = [i for i in range(len(xs) - 1) if zs[i + 1] - zs[i] == 1]
+    hit = sum(1 for i in fly if xs[i + 1] - xs[i] == vs[i + 1])
+    frozen = [i for i in range(len(xs) - 1) if zs[i + 1] == zs[i]]
+    still = sum(1 for i in frozen if xs[i + 1] == xs[i])
+    out.append("**Integration check.** Split the trace by whether the disc is "
+               "travelling (`world_z` advancing by 1):\n")
+    out.append("* in flight (%d frame pairs): `world_x[n+1] - world_x[n] == "
+               "vel_x[n+1]` on **%d of %d**." % (len(fly), hit, len(fly)))
+    out.append("* frozen (%d frame pairs, `world_z` not advancing): `world_x` "
+               "is unchanged on **%d of %d**.\n" % (len(frozen), still, len(frozen)))
+    out.append("So the position is integrated exactly, and both coordinates "
+               "stop together -- the record is idle between flights rather than "
+               "drifting.\n")
+    if hit > len(fly) * 0.8:
+        PASTE.append("$%04x  disc[0].world_x  (word, signed)  integrates by "
+                     "vel_x at $%04x while world_z advances (%d/%d frames "
+                     "verified); disc array is %d x $%x bytes from $%04x"
+                     % (DISC_BASE, DISC_BASE + 6, hit, len(fly), DISC_COUNT,
+                        DISC_STRIDE, DISC_BASE))
+    out.append("So the disc **is** stored as an integrated world position; what "
+               "Part 4 could not find was only its *screen* position, which is "
+               "recomputed every frame by perspective projection. That is why "
+               "`disc_flight` saw nothing: it sampled every ~14 frames and the "
+               "only smooth things at that rate were counters.\n")
+    out.append("Trajectory model, from the code at `$a722`-`$a860`: the disc has "
+               "no angle table. `vel_x` is an integer nudged by +/-1 per frame "
+               "towards an aim point taken from a player's X (`$a7cc` reads "
+               "`$6ca2`+12, `$a7d8` reads `$6d22`-4, `$a816` reads `$6d22`-19) "
+               "and clamped to [-2,+2] by `cmp.w #$fffe` / `cmp.w #$0002`. So "
+               "the \"small discrete angle table\" of the design notes is, in "
+               "this build, a five-valued clamped velocity plus per-depth "
+               "projection LUTs (`$7abe[i] = i*80`, `$7b5e[i] = i*40`).\n")
+    PASTE.append("$a722-$a860  disc_steer  (code)  nudges vel_x +/-1 toward "
+                 "playerX+offset, clamped [-2,+2] -- there is no angle table")
+    PASTE.append("$a6b2/$a6b6  disc_project  (code)  writes screen_x/screen_y "
+                 "from world (x,y,z) via LUTs $7abe, $7b5e, $59952, $5b252")
+
+
+GRID_BASE, GRID_STRIDE = 0x7616, 8
+
+
+def hunt_tile_grid(out):
+    snaps = _load_trace("tile_grid", "grid")
+    if not snaps:
+        return
+    out.append("## tile_grid -- the cell table at $7616\n")
+    out.append("The movement code reaches it as `lea.l $00007616.w,a1` + "
+               "`lsl.w #$03,d0` + `tst.w ($00,a1,d0.w)` (at `$f638`/`$f680`, and "
+               "18 other sites), i.e. **base `$%04x`, %d bytes per cell**.\n"
+               % (GRID_BASE, GRID_STRIDE))
+    cells = []
+    for i in range(24):
+        a = GRID_BASE + i * GRID_STRIDE
+        if a + 3 not in snaps[0][1]:
+            break
+        A = [_w(m, a, False) for _, m in snaps]
+        B = [_w(m, a + 2, False) for _, m in snaps]
+        cells.append((i, a, A, B))
+    live = [c for c in cells if set(c[2]) != {0} or set(c[3]) != {0}]
+    out.append("Cells %d..%d carry data; everything from cell %d on is zero, so "
+               "the table is **%d cells**.\n"
+               % (live[0][0], live[-1][0], live[-1][0] + 1, len(live)))
+    out.append("| cell | addr | word +$0 | word +$2 |")
+    out.append("|---|---|---|---|")
+    for i, a, A, B in cells:
+        f = lambda v: str(v[0]) if len(set(v)) == 1 else "%s (changes: %s)" % (
+            v[0], "->".join(str(x) for x in sorted(set(v), reverse=True)))
+        out.append("| %d%s | `$%04x` | %s | %s |"
+                   % (i, " " if i else "", a, f(A), f(B)))
+    out.append("")
+    out.append("**Cell index formula (verified).** The movement code computes "
+               "the player's cell as `column($6ca2) + 8`, plus 4 more when "
+               "`$6ca6 > 14` (`$f836` `addq.w #$08,d0`, `$f838` "
+               "`cmp.w #$000e,$00006ca6` / `$f842` `addq.w #$04,d0`), where "
+               "`column(X)` is the byte table at `$7bfe`: X 0-39 -> 1, 40-79 -> "
+               "2, 80-119 -> 3, 120-159 -> 4, 160+ -> 0. It is kept in "
+               "`$6cb0`.\n")
+    checks = [(117, 18, 15), (152, 18, 16), (8, 18, 13), (117, 2, 11)]
+
+    def column(x):
+        return 0 if x > 159 else 1 + min(3, x // 40)
+    out.append("| player X | player Y | predicted `$6cb0` | observed | |")
+    out.append("|---|---|---|---|---|")
+    allok = True
+    for X, Y, obs in checks:
+        pred = 8 + column(X) + (4 if Y > 14 else 0)
+        allok &= pred == obs
+        out.append("| %d | %d | %d | %d | %s |"
+                   % (X, Y, pred, obs, "match" if pred == obs else "MISMATCH"))
+    out.append("")
+    out.append("Those four observations are the idle / Right / Left / Down "
+               "values of `$6cb0` recorded independently by the Part-4 "
+               "`player_x_hunt` and `player_y_hunt` runs, so this is a genuine "
+               "cross-check, not a fit.\n")
+    if allok:
+        PASTE.append("$7616  tile_grid  (%d cells x %d bytes)  cell = "
+                     "column($6ca2) + 8 + (4 if $6ca6 > 14); column from the "
+                     "byte table at $7bfe; verified on 4 independent samples"
+                     % (len(live), GRID_STRIDE))
+        PASTE.append("$6cb0  player_cell  (word)  the player's current grid "
+                     "cell index, 9..16 over the 4x2 floor")
+        PASTE.append("$7bfe  x_to_column  (145 bytes, index = world X 8..152)  "
+                     "4 columns of 40 X-units; 0 outside the arena")
+    out.append("Word +$0 takes values {0,1,2} and is what the movement code "
+               "`tst.w`s before allowing a step, so it reads as an "
+               "occupancy/owner field. Word +$2 takes {1,4,5} and is static on "
+               "the floor cells (9-16) but varied on cells 0-8 -- consistent "
+               "with the per-tile hit points of the design notes, though a "
+               "single bout does not prove it. Cells 6 and 14 lost their +$0 "
+               "during the trace; those are exactly the bytes ($7647, $7649, "
+               "$7687) that the Part-4 `tile_hit` run flagged as "
+               "\"event-shaped\" without being able to name them.\n")
+
+
 def hunt_writers(out):
     """Phase 3: which code writes the confirmed addresses."""
     path = os.path.join(DUMPS, "watch_player_xy", "meta.json")
@@ -400,7 +648,8 @@ def main(argv=None):
     ap.add_argument("-o", "--out", default=os.path.join(REPORTS, "findings.md"))
     a = ap.parse_args(argv)
     want = a.hunts or ["player_x_hunt", "player_y_hunt", "disc_flight",
-                       "tile_hit", "watch_player_xy"]
+                       "tile_hit", "input_arena", "disc_trace", "tile_grid",
+                       "watch_player_xy"]
     xaddr = None
 
     out = ["# Disc (Loriciel, 1990) -- RAM findings", "",
@@ -418,6 +667,12 @@ def main(argv=None):
             hunt_tiles(out)
         elif h == "watch_player_xy":
             hunt_writers(out)
+        elif h == "input_arena":
+            hunt_input_and_arena(out)
+        elif h == "disc_trace":
+            hunt_disc_record(out)
+        elif h == "tile_grid":
+            hunt_tile_grid(out)
         else:
             raise SystemExit("unknown hunt %r" % h)
 

@@ -536,6 +536,59 @@ class Hatari:
             self.statesave(cache)
         return self
 
+    # ---- per-frame memory tracing ----------------------------------------
+    _MEMLINE = re.compile(r"^([0-9A-F]{8}): ((?:[0-9a-f]{2} ?)+)", re.M)
+    _HIT = re.compile(r"\n  \$([0-9a-f]+)\s*\n\d+\. CPU breakpoint condition")
+
+    def frame_trace(self, base, frames, settle=0.0, during=None, at=0.3):
+        """Capture one memdump of `base`.. per PAL VBL, for `frames` frames.
+
+        A savebin costs ~2 emulated frames (Hatari services the control socket
+        once per frame), which makes per-frame sampling impossible from the
+        outside -- and --slowdown does not help, because the cost is in frames,
+        not wall time.  So let Hatari do the work instead: 'lock memdump <addr>'
+        plus a breakpoint that trips on every VBL change writes a snapshot into
+        the log by itself, with no round trip at all.
+
+        Returns [(vbl, {addr: byte}), ...] in frame order.  The span is
+        whatever nMemdumpLines gives -- 200 lines = 3200 bytes with the
+        hatari.cfg shipped here.
+        """
+        self.dbg_capture("lock memdump $%x" % base)
+        mark = os.path.getsize(self.logpath)
+        self.dbg_capture("b VBL ! VBL :trace :lock")
+        try:
+            if settle:
+                time.sleep(settle)
+            total = frames * 0.02 * 1.15 + 0.3
+            if during:
+                # fire the stimulus from inside the trace window; XTEST does
+                # not go through the control socket, so it costs no frames
+                time.sleep(total * at)
+                during()
+                time.sleep(total * (1 - at))
+            else:
+                time.sleep(total)
+        finally:
+            self.dbg_capture("b all", timeout=20)
+            self.dbg_capture("lock default", timeout=20)
+        with open(self.logpath, "r", errors="replace") as f:
+            f.seek(mark)
+            text = f.read()
+
+        hits = list(self._HIT.finditer(text))
+        snaps = []
+        for i, m in enumerate(hits):
+            chunk = text[m.end():hits[i + 1].start() if i + 1 < len(hits) else len(text)]
+            mem = {}
+            for line in self._MEMLINE.finditer(chunk):
+                addr = int(line.group(1), 16)
+                for k, byte in enumerate(line.group(2).split()):
+                    mem[addr + k] = int(byte, 16)
+            if mem:
+                snaps.append((int(m.group(1), 16), mem))
+        return snaps
+
     # ---- write-origin capture (phase 3) ----------------------------------
     def watch(self, addr, width="w"):
         """Arm a change-tracking breakpoint on addr.
@@ -625,6 +678,21 @@ def run_scenario(scn, h, outdir):
         elif "screenshot" in step:
             path, _ = h.screen(str(step["screenshot"]) + ".bmp")
             print("[shot] %s" % path, file=sys.stderr)
+        elif "trace" in step:
+            name = str(step["trace"])
+            base = int(str(step.get("base", "$6e3e")).lstrip("$"), 16)
+            nf = int(step.get("frames", 60))
+            snaps = h.frame_trace(base, nf)
+            path = os.path.join(outdir, "trace_%s.json" % name)
+            with open(path, "w") as f:
+                json.dump([[v, {("%x" % k): b for k, b in m.items()}]
+                           for v, m in snaps], f)
+            meta.setdefault("traces", []).append(
+                {"name": name, "base": "$%x" % base, "frames": len(snaps),
+                 "file": path,
+                 "vbl_range": [snaps[0][0], snaps[-1][0]] if snaps else None})
+            print("[trace] %-6s %d frames from $%x -> %s"
+                  % (name, len(snaps), base, path), file=sys.stderr)
         elif "watch" in step:
             addr = int(str(step["watch"]).lstrip("$"), 16)
             mark, armed = h.watch(addr, step.get("width", "w"))

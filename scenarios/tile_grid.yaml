@@ -1,0 +1,6 @@
+name: tile_grid
+mode: challenge
+# Phase D: the cell table the movement code indexes as $7616 + cell*8.
+settle: 15
+steps:
+  - {trace: grid, base: "$7600", frames: 90}

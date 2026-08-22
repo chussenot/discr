@@ -1,0 +1,11 @@
+name: disc_trace
+mode: challenge     # only a real bout has a disc in flight
+# Phase B: one memdump per PAL VBL instead of a savebin per sample.
+#
+# A savebin costs ~2 emulated frames, which is why Part 4 could only sample
+# the disc every ~14 frames and concluded (wrongly) that no coordinate was
+# stored.  'lock memdump' + a breakpoint on every VBL change gets a snapshot
+# per frame for free, and at that resolution the disc record is obvious.
+settle: 15
+steps:
+  - {trace: disc, base: "$6e3e", frames: 60}

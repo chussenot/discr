@@ -100,3 +100,73 @@ drop Hatari into the debugger's readline loop, and the collector has no stdin
 to get it back out. Every dump records the VBL it was actually taken at, and
 `analyze.py` normalises deltas by the real gaps, so the imprecision does not
 affect the analysis.
+
+---
+
+# Part 5 additions
+
+## More Hatari 2.6.1 debugger quirks
+
+**`memdump` ranges need a dash, not a space.** `m w $7616 $76b6` answers
+`Invalid count 0!`; the syntax is `m w $7616-$76b6`. Same for `find` and
+`disasm` takes the two-argument form.
+
+**`b pc = $addr` never fires.** A conditional breakpoint on the `pc` variable
+was set and acknowledged (`CPU condition breakpoint 1 with 1 condition(s)
+added`) but never triggered on an address that provably executes every frame.
+Not chased down; the working alternative is a change-tracking breakpoint on a
+memory location the routine writes (`b ($addr).w ! ($addr).w :trace :lock`),
+which reports the machine state at the instruction *after* the write, plus
+`lock registers` when the address registers are what you are after. That is
+how `a0` was read out at the movement guards.
+
+**Chunked `disasm` misaligns.** Disassembling `$f400-$f600`, `$f600-$f800`, …
+and concatenating produces plausible-looking but wrong instructions wherever a
+chunk boundary lands mid-instruction — two different decodings of the same
+addresses ended up in the same listing. Disassemble one continuous stream
+instead: `disasm $a200` once, then bare `disasm` repeatedly, which continues
+from where the previous one stopped. `scripts/collect.py` does not wrap this;
+the probe scripts verify alignment by checking that known-good instruction
+addresses appear in the output.
+
+## The savebin sampling floor, and the way around it
+
+Hatari services the control socket **once per emulated frame**, so every
+`savebin` costs about two frames no matter how small the range. `--slowdown`
+does not help — measured at slowdown 1, 4 and 8, the rate stayed at 0.5 dumps
+per frame, because the cost is in frames, not wall time. This is the real
+reason Part 4's `disc_flight` could only sample every ~14 frames and wrongly
+concluded that no disc coordinate was stored.
+
+The fix is to stop round-tripping: `lock memdump <addr>` plus
+`b VBL ! VBL :trace :lock` makes Hatari write one memdump per VBL into its own
+log, with no socket traffic at all. `Hatari.frame_trace()` wraps this and
+returns one snapshot per frame; it captures whatever `nMemdumpLines` allows,
+3200 bytes with the shipped `hatari.cfg`. Verified gap-free over 119
+consecutive VBLs.
+
+## Game behaviour
+
+**A CHALLENGE round from the cached savestate lasts only ~300-500 frames.**
+The player does nothing and loses. Traces have to fit inside that; `frame_trace`
+windows of 60-120 frames are comfortable, longer ones are not. `in_match` is
+recorded next to every dump so the analyzer can discard anything captured after
+the round ended.
+
+**`navigate_to_match` must not fire during floppy loads.** Blind fire presses on
+a black loading screen get swallowed or land inside the match that is loading,
+which is how an early CHALLENGE savestate ended up two seconds from the end of
+a round. Navigation now checks for a dark screen and waits instead of firing.
+
+## Not established
+
+**No throw handler was identified**, because no scenario ever gets the player
+into possession of the disc: TRAINING never serves it, and in CHALLENGE the
+opponent starts with it and wins before our idle player touches it. What the
+code shows instead is that all 8 disc records are created once per round by
+the initialiser at `$aa50`, and thereafter a disc's X velocity is *steered*
+(nudged +/-1 per frame toward a player-derived aim point, clamped to [-2,+2])
+rather than re-launched. Whether a player-side "throw" writes the record
+directly, or only sets the aim that the steering code converges on, is open.
+Answering it needs a scenario that actually plays well enough to catch the
+disc — the aiming problem that also blocked `tile_hit`.
