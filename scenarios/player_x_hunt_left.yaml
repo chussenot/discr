@@ -1,0 +1,23 @@
+name: player_x_hunt_left
+# Player X coordinate hunt.
+#
+# a, a2 are two idle dumps 50 frames apart: anything that differs between
+# them is animation/timer/AI noise, and same(a,a2) is the filter that removes
+# it.  Then two equal bursts of Left, so the X word must change a2->b and
+# keep decreasing b->c, and settle again by d.
+settle: 120
+steps:
+  - {wait: 100}
+  - {dump: a}
+  - {wait: 50}                     # idle baseline -- no input at all
+  - {dump: a2}
+  - {hold: Left, frames: 30}
+  - {wait: 5}
+  - {dump: b}
+  - {screenshot: b}
+  - {hold: Left, frames: 30}
+  - {wait: 5}
+  - {dump: c}
+  - {screenshot: c}
+  - {wait: 60}                     # let it settle
+  - {dump: d}

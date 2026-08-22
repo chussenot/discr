@@ -1,0 +1,37 @@
+name: disc_flight
+mode: challenge     # TRAINING never serves the disc; CHALLENGE is a real bout
+# Disc position / velocity hunt.
+range: [0x0, 0x40000]   # widened: check whether the disc lives above $8000
+#
+# 12 samples at equal ~14-frame gaps while the disc is in play.  analyze.py
+# looks for words whose per-frame delta stays consistent in magnitude, and
+# prefers ones that REVERSE sign -- a bouncing coordinate does, a frame
+# counter never does.  A CHALLENGE round only lasts ~500 frames from the
+# cached savestate, so keep the window short.
+settle: 40
+steps:
+  - {dump: e}
+  - {hold: Fire, frames: 3}
+  - {wait: 10}
+  - {dump: f}
+  - {wait: 10}
+  - {dump: g}
+  - {wait: 10}
+  - {dump: h}
+  - {wait: 10}
+  - {dump: i}
+  - {wait: 10}
+  - {dump: j}
+  - {wait: 10}
+  - {dump: k}
+  - {wait: 10}
+  - {dump: l}
+  - {wait: 10}
+  - {dump: m}
+  - {wait: 10}
+  - {dump: n}
+  - {wait: 10}
+  - {dump: o}
+  - {wait: 10}
+  - {dump: p}
+  - {screenshot: p}

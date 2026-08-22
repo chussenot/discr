@@ -1,0 +1,20 @@
+name: watch_player_xy
+mode: training
+# Phase 3: find the code that writes the player coordinates.
+# A Hatari change-tracking breakpoint (":trace" so emulation keeps running)
+# reports the machine state on every change; collect.py harvests the PCs and
+# disassembles around them.  These are the Ghidra entry points.
+settle: 60
+steps:
+  - {watch: "$6ca2"}
+  - {hold: Right, frames: 30}
+  - {wait: 15}
+  - {hold: Left, frames: 30}
+  - {wait: 15}
+  - {unwatch: true}
+  - {watch: "$6ca6"}
+  - {hold: Up, frames: 30}
+  - {wait: 15}
+  - {hold: Down, frames: 30}
+  - {wait: 15}
+  - {unwatch: true}

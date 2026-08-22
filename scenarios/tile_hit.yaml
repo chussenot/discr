@@ -1,0 +1,22 @@
+name: tile_hit
+mode: challenge     # the shaped target tiles only exist in a real bout
+# Tile-grid hunt.  Dump repeatedly while the disc is in play and hitting the
+# wall tiles; tiles have HP, so analyze.py looks for BYTES that only ever
+# decrease across the series and reports adjacent survivors as clusters
+# (a tile grid should be contiguous).
+settle: 40
+steps:
+  - {dump: pre}
+  - {screenshot: pre}
+  - {hold: Fire, frames: 3}
+  - {wait: 28}
+  - {dump: t1}
+  - {wait: 28}
+  - {dump: t2}
+  - {wait: 28}
+  - {dump: t3}
+  - {wait: 28}
+  - {dump: t4}
+  - {wait: 28}
+  - {dump: t5}
+  - {screenshot: post}

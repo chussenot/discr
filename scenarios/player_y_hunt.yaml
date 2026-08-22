@@ -1,0 +1,26 @@
+name: player_y_hunt
+# Same protocol on the depth axis: the arena is a tile grid in perspective,
+# so Up walks away from the camera.  e/f mirror it with Down.
+settle: 120
+steps:
+  - {wait: 100}
+  - {dump: a}
+  - {wait: 50}
+  - {dump: a2}
+  - {hold: Up, frames: 30}
+  - {wait: 5}
+  - {dump: b}
+  - {screenshot: b}
+  - {hold: Up, frames: 30}
+  - {wait: 5}
+  - {dump: c}
+  - {screenshot: c}
+  - {wait: 60}
+  - {dump: d}
+  - {hold: Down, frames: 30}
+  - {wait: 5}
+  - {dump: e}
+  - {hold: Down, frames: 30}
+  - {wait: 5}
+  - {dump: f}
+  - {screenshot: f}
