@@ -39,7 +39,8 @@ player entity record -- $6ca0 (player 1), $6d20 (player 2), stride $80
   +$02  world X          walkable 8..152, +/-3 per frame
   +$06  world Y (row)    > 14 = far row
   +$09  facing           1 = left, 2 = right
-  +$0e  grid cell index  8 + column(X) + (4 if Y > 14)
+  +$0e  state index      into the jump table at $10e2c
+  +$10  grid cell index  8 + column(X) + (4 if Y > 14)
 
 disc record -- $6e3e, 8 records, stride $42
   +$00  world X          integrated by +$06
