@@ -578,7 +578,12 @@ class Hatari:
 
         script = os.path.abspath(os.path.join(self.shotdir, "seed_cmds.txt"))
         with open(script, "w") as f:
-            f.write("savebin %s $%x $%x\nr\n" % (path, lo, hi - lo))
+            # RAM + registers + the MFP timer registers.  The oracle needs the
+            # MFP shadow because a sound effect may already be running at the
+            # seed instant: Timer A's stream cursor lives in USP (captured with
+            # the registers) but the timer only ticks if TACR says so.
+            f.write("savebin %s $%x $%x\nr\nm b $fffa19-$fffa22\n"
+                    % (path, lo, hi - lo))
 
         mark = os.path.getsize(self.logpath)
         self.dbg_capture("b pc = $%x :once :trace :file %s" % (pc, script))
@@ -599,6 +604,16 @@ class Hatari:
 
         regs = {k.upper(): int(v, 16) for k, v in self._REGLINE.findall(text)}
         regs["SR"] = int(self._SR.search(text).group(1), 16)
+        mfp = {}
+        for line in self._MEMLINE.finditer(text):
+            a0 = int(line.group(1), 16) & 0xffffff
+            for k, byte in enumerate(line.group(2).split()):
+                mfp[a0 + k] = int(byte, 16)
+        hw = {name: mfp.get(addr) for name, addr in
+              (("TACR", 0xfffa19), ("TBCR", 0xfffa1b), ("TADR", 0xfffa1f),
+               ("TBDR", 0xfffa21))}
+        if any(v is None for v in hw.values()):
+            raise RuntimeError("seed capture did not return the MFP registers")
         cur = re.search(r"^0*([0-9a-f]{4,8}) [0-9a-f]{4}", text, re.M)
         regs["PC"] = int(cur.group(1), 16) if cur else pc
         missing = [k for k in ["D%d" % i for i in range(8)]
@@ -626,7 +641,7 @@ class Hatari:
         if lo <= 0x6ab4 and 0x6ab6 <= hi:
             cnt = (blob[0x6ab4 - lo] << 8) | blob[0x6ab5 - lo]
         meta = {"ram": os.path.basename(path), "lo": lo, "hi": hi,
-                "sha256": digest, "registers": regs, "pc": pc,
+                "sha256": digest, "registers": regs, "mfp": hw, "pc": pc,
                 "vbl_counter_6ab4": cnt,
                 "note": "captured by a :file action at PC == $%x, before that "
                         "instruction executed" % pc}
@@ -703,15 +718,18 @@ class Hatari:
                     mem[addr + k] = int(byte, 16)
             if mem:
                 snaps.append(mem)
-        # A pc-breakpoint hit carries no VBL number, but it fires exactly once
-        # per frame, so frames are consecutive from the count taken just before
-        # arming.  Cross-check that against the elapsed VBLs and complain
-        # rather than silently mislabelling frames.
-        vbl1 = self.vbl()
-        if snaps and not (0 <= (vbl1 - vbl0) - len(snaps) <= 3):
-            print("[frame_trace] WARNING: %d snapshots but %d VBLs elapsed -- "
-                  "frames may be mislabelled" % (len(snaps), vbl1 - vbl0),
-                  file=sys.stderr)
+        # Label frames with the game's OWN counter when the window covers it:
+        # $6ab4 is incremented by the very instruction we stop before, so it is
+        # exact ground truth and lets the oracle differ align on something both
+        # emulators compute rather than on an index we invented.  Otherwise
+        # fall back to counting from the VBL read before arming.
+        if all(a in snaps[0] for a in (0x6ab4, 0x6ab5)) if snaps else False:
+            out = [((m[0x6ab4] << 8) | m[0x6ab5], m) for m in snaps]
+            steps = {out[i + 1][0] - out[i][0] for i in range(len(out) - 1)}
+            if steps - {1}:
+                print("[frame_trace] WARNING: $6ab4 steps by %s, expected 1 -- "
+                      "frames were dropped" % sorted(steps), file=sys.stderr)
+            return out
         return [(vbl0 + 1 + i, mem) for i, mem in enumerate(snaps)]
 
     # ---- write-origin capture (phase 3) ----------------------------------

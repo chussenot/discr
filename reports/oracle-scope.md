@@ -141,14 +141,31 @@ long and a word into `$FF8800`:
 0000836e  rte
 ```
 
-Neither writes a byte below `$8000`. Their only RAM-visible effect is that
-Timer A advances USP (~99 per frame, consistent with 92.7 interrupts plus the
-end-of-stream path).
+Neither *steady-state* path writes a byte below `$8000`. Timer A's other
+visible effect is that it advances USP (~99 per frame, consistent with 92.7
+interrupts plus the end-of-stream path).
 
-**So a first oracle can implement VBL + IKBD ACIA and omit both timers**, and
-still be able to match every byte of traced game state. The differ decides
-whether that holds; the risk to watch is any game code below `$8000` that
-reads USP, which would make Timer A's cadence observable.
+> **Correction, from Phase 3.** The paragraph that used to sit here concluded
+> "a first oracle can omit both timers". That was wrong about Timer A, and the
+> differ caught it within two bytes. The listing above is Timer A's *loop*; its
+> **exit** path, which I had not disassembled, is:
+>
+> ```
+> 000083fe  clr.b $fffffa19.w     ; stop the timer
+> 00008402  clr.b $00006c5b.w     ; <-- below $8000
+> 00008406  clr.b $00006c5c.w     ; <-- below $8000
+> ```
+>
+> `$6c5b`/`$6c5c` are the "sound effect busy" latch that the disc engine sets
+> at `$a6c4`-`$a6f0` before pointing USP at a sample and starting Timer A. With
+> Timer A omitted the stream never terminates and the latch never clears, which
+> is exactly the disagreement the differ reported. **Timer A is emulated for
+> real in the oracle.** Timer B's claim stands: both its handlers (`$8320`, to
+> which the VBL handler re-points vector `$120` every frame, and `$8362`) write
+> only palette and MFP registers.
+>
+> The lesson is narrow and worth keeping: disassembling the hot path of a
+> handler is not the same as disassembling the handler.
 
 ## 5. Consequences for the harness
 

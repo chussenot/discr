@@ -59,6 +59,41 @@ tile grid cell -- $7616, 17 cells, stride 8
   +$04  long  zero
 ```
 
+## Interrupts and I/O (Phase 0, measured in a live match)
+
+```
+$70   -> $8198   level-4 VBL, once per frame; first instruction is
+                 addq.w #1,$6ab4, and $819c then does subq.w #1,$6ab6
+$118  -> $8370   MFP 6, IKBD ACIA.  Self-modifying vector state machine:
+                 $8370 reads $FFFC02; $FF re-points $118 to $83b2 (next byte
+                 -> $6c58, joystick 1), $FE re-points to $83c2 (-> $6c59,
+                 joystick 0), otherwise the byte is a key code -> $6c56.
+                 Packets arrive on state CHANGE only, not per frame.
+$120  -> $8362   MFP 8, Timer B; the VBL handler re-points it to $8320 each
+                 frame.  Both handlers write only palette + MFP registers.
+$134  -> $83d2   MFP 13, Timer A, ~4.9 kHz PSG sample streamer.  Its cursor
+                 is USP.  Its EXIT path at $83fe clears $6c5b and $6c5c.
+
+Enabled: IERA/IMRA $21 (Timer A + Timer B), IERB/IMRB $40 (ACIA).
+Timer C and Timer D are off; HBL is never taken; no ROM executes in a match.
+Hardware touched per frame: PSG $FF8800-$FF8806, palette $FF8248-$FF825E,
+screen base $FF8201/$FF8203, MFP $FFFA19/$FFFA1B/$FFFA1F/$FFFA21.  No FDC.
+```
+
+## Addresses added in Phase 6
+
+```
+$6c59  joystick_0        (byte)  mouse/joystick port 0, decoded at $83c2
+$6c56  last_key          (byte)  raw key scancode, stored at $8378
+$6c5b  sfx_active        (byte)  $FF while a sample plays; set st.b at $a6e4,
+                                 cleared by Timer A's exit path at $8402
+$6c5c  sfx_busy          (byte)  1 while a sample plays; set at $a6ca,
+                                 cleared at $8406
+$6aac  screen_buf_a      (long)  $00070600 / $00078300, swapped every frame
+$6ab0  screen_buf_b      (long)  the other half of the pair
+$6ab6  vbl_down_counter  (word)  decremented at $819c every frame
+```
+
 ## Ghidra bookmark set
 
 ```
@@ -70,4 +105,8 @@ $a4ea   disc update loop entry (lea $6e3e,a5)
 $a6b2   disc perspective projection -> screen X/Y
 $a722   disc X-velocity steering (clamped [-2,+2])
 $aa50   round initialiser: 8 disc records + their sub-records
+$8198   VBL handler (the game's per-frame entry point)
+$8370   IKBD ACIA handler / joystick decode
+$83d2   Timer A PSG streamer; $83fe is its end-of-stream path
+$a6c2   disc engine sound trigger (sets $6c5b/$6c5c, arms Timer A)
 ```

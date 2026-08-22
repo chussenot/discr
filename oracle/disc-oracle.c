@@ -22,30 +22,62 @@
 #define STATE_LO   0x0000u
 #define STATE_HI   0x8000u
 /* PAL: 512 cycles/line * 313 lines at 8 MHz */
-#define FRAME_CYCLES 160256
+#define FRAME_CYCLES_DEFAULT 160256
 
-/* MFP vector base is $100; the ACIA is MFP source 6 -> vector $46 -> $118 */
-#define ACIA_VECTOR 0x46
+/* MFP vector base is $100.  ACIA is source 6 -> vector $46 ($118);
+ * Timer A is source 13 -> vector $4d ($134). Higher source number wins. */
+#define ACIA_VECTOR   0x46
+#define TIMERA_VECTOR 0x4d
+/* ST clocks: MFP 2.4576 MHz, CPU 8.021247 MHz (PAL) */
+#define MFP_HZ 2457600.0
+#define CPU_HZ 8021247.0
 
 static uint8_t ram[RAM_SIZE];
 static int permissive = 0, debug_regs = 0;
 static long dump_pcs = 0;
 static long win_lo = -1, win_hi = -1;
+static long frame_cycles = FRAME_CYCLES_DEFAULT;
 static long unstubbed = 0;
 
+static uint8_t mfp_tacr, mfp_tbcr, mfp_tadr, mfp_tbdr;
+
 /* ---- interrupt state --------------------------------------------------- */
-static int vbl_pending = 0, acia_pending = 0;
+static int vbl_pending = 0, acia_pending = 0, tima_pending = 0;
 
 static void refresh_irq(void)
 {
-    m68k_set_irq(acia_pending ? 6 : (vbl_pending ? 4 : 0));
+    m68k_set_irq((tima_pending || acia_pending) ? 6 : (vbl_pending ? 4 : 0));
 }
 
 int disc_int_ack(int level)
 {
-    if (level == 6) { acia_pending = 0; refresh_irq(); return ACIA_VECTOR; }
+    if (level == 6) {
+        /* MFP priority is by source number: Timer A (13) outranks ACIA (6). */
+        if (tima_pending) { tima_pending = 0; refresh_irq(); return TIMERA_VECTOR; }
+        acia_pending = 0; refresh_irq(); return ACIA_VECTOR;
+    }
     if (level == 4) { vbl_pending = 0; refresh_irq(); return M68K_INT_ACK_AUTOVECTOR; }
     return M68K_INT_ACK_SPURIOUS;
+}
+
+/* ---- MFP Timer A -------------------------------------------------------
+ * Phase 0 said both timers were RAM-free below $8000 and could be skipped.
+ * That was right about Timer A's steady-state path and wrong about its exit
+ * path: when the sample stream hits its terminating 0, $83fe clears $6c5b and
+ * $6c5c -- the "sound effect busy" latch that the disc engine sets at $a6c4
+ * before pointing USP at the sample and starting the timer.  The differ found
+ * it as a 2-byte disagreement.  So Timer A is emulated for real. */
+static const int MFP_PRESCALE[8] = {0, 4, 10, 16, 50, 64, 100, 200};
+static double cycles_now = 0, tima_deadline = 0;
+static double tima_period = 0;
+
+static void tima_reload(void)
+{
+    int ps = MFP_PRESCALE[mfp_tacr & 7];
+    int cnt = mfp_tadr ? mfp_tadr : 256;
+    if (!ps) { tima_period = 0; return; }         /* stopped */
+    tima_period = (double)ps * cnt * CPU_HZ / MFP_HZ;
+    tima_deadline = cycles_now + tima_period;
 }
 
 /* ---- frame boundary detection -------------------------------------------
@@ -102,7 +134,6 @@ static uint8_t ikbd_pop(void)
 }
 
 /* ---- hardware stubs ---------------------------------------------------- */
-static uint8_t mfp_tacr, mfp_tbcr, mfp_tadr, mfp_tbdr;
 
 static void io_unstubbed(const char *op, unsigned int addr)
 {
@@ -143,7 +174,13 @@ static void io_write(unsigned int addr, unsigned int val, int size)
     if (addr >= 0xff8240 && addr <= 0xff825f) return;          /* palette */
     if (addr == 0xff8201 || addr == 0xff8203) return;          /* screen base */
     switch (addr) {
-    case 0xfffa19: mfp_tacr = val; return;
+    case 0xfffa19: {
+        int was = mfp_tacr & 7;
+        mfp_tacr = val;
+        if ((val & 7) && !was) tima_reload();      /* start */
+        else if (!(val & 7)) tima_period = 0;      /* stop */
+        return;
+    }
     case 0xfffa1b: mfp_tbcr = val; return;
     case 0xfffa1f: mfp_tadr = val; return;
     case 0xfffa21: mfp_tbdr = val; return;
@@ -219,6 +256,29 @@ void m68k_write_memory_32(unsigned int address, unsigned int value)
 /* Musashi asks for these when disassembling / for immediate reads. */
 unsigned int m68k_read_disassembler_16(unsigned int a) { return m68k_read_memory_16(a); }
 unsigned int m68k_read_disassembler_32(unsigned int a) { return m68k_read_memory_32(a); }
+
+/* Run n CPU cycles, breaking the run so Timer A fires on schedule. */
+static void run_cycles(double n)
+{
+    while (n > 0) {
+        int chunk = (int)(n > 100000 ? 100000 : n), got;
+        if (tima_period > 0) {
+            double d = tima_deadline - cycles_now;
+            if (d < 1) d = 1;
+            if (d < chunk) chunk = (int)d;
+        }
+        if (chunk < 1) chunk = 1;
+        got = m68k_execute(chunk);
+        cycles_now += got;
+        n -= got;
+        if (tima_period > 0 && cycles_now >= tima_deadline) {
+            tima_pending = 1;
+            refresh_irq();
+            tima_deadline += tima_period;
+            if (tima_deadline < cycles_now) tima_deadline = cycles_now + tima_period;
+        }
+    }
+}
 
 /* ---- seed loading ------------------------------------------------------ */
 /* A deliberately small scanner over our own JSON: find "KEY" then the next
@@ -370,6 +430,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atol(argv[++i]);
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) tracef = argv[++i];
+        else if (!strcmp(argv[i], "--frame-cycles") && i + 1 < argc) frame_cycles = atol(argv[++i]);
         else if (!strcmp(argv[i], "--permissive")) permissive = 1;
         else if (!strcmp(argv[i], "--debug-regs")) debug_regs = 1;
         else if (!strcmp(argv[i], "--dump-pcs") && i + 1 < argc) dump_pcs = atol(argv[++i]);
@@ -422,6 +483,16 @@ int main(int argc, char **argv)
     m68k_set_reg(M68K_REG_ISP, (unsigned)json_int(js, "ISP", &found));
     m68k_set_reg(M68K_REG_PC, (unsigned)json_int(js, "PC", &found));
 
+    /* MFP shadow: a sound effect may already be mid-stream at the seed
+     * instant, in which case Timer A has to be ticking from frame 0 or the
+     * $6c5b/$6c5c busy latch never clears. */
+    mfp_tadr = (uint8_t)json_int(js, "TADR", &found);
+    if (!found) { fprintf(stderr, "seed json lacks TADR (re-capture the seed)\n"); return 2; }
+    mfp_tbdr = (uint8_t)json_int(js, "TBDR", &found);
+    mfp_tbcr = (uint8_t)json_int(js, "TBCR", &found);
+    mfp_tacr = (uint8_t)json_int(js, "TACR", &found);
+    if (mfp_tacr & 7) tima_reload();
+
     if (m68k_get_reg(NULL, M68K_REG_PC) != VBL_HANDLER) {
         fprintf(stderr, "seed PC is $%x, expected the VBL handler $%x\n",
                 m68k_get_reg(NULL, M68K_REG_PC), VBL_HANDLER);
@@ -457,13 +528,13 @@ int main(int argc, char **argv)
     emit_frame(out, 0);
     apply_events(0);
     for (frame = 1; frame < frames; frame++) {
-        long spent = 0, guard = 0;
-        while (spent < FRAME_CYCLES) spent += m68k_execute(FRAME_CYCLES - spent);
+        long guard = 0;
+        run_cycles(frame_cycles);
         vbl_pending = 1;
         refresh_irq();
         cur_frame = frame;
         sample_armed = 1; sampled = 0;
-        while (!sampled && guard++ < 20000) m68k_execute(1000);
+        while (!sampled && guard++ < 20000) { cycles_now += m68k_execute(200); }
         if (!sampled) {
             fprintf(stderr, "frame %ld: never reached $%x after the VBL; "
                     "stuck at pc=$%06x sr=$%04x\n", frame, VBL_HANDLER,

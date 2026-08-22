@@ -172,3 +172,54 @@ rather than re-launched. Whether a player-side "throw" writes the record
 directly, or only sets the aim that the steering code converges on, is open.
 Answering it needs a scenario that actually plays well enough to catch the
 disc — the aiming problem that also blocked `tile_hit`.
+
+
+---
+
+# Part 6 additions (disc-oracle)
+
+## Hatari
+
+**The CPU profiler cannot be driven over the control socket.** `profile on`
+followed by any wait reports "no activity" for every region. Profiling
+collects only while the debugger is in control between an explicit continue
+and the next breakpoint; each one-shot `hatari-debug` command enters and
+leaves the debugger, which resets the buffers ("Freed previous CPU profile
+buffers" appears on every command). Even a pure wall-clock sleep with no
+debugger contact collected nothing. Use breakpoints and `--trace` instead --
+`b pc > $dfffff :trace :lock` answered the "does it execute ROM" question in
+one run.
+
+**`memdump`, `find` and friends want a dash, not a space.** `m w $7616 $76b6`
+answers `Invalid count 0!`; the syntax is `m w $7616-$76b6`.
+
+**A breakpoint cannot be used to *stop* at an instant.** Arming
+`b pc = $8198 :trace` and then sending `hatari-stop` lands wherever the
+emulator is some milliseconds later -- measured as SR=$2309/IM=3 instead of
+the $2404/IM=4 that holds at the VBL handler entry, i.e. already several
+instructions into the handler. To capture state AT an instant, use the
+breakpoint's `:file` action, which runs debugger commands at the hit. That is
+how `Hatari.seed()` gets a frame-exact RAM image and register set.
+
+## Musashi
+
+**`m68k_end_timeslice()` does not abort the current instruction.** It zeroes
+the cycle budget, which is tested at the top of the execute loop, so the
+instruction that was about to run still runs. Stopping from the instruction
+hook therefore lands one instruction late.
+
+**`PC == $8198` is not observable from outside `m68k_execute()`.** The
+interrupt dispatch and the handler's first instruction happen inside a single
+call, so an external `if (PC == target)` loop stepping with `m68k_execute(1)`
+always sees `$819c`. Both of these showed up identically -- as `$6ab4`
+advancing by 2 per frame instead of 1 -- and both are fixed by *sampling* from
+inside the instruction hook (which does fire pre-execution) rather than trying
+to stop there.
+
+## Method
+
+**Disassembling a handler's hot path is not disassembling the handler.**
+Phase 0 read Timer A's 12-instruction loop, saw only PSG writes, and concluded
+the timer could be skipped. Its exit path -- eight bytes further on, taken once
+per sample -- clears two bytes below $8000. The differential phase found it
+immediately. Read to the `rte`, on every branch.
