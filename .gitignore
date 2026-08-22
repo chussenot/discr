@@ -28,3 +28,8 @@ tmp/
 *.bin
 *.bmp
 *.png
+
+# oracle seeds are derived from the disk image
+seeds/
+*.seed
+*.ndjson

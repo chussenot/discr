@@ -1,0 +1,9 @@
+name: oracle_seed
+mode: challenge
+# Phase 1: capture a frame-boundary seed for disc-oracle.
+# Stops at PC == $8198 (the sampling-point contract in
+# reports/oracle-scope.md) so the oracle and Hatari start from the same
+# instant, then dumps 1 MB of RAM plus the register set.
+settle: 15
+steps:
+  - {seed: seeds/match_challenge.seed, lo: 0x0, hi: 0x100000}

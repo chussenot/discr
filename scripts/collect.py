@@ -20,7 +20,7 @@ Design notes (all of these were established empirically -- see KNOWN_ISSUES.md):
       input has to be real X key events; we run Hatari on an Xvfb display and
       inject with XTEST.  This is also what makes the pipeline headless.
 """
-import argparse, atexit, json, os, re, signal, socket, struct, subprocess, sys, time
+import argparse, atexit, hashlib, json, os, re, signal, socket, struct, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEF_DISK = os.path.join(ROOT, "Disc (1990)(Loriciel)[cr Exo-7].st")
@@ -536,6 +536,109 @@ class Hatari:
             self.statesave(cache)
         return self
 
+    # ---- oracle seed capture ---------------------------------------------
+    _REGLINE = re.compile(r"\b([DA][0-7]|USP|ISP)\s+([0-9A-Fa-f]{8})\b")
+    _SR = re.compile(r"SR=([0-9A-Fa-f]{4})")
+
+    def registers(self):
+        """Parse `cpureg` into {name: value}.  SR carries the interrupt mask."""
+        out = self.dbg_capture("r", timeout=20)
+        regs = {k.upper(): int(v, 16) for k, v in self._REGLINE.findall(out)}
+        m = self._SR.search(out)
+        if not m:
+            raise RuntimeError("cannot parse SR from %r" % out)
+        regs["SR"] = int(m.group(1), 16)
+        want = ["D%d" % i for i in range(8)] + ["A%d" % i for i in range(8)]
+        missing = [k for k in want + ["USP", "ISP"] if k not in regs]
+        if missing:
+            raise RuntimeError("cpureg is missing %s in %r" % (missing, out))
+        return regs
+
+    def seed(self, path, lo=0x0, hi=0x100000, at_pc=None):
+        """Capture a frame-boundary seed for the oracle.
+
+        The capture has to happen exactly AT the sampling point (PC == the VBL
+        handler entry, before its first instruction). Pausing with
+        `hatari-stop` after seeing the breakpoint is not good enough -- the
+        pause lands wherever the emulator happens to be some milliseconds
+        later, which measured as SR=$2309/IM=3 instead of the $2404/IM=4 that
+        holds at the handler entry.
+
+        So let the breakpoint itself do the work: `:file` runs a debugger
+        command script at the hit, with emulation still notionally at that
+        instruction. The script saves RAM and dumps the registers; we parse
+        both back out of the log.
+        """
+        pc = at_pc or self.VBL_HANDLER
+        path = os.path.abspath(path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        for stale in (path, path + ".json"):
+            if os.path.exists(stale):
+                os.unlink(stale)
+
+        script = os.path.abspath(os.path.join(self.shotdir, "seed_cmds.txt"))
+        with open(script, "w") as f:
+            f.write("savebin %s $%x $%x\nr\n" % (path, lo, hi - lo))
+
+        mark = os.path.getsize(self.logpath)
+        self.dbg_capture("b pc = $%x :once :trace :file %s" % (pc, script))
+        deadline = time.time() + 15
+        text = ""
+        while time.time() < deadline:
+            with open(self.logpath, "r", errors="replace") as f:
+                f.seek(mark)
+                text = f.read()
+            if "Wrote" in text and self._SR.search(text):
+                break
+            if not self.alive():
+                raise RuntimeError("Hatari died during seed capture")
+            time.sleep(0.01)
+        else:
+            self.dbg_capture("b all")
+            raise Timeout("no seed capture at $%x within 15s; is a match live?" % pc)
+
+        regs = {k.upper(): int(v, 16) for k, v in self._REGLINE.findall(text)}
+        regs["SR"] = int(self._SR.search(text).group(1), 16)
+        cur = re.search(r"^0*([0-9a-f]{4,8}) [0-9a-f]{4}", text, re.M)
+        regs["PC"] = int(cur.group(1), 16) if cur else pc
+        missing = [k for k in ["D%d" % i for i in range(8)]
+                   + ["A%d" % i for i in range(8)] + ["USP", "ISP"]
+                   if k not in regs]
+        if missing:
+            raise RuntimeError("cpureg output is missing %s" % missing)
+        if regs["PC"] != pc:
+            raise RuntimeError("seed captured at PC $%x, expected $%x -- the "
+                               "sampling-point contract is broken"
+                               % (regs["PC"], pc))
+
+        for _ in range(200):
+            if os.path.exists(path) and os.path.getsize(path) == hi - lo:
+                break
+            time.sleep(0.02)
+        else:
+            raise Timeout("seed RAM image never reached %d bytes" % (hi - lo))
+
+        blob = open(path, "rb").read()
+        digest = hashlib.sha256(blob).hexdigest()
+        # read $6ab4 out of the image itself, not with a live peek -- the
+        # emulator has moved on by the time we get here
+        cnt = None
+        if lo <= 0x6ab4 and 0x6ab6 <= hi:
+            cnt = (blob[0x6ab4 - lo] << 8) | blob[0x6ab5 - lo]
+        meta = {"ram": os.path.basename(path), "lo": lo, "hi": hi,
+                "sha256": digest, "registers": regs, "pc": pc,
+                "vbl_counter_6ab4": cnt,
+                "note": "captured by a :file action at PC == $%x, before that "
+                        "instruction executed" % pc}
+        with open(path + ".json", "w") as f:
+            json.dump(meta, f, indent=1, sort_keys=True)
+        return meta
+
+    def peek_word(self, addr):
+        out = self.dbg_capture("evaluate ($%x).w" % addr)
+        m = self._DEC.search(out)
+        return int(m.group(1)) & 0xffff if m else None
+
     # ---- per-frame memory tracing ----------------------------------------
     _MEMLINE = re.compile(r"^([0-9A-F]{8}): ((?:[0-9a-f]{2} ?)+)", re.M)
     _HIT = re.compile(r"^\d+\. CPU breakpoint condition\(s\) matched", re.M)
@@ -700,6 +803,15 @@ def run_scenario(scn, h, outdir):
         elif "screenshot" in step:
             path, _ = h.screen(str(step["screenshot"]) + ".bmp")
             print("[shot] %s" % path, file=sys.stderr)
+        elif "seed" in step:
+            path = str(step["seed"])
+            info = h.seed(path,
+                          int(str(step.get("lo", "0x0")), 0),
+                          int(str(step.get("hi", "0x100000")), 0))
+            meta.setdefault("seeds", []).append(info)
+            print("[seed]  %s  sha256=%s..  $6ab4=%s"
+                  % (path, info["sha256"][:16], info["vbl_counter_6ab4"]),
+                  file=sys.stderr)
         elif "trace" in step:
             name = str(step["trace"])
             base = int(str(step.get("base", "$6e3e")).lstrip("$"), 16)
