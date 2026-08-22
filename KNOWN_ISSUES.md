@@ -111,14 +111,16 @@ affect the analysis.
 `Invalid count 0!`; the syntax is `m w $7616-$76b6`. Same for `find` and
 `disasm` takes the two-argument form.
 
-**`b pc = $addr` never fires.** A conditional breakpoint on the `pc` variable
-was set and acknowledged (`CPU condition breakpoint 1 with 1 condition(s)
-added`) but never triggered on an address that provably executes every frame.
-Not chased down; the working alternative is a change-tracking breakpoint on a
-memory location the routine writes (`b ($addr).w ! ($addr).w :trace :lock`),
-which reports the machine state at the instruction *after* the write, plus
-`lock registers` when the address registers are what you are after. That is
-how `a0` was read out at the movement guards.
+**`b pc = $addr` breakpoints work -- my Part-5 note here was wrong.**
+I recorded that a conditional breakpoint on `pc` was accepted but never
+triggered. Re-tested in Part 6 against known-good addresses: `b pc > $1000`
+fires immediately, `b pc = $8198` fires once per frame, and the `a <addr>`
+shorthand does the same. The Part-5 failure was `b pc = $f650`, and `$f650`
+is **not an instruction boundary** -- it came out of a chunked disassembly
+that had misaligned (see the next entry). So the breakpoint was correct and
+the address was wrong, which is itself a useful signal: if a `pc =`
+breakpoint never fires on an address you believe executes, suspect your
+disassembly alignment before you suspect Hatari.
 
 **Chunked `disasm` misaligns.** Disassembling `$f400-$f600`, `$f600-$f800`, …
 and concatenating produces plausible-looking but wrong instructions wherever a

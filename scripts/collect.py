@@ -538,9 +538,12 @@ class Hatari:
 
     # ---- per-frame memory tracing ----------------------------------------
     _MEMLINE = re.compile(r"^([0-9A-F]{8}): ((?:[0-9a-f]{2} ?)+)", re.M)
-    _HIT = re.compile(r"\n  \$([0-9a-f]+)\s*\n\d+\. CPU breakpoint condition")
+    _HIT = re.compile(r"^\d+\. CPU breakpoint condition\(s\) matched", re.M)
 
-    def frame_trace(self, base, frames, settle=0.0, during=None, at=0.3):
+    VBL_HANDLER = 0x8198   # vector $70; its first instruction is addq.w #1,$6ab4
+
+    def frame_trace(self, base, frames, settle=0.0, during=None, at=0.3,
+                    at_pc=None):
         """Capture one memdump of `base`.. per PAL VBL, for `frames` frames.
 
         A savebin costs ~2 emulated frames (Hatari services the control socket
@@ -550,13 +553,23 @@ class Hatari:
         plus a breakpoint that trips on every VBL change writes a snapshot into
         the log by itself, with no round trip at all.
 
+        Sampling point: PC == $8198 (VBL handler entry), *before* that
+        instruction runs -- so $6ab4 still holds the previous frame's count.
+        See reports/oracle-scope.md; the oracle must honour the same contract.
+
         Returns [(vbl, {addr: byte}), ...] in frame order.  The span is
         whatever nMemdumpLines gives -- 200 lines = 3200 bytes with the
         hatari.cfg shipped here.
         """
         self.dbg_capture("lock memdump $%x" % base)
+        vbl0 = self.vbl()
         mark = os.path.getsize(self.logpath)
-        self.dbg_capture("b VBL ! VBL :trace :lock")
+        # Break at the VBL handler's entry, not on Hatari's VBL variable.
+        # Both usually coincide, but "VBL ! VBL" reports whatever instruction
+        # happens to be executing when the variable ticks -- measured landing
+        # inside the Timer A handler ($83fc) on 1 frame in 8.  The sampling
+        # point has to be exact or the oracle differ chases phantoms.
+        self.dbg_capture("b pc = $%x :trace :lock" % (at_pc or self.VBL_HANDLER))
         try:
             if settle:
                 time.sleep(settle)
@@ -586,8 +599,17 @@ class Hatari:
                 for k, byte in enumerate(line.group(2).split()):
                     mem[addr + k] = int(byte, 16)
             if mem:
-                snaps.append((int(m.group(1), 16), mem))
-        return snaps
+                snaps.append(mem)
+        # A pc-breakpoint hit carries no VBL number, but it fires exactly once
+        # per frame, so frames are consecutive from the count taken just before
+        # arming.  Cross-check that against the elapsed VBLs and complain
+        # rather than silently mislabelling frames.
+        vbl1 = self.vbl()
+        if snaps and not (0 <= (vbl1 - vbl0) - len(snaps) <= 3):
+            print("[frame_trace] WARNING: %d snapshots but %d VBLs elapsed -- "
+                  "frames may be mislabelled" % (len(snaps), vbl1 - vbl0),
+                  file=sys.stderr)
+        return [(vbl0 + 1 + i, mem) for i, mem in enumerate(snaps)]
 
     # ---- write-origin capture (phase 3) ----------------------------------
     def watch(self, addr, width="w"):

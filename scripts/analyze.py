@@ -222,10 +222,13 @@ def hunt_disc(out):
 
     counter = [r_ for r_ in rows if r_[0] < 0.15 and r_[1] == 0]
     if counter:
-        PASTE.append("$%04x  vbl_frame_counter  (word, wraps)  increments by "
-                     "exactly 1 per PAL VBL across %d equal-gap samples, never "
-                     "reverses; note this is $6ab4, NOT the $6ab6 given in the "
-                     "brief, which is zero in every in-match dump"
+        PASTE.append("$%04x  vbl_frame_counter  (word)  incremented by the "
+                     "VBL handler's first instruction, addq.w #1,$6ab4 at "
+                     "$8198; +1 per PAL VBL across %d equal-gap samples, never "
+                     "reverses. $6ab6 is a separate DOWN-counter decremented "
+                     "right after it (subq.w #1,$6ab6 at $819c); it reads 0 in "
+                     "the states sampled here, which is why Part 4 wrongly "
+                     "called the brief mistaken about it"
                      % (counter[0][2], len(seq)))
     out.append("| addr | velocity spread | reversals | values | reading |")
     out.append("|---|---|---|---|---|")
