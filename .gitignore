@@ -13,3 +13,18 @@ Disc*
 !.pact/messages.jsonl
 
 **/__pycache__/*
+
+# Emulator inputs we must never commit: disk images, TOS ROMs, savestates
+*.st
+*.stx
+*.img
+*.msa
+*.sav
+*.zip
+
+# Collected data and scratch output from scripts/collect.py
+dumps/
+tmp/
+*.bin
+*.bmp
+*.png
