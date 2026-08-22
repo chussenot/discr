@@ -11,3 +11,5 @@ Disc*
 .pact/*
 !.pact/events.jsonl
 !.pact/messages.jsonl
+
+**/__pycache__/*
