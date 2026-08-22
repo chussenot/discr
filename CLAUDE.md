@@ -75,3 +75,13 @@ _Add a brief overview of your project architecture_
 ## Conventions & Patterns
 
 _Add your project-specific conventions here_
+
+<!-- pact:begin hash:8546f7af -->
+## pact coordination protocol
+
+Claude Code loads this file, not `AGENTS.md`, so the protocol is imported
+here instead of copied — one source of truth, in the file the other agents
+already read. Run `pact init` to refresh it.
+
+@AGENTS.md
+<!-- pact:end -->
