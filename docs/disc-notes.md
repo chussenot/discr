@@ -255,6 +255,16 @@ caller and both are answered.
 The n=2 correlation with player 2 entering `state_index` 17 now reads as the
 opponent *playing* the disc, which is what a serve is.
 
+**Careful with the entry point.** A breakpoint on `$a9a0` did **not** fire in a
+180-frame window where `$a9b8` wrote `dir_kind` twice, and `find l $0-$18000
+$a9a0` finds no absolute reference. `$a9a0` is only the loop *setup*
+(`moveq #$07,d3`); `$aa4a dbf d3,$a9a2` loops back to **`$a9a2`**, which is the
+body -- it tests `($0010,a1)` and skips busy slots, so it is scanning the 8
+records for a free one. The real entry is above `$a9a0` and is not yet
+identified, so "the spawn routine `$a9a0`" in the entries above should be read
+as "the slot-fill loop whose body is `$a9a2`". Finding its caller is bd
+discr-m4x.
+
 ## The tile type word: gate polarity confirmed, second writer found (Part 9)
 
 The walkability gate polarity is settled by `$f634`-`$f64e`:
