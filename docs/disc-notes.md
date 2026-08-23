@@ -138,6 +138,14 @@ killing hit. A second, unidentified writer sets bit 7 of the HP word
 (`(1,5)->(1,133)`) and clears it later; not explained.
 
 ```
+$a2ec/$a300  destroyed_cell_guard  (code)  tst.w on the cell TYPE word; beq
+                                     skips to $a3ea, so a type-0 cell never
+                                     reaches the damage code at all
+$a314        damage_multiplier     (code)  cmp.w #$0001,$6d9a -- when $6d9a is
+                                     1 the disc's damage is subtracted a
+                                     SECOND time at $a31c; $a32e tests 3 for a
+                                     further path.  Semantics undecoded, see
+                                     bd discr-z8m
 $7616+cell*8 +$00  tile_type      (word) {0,1,2}; 0 = destroyed; walkability gate
 $7616+cell*8 +$02  tile_hp        (word) -= disc[+$16] per hit, clamped at 0
 $a34c              tile_damage    (code) the HP store; $a354 destroys the cell
