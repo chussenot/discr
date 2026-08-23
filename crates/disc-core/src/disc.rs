@@ -1,10 +1,16 @@
 //! Disc flight, steering and impact. Owned by bead `discr-leu` (I3).
 //!
 //! ST `$a4ea` is the update loop entry (`lea $6e3e,a5`): 8 records of stride
-//! `$42`. Per slot the ST nudges `vel_x` by +/-1 toward the aimed player,
+//! `$42`. Per slot the ST *can* nudge `vel_x` by +/-1 toward the aimed player,
 //! clamped `[-2,+2]` (`$a722`), integrates `world_x` by `+$06` (`$6e44`) and
 //! advances `world_z`, flips `+$0a` with `neg.w` on turn-around (`$a606`), and
 //! on a tile hit subtracts `+$16` from the struck cell's HP (`$a31c`).
+//!
+//! "Can": the `$a71a`/`$a722` steering block is **gated off in every trace we
+//! have**, so [`step`] does not call [`steer`]. What [`step`] models instead --
+//! integrate, floor at 0, sign-flip on the floor -- is read off
+//! `tests/fixtures/golden.ndjson`, and the floor's coupling to the flip is
+//! **modelled, not mirrored**. See [`step`] and bd discr-217.
 //!
 //! There is no possession: a disc is always in flight and always homing on a
 //! target player, so the target lives in [`crate::DiscSlot::aim`].
@@ -14,6 +20,12 @@
 //! Two triggers inside the ST loop are not decoded, so they are exposed as
 //! explicit API calls rather than invented here:
 //!
+//! * horizontal steering -- [`steer`] is the literal `$a722` rule and it is
+//!   right, but nothing in evidence runs it: in the golden fixture disc 0
+//!   falls `world_x` 21 -> 0 with `vel_x` pinned at -2 for eleven frames while
+//!   the aim point (98) sits above it the whole way, so the rule would have
+//!   incremented `vel_x` on every one of them. [`step`] therefore never calls
+//!   it. What gates `$a71a` is `// UNKNOWN: see bd discr-217`.
 //! * [`serve`] -- `$a9a0` stores the spawn record and `$a618` writes
 //!   `dir_kind = +1`, but nothing says what *causes* a serve.
 //!   `// UNKNOWN: see bd discr-m4x`.
@@ -111,7 +123,13 @@ pub const fn aim_y() -> i16 {
 ///
 /// The at-target decay is the whole of the damping: no gap limiting, no
 /// proportional term, no angle table.
-fn steer(vel: i16, pos: i16, target: i16) -> i16 {
+///
+/// **Not called by [`step`].** The rule is known exactly; its gate is not, and
+/// in every trace we have the gate is off (bd discr-217). It stays public
+/// because it is the decoded rule and the day `$a71a`'s condition is recovered
+/// this is what goes behind it.
+#[must_use]
+pub fn steer(vel: i16, pos: i16, target: i16) -> i16 {
     match target.cmp(&pos) {
         // $a74c: bgt -- clamp +2.
         Ordering::Greater if vel < VEL_CLAMP => vel + 1,
@@ -125,19 +143,40 @@ fn steer(vel: i16, pos: i16, target: i16) -> i16 {
 
 /// Advance one disc slot by one frame. ST `$a4ea`, one iteration.
 ///
-/// Order matches the ST: steer first, then integrate, so the invariant the
-/// notes verified (47/48 frames) holds -- while `world_z` advances,
-/// `world_x[n+1] - world_x[n] == vel_x[n+1]`; when `world_z` is frozen so is
-/// `world_x` (17/17).
+/// Three things happen, and only these three:
+///
+/// * `world_x += vel_x` -- the invariant the notes verified 47/48 frames while
+///   `world_z` advances, with `world_x` frozen whenever `world_z` is (17/17);
+/// * a **floor at `world_x == 0`** -- golden frame 10 -> 11 steps 1 -> 0, a
+///   move of -1 under `vel_x` = -2, so the position clamps rather than passing
+///   zero;
+/// * `vel_x` **sign-flips on that clamp**, -2 -> +2 on the same frame.
+///
+/// `// MODELLED, not mirrored: trigger inferred from the fixture; ST guard
+/// $a600 bpl undecoded -- see bd discr-217`. The `neg.w` at `$a606` is real;
+/// what reaches it is a `bpl` on `d2` whose meaning is not decoded, so the
+/// floor-to-flip coupling is an inference from the trace, not a transcription.
+///
+/// There is deliberately **no ceiling**. The fixture's two upper turnarounds
+/// (`world_x` 45 and 113) are not clamps: both decay through +1 and 0 before
+/// reversing, and they sit at different values, so nothing in evidence
+/// supports a symmetric upper bound. The asymmetry is the evidence's, not a
+/// bug.
+///
+/// [`steer`] is **not** called -- see the module docs and bd discr-217.
 ///
 /// `tiles` is mutable because tile damage happens inside this loop on the ST
 /// (`$a31c`-`$a360`), but the collision test that selects the struck cell is
 /// not decoded, so nothing here writes it -- see [`impact`].
 /// `// UNKNOWN: see bd discr-5w5`.
+///
+/// `players` is unused because the only thing that read it was the steering
+/// call. It stays in the signature because the aim point is what goes back in
+/// the day discr-217 recovers the gate.
 pub fn step(
     disc: &mut DiscSlot,
     _slot: usize,
-    players: &[Player; 2],
+    _players: &[Player; 2],
     _tiles: &mut [Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
@@ -145,11 +184,23 @@ pub fn step(
         return;
     }
 
-    // $a722: steer the horizontal component toward the aimed player.
-    disc.vel_x = steer(disc.vel_x, disc.world_x, aim_x(players, disc.aim));
+    // No steer() call here. $a722's rule is decoded, its gate is not, and in
+    // every trace we have it is off -- calling it diverges on golden frame 1.
+    // // UNKNOWN: see bd discr-217.
 
-    // $6e44: world X integrates by vel_x.
-    disc.world_x = disc.world_x.saturating_add(disc.vel_x);
+    // $6e44: world X integrates by vel_x, with a floor at 0 that sign-flips
+    // the velocity ($a606 neg.w).
+    // MODELLED, not mirrored: trigger inferred from the fixture; ST guard
+    // $a600 bpl on d2 undecoded -- see bd discr-217.
+    match disc.world_x.saturating_add(disc.vel_x) {
+        next if next < 0 => {
+            disc.world_x = 0;
+            // dir_kind is NOT touched: the fixture holds it at +1 across the
+            // flip, so whatever $a606 negates here, it is not that field.
+            disc.vel_x = disc.vel_x.wrapping_neg();
+        }
+        next => disc.world_x = next,
+    }
 
     // world_y is deliberately NOT advanced. In dumps/disc_trace (84 frames)
     // vel_y (+$08) is 0 on every frame while world_y (+$02) moves on three
@@ -264,11 +315,15 @@ mod tests {
     }
 
     /// $6e44 / disc+$04: while world_z advances, world_x[n+1] - world_x[n]
-    /// == vel_x[n+1] (47/48 in the notes).
+    /// == vel_x[n+1] (47/48 in the notes). Away from the floor, that is all
+    /// step() does to x.
     #[test]
     fn world_x_integrates_by_vel_x_while_z_advances() {
         let players = players_at(152, 8);
-        let mut disc = flying(0, aim_y());
+        let mut disc = DiscSlot {
+            vel_x: 2,
+            ..flying(10, aim_y())
+        };
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
@@ -278,7 +333,73 @@ mod tests {
             assert_eq!(disc.world_z, prev_z + 1, "z advances +1 per frame");
             assert_eq!(disc.world_x - prev_x, disc.vel_x);
         }
-        assert_eq!(disc.world_x, aim_x(&players, PlayerId::One));
+        assert_eq!(disc.world_x, 170);
+    }
+
+    /// discr-217: the $a722 block is gated off in every trace we have, so
+    /// step() must leave vel_x alone however far the aim point is. The
+    /// fixture's first eleven frames are the witness: aim 98, disc falling
+    /// from 21, vel_x pinned at -2.
+    #[test]
+    fn step_does_not_steer() {
+        // $6ca2 = 117 -> aim 98, well above the disc the whole way down.
+        let players = players_at(117, 8);
+        assert_eq!(aim_x(&players, PlayerId::One), 98);
+
+        let mut disc = DiscSlot {
+            vel_x: -2,
+            ..flying(21, 81)
+        };
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        let mut events = Vec::new();
+
+        for expected_x in [19, 17, 15, 13, 11, 9, 7, 5, 3, 1] {
+            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            assert_eq!((disc.world_x, disc.vel_x), (expected_x, -2), "{disc:?}");
+        }
+    }
+
+    /// tests/fixtures/golden.ndjson frames 10 -> 12: world_x 1 -> 0 -> 2 with
+    /// vel_x -2 -> +2. The step to 0 is only -1, so the position clamps, and
+    /// the velocity flips on the same frame.
+    ///
+    /// MODELLED, not mirrored: the trigger is inferred from the fixture; the
+    /// ST guard $a600 bpl on d2 is undecoded -- see bd discr-217.
+    #[test]
+    fn world_x_clamps_at_zero_and_flips_the_velocity() {
+        let players = players_at(117, 8);
+        let mut disc = DiscSlot {
+            vel_x: -2,
+            ..flying(1, 81)
+        };
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        let mut events = Vec::new();
+
+        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        assert_eq!((disc.world_x, disc.vel_x), (0, 2), "clamped, then negated");
+        // dir_kind rides through untouched: the fixture holds flag = 1.
+        assert_eq!(disc.dir_kind, SERVE_DIR_KIND);
+
+        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        assert_eq!((disc.world_x, disc.vel_x), (2, 2), "and away it goes");
+    }
+
+    /// The floor has no mirror: nothing in the evidence bounds world_x from
+    /// above, so step() lets it run past the fixture's turnaround values.
+    #[test]
+    fn there_is_no_ceiling() {
+        let players = players_at(117, 8);
+        let mut disc = DiscSlot {
+            vel_x: 2,
+            ..flying(110, 81)
+        };
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        let mut events = Vec::new();
+
+        for _ in 0..8 {
+            step(&mut disc, 0, &players, &mut tiles, &mut events);
+        }
+        assert_eq!((disc.world_x, disc.vel_x), (126, 2));
     }
 
     /// The other half of the invariant: z frozen => x frozen (17/17).
@@ -297,24 +418,22 @@ mod tests {
         assert_eq!(disc, before);
     }
 
-    /// $a722-$a860: cmp.w #$fffe / cmp.w #$0002.
+    /// $a722-$a860: cmp.w #$fffe / cmp.w #$0002. Iterating the rule from any
+    /// start converges inside the clamp and stays there.
     #[test]
     fn steered_velocity_stays_within_the_clamp() {
-        let players = players_at(152, 8);
-        let mut tiles = [Tile::default(); TILE_CELLS];
-        let mut events = Vec::new();
-
-        for (start, aim) in [(0_i16, PlayerId::One), (153, PlayerId::Two)] {
-            let mut disc = DiscSlot {
-                aim,
-                ..flying(start, aim_y())
-            };
+        for (mut pos, target) in [(0_i16, 133_i16), (153, -11)] {
+            let mut vel = 0;
             for _ in 0..96 {
-                step(&mut disc, 0, &players, &mut tiles, &mut events);
-                assert!((-VEL_CLAMP..=VEL_CLAMP).contains(&disc.vel_x), "{disc:?}");
-                // dumps/disc_trace: vel_y is 0 on all 84 frames.
-                assert_eq!(disc.vel_y, 0, "{disc:?}");
+                vel = steer(vel, pos, target);
+                assert!((-VEL_CLAMP..=VEL_CLAMP).contains(&vel), "{vel} @ {pos}");
+                pos += vel;
             }
+            // It arrives, then hunts within a step or two of the aim point:
+            // the +/-1 nudge and the at-target decay cannot settle exactly
+            // when the approach is at full speed. That hunt is the rule's,
+            // not ours.
+            assert!((pos - target).abs() <= VEL_CLAMP, "{pos} vs {target}");
         }
     }
 
