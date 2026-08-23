@@ -121,11 +121,20 @@ static int ikbd_head = 0, ikbd_tail = 0;
 
 /* Packets do not arrive on the frame boundary.  The IKBD runs at 7812.5 baud
  * and is not synchronised to the VBL, so a byte lands somewhere inside the
- * frame -- in practice after the VBL handler's movement code has already
- * sampled $6c58.  Delivering at the boundary instead made the player react a
- * frame early ($6cae = $14 while Hatari still had 0), even though $6c58
- * itself matched.  Staged bytes are released partway into the frame; the
- * offset is a modelling choice, tunable with --ikbd-delay. */
+ * frame.  MEASURED (see reports/exploration-report.md):
+ *
+ *   - ACIA handler entry ($8370) is UNIFORM over the frame: 24 samples spread
+ *     evenly from FrameCycles 15960 to 153184.
+ *   - The game consumes $6c58 at ~23200 cycles (scanline ~45), found by
+ *     bisecting --ikbd-delay against the Hatari reference: agreement steps
+ *     from 61 frames to 364 between 23125 and 23312.
+ *
+ * So any delay above ~23.3k reproduces the common case, and the plateau runs
+ * to at least 159000.  Half a frame sits in the middle of it.  The residual
+ * is real and unmodellable determinstically: ~14.5% of true arrivals land
+ * before consumption and are acted on in the SAME frame, a per-packet coin
+ * flip.  A fixed delay trades that for reproducibility on purpose. */
+#define IKBD_DELAY_DEFAULT 80128        /* half a PAL frame, inside the plateau */
 static uint8_t stage_q[64];
 static int stage_n = 0;
 static double stage_at = -1;
@@ -430,7 +439,7 @@ static void apply_events(long frame)
             ap_last_joy = joy;
         }
         stage_at = stage_n ? cycles_now + (ikbd_delay >= 0 ? ikbd_delay
-                                           : frame_cycles / 2) : -1;
+                                           : IKBD_DELAY_DEFAULT) : -1;
         return;
     }
     for (i = 0; i < nev; i++) {
@@ -443,7 +452,7 @@ static void apply_events(long frame)
         }
     }
     stage_at = stage_n ? cycles_now + (ikbd_delay >= 0 ? ikbd_delay
-                                       : frame_cycles / 2) : -1;
+                                       : IKBD_DELAY_DEFAULT) : -1;
 }
 
 /* ---- state emission ---------------------------------------------------- */

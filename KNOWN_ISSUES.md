@@ -225,14 +225,29 @@ machine -- `$FF` re-points vector `$118` to `$83b2`, and the *next* interrupt
 reads the joystick state byte -- so clearing on acknowledge means the second
 interrupt never happens and `$6c58` never changes.
 
-**Packets do not arrive on the frame boundary.** The IKBD is a 7812.5-baud
-serial device with no relationship to the VBL, so a byte lands somewhere
-inside the frame, in practice after the VBL handler's movement code has
-already sampled `$6c58`. Queuing packets at the frame boundary makes the
-player react one frame early -- `$6cae` = `$14` (walking) while the reference
-still shows `0` -- even though `$6c58` itself matches, which is a confusing
-way for the bug to present. disc-oracle stages bytes and releases them
-partway into the frame (`--ikbd-delay`, default half a frame).
+**Packets do not arrive on the frame boundary, and the offset is now
+measured.** The IKBD is a 7812.5-baud serial device with no relationship to
+the VBL. Two measurements:
+
+* ACIA handler entry (`$8370`) is **uniform across the frame** -- 24 samples
+  spread evenly from FrameCycles 15960 to 153184, deciles at roughly even
+  spacing.
+* The game **consumes `$6c58` at ~23200 cycles (scanline ~45)**. Found by
+  bisecting `--ikbd-delay` against the Hatari reference: frames of exact
+  agreement step from 61 to 364 between 23125 and 23312, and the high plateau
+  extends to at least 159000.
+
+Queuing at the frame boundary therefore makes the player react one frame early
+-- `$6cae` = `$14` (walking) while the reference still shows `0` -- even though
+`$6c58` itself matches, which is a confusing way for the bug to present. The
+default delay is half a frame (80128), in the middle of the measured plateau.
+
+**The residual is a genuine nondeterminism, not a modelling gap.** Because
+arrivals are uniform and consumption is at 14.5% into the frame, about **one
+real packet in seven lands before consumption and is acted on in the same
+frame**. No fixed delay reproduces that per-packet coin flip; disc-oracle
+trades it for reproducibility deliberately. It is one more reason input-heavy
+programmes desync sooner than idle ones.
 
 Neither of these is visible with an idle input script. Both appeared on the
 first frame of the first scripted joystick run.
