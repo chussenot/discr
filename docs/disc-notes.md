@@ -215,6 +215,35 @@ The at-target decay is the whole of the damping. There is **no** gap limiting
 and no proportional term: the velocity is a bounded integer nudged one step
 per frame, and it unwinds only once the disc is level with the aim point.
 
+## The steering block is GATED OFF in all the evidence we have (Part 9)
+
+The rule at `$a722` is known exactly (above), but it does not run. In
+`tests/fixtures/golden.ndjson` the aim point is `$6ca2 - $13` = 98 and disc 0
+starts at `world_x` 21 and falls:
+
+```
+frame   0   1   2   3   4   5   6   7   8   9  10  11  12
+wx     21  19  17  15  13  11   9   7   5   3   1   0   2
+vel_x  -2  -2  -2  -2  -2  -2  -2  -2  -2  -2  -2  +2  +2
+```
+
+Every one of those frames has aim (98) > pos, so the rule would have
+incremented `vel_x` each time. It holds at -2 for eleven frames. **The block is
+gated by something undecoded** (bd discr-217) -- exactly like the vertical block
+below, which never fired either.
+
+What the trace DOES show, and what a core should model:
+
+* `world_x += vel_x` each frame;
+* a **floor at 0**: frame 10 -> 11 moves 1 -> 0, a step of -1 with `vel_x` = -2,
+  so the position is clamped rather than allowed past 0;
+* the velocity **sign-flips on hitting that floor**, -2 -> +2, which is the
+  `neg.w` at `$a606`.
+
+The `neg.w` itself is guarded by `$a600 bpl` on `d2`, whose meaning is not
+decoded, so the *trigger* is inferred from the coincidence with the floor and
+should be labelled as modelled, not mirrored.
+
 ## vel_y is inert in all the evidence we have (Part 9)
 
 Do not model vertical motion as `world_y += vel_y`. In `dumps/disc_trace`
