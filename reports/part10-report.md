@@ -158,13 +158,21 @@ scoreboard is measuring.
 
 Stated rather than glossed, in the order a next phase should probably take them.
 
-* **The AI's rules are not decoded, only its architecture.** The table at
-  `$efa8` has 20 entries and there are 11 distinct test routines and 7 action
-  routines behind them, plus a sensor pass at `$cea6` and whatever `$6dac` and
-  `$6dfc` carry. `disc-core` has no `Controller`, and the brief's deliverable —
-  a Rust controller matching observed `$6da1` traces divergence-first — was not
-  built. What exists instead is the trace column (`ai_6da1`) that such a
-  comparison would need, and the certainty that `$6da1` is the whole channel.
+* **The AI's mechanism and its two reflexes are decoded; its other 18 rules are
+  not.** What `$6dac`/`$6dfc` carry is now known — a rule's action compiles a
+  two-parameter *plan* into that buffer and its identity routine executes the
+  plan once a frame and decides when the behaviour is over, which is why
+  priority behaves as a latch. Entry 0 (priority 50, unconditional) fires when
+  the floor cell player 2 is standing on has reached zero hp and reads an escape
+  table at `$1556`/`$155e`; entry 1 (priority 30, unconditional) is a
+  three-dimensional box test around player 2 for a live disc, with every
+  threshold read from player 2's own record rather than from a literal. The
+  other 11 tests, 7 actions and the sensor pass `$cea6` are undecoded, and
+  `disc-core` has no `Controller` — so the brief's deliverable, a Rust
+  controller matching observed `$6da1` traces divergence-first, was **not
+  built**. What exists towards it is the trace column (`ai_6da1`), the certainty
+  that `$6da1` is the whole channel, and the mechanism a controller would have
+  to implement.
 * **The player state machine is untouched**, so the `golden.ndjson` gate is
   still 10 and discr-75o and discr-xfw are exactly where they were. This is the
   single biggest remaining blocker and it is the obvious next headline.
@@ -173,7 +181,11 @@ Stated rather than glossed, in the order a next phase should probably take them.
   highest-value fixture this project does not have — it would test five effects
   at once.
 * **The far grid at `$7596` has never been compared**, by `disc-core` or by
-  `scripts/oracle_diff.py`. The differ's memory window already covers it.
+  `scripts/oracle_diff.py`. The differ's memory window already covers it. And
+  the discovery that a bank is **16** cells means `TILE_CELLS = 17` compares one
+  word that is not a tile — filed as discr-ovl.5, not fixed inline, because it
+  moves the schema counts, the fixture column and the differ together. No result
+  depends on it: every tile event ever observed sits inside the bank.
 * **Two fed inputs.** `tracecheck` supplies `disc+$12` and `disc+$10` bit 7
   every tick, the way it supplies `$6c58`, and prints a header line saying so.
   Both are written by code outside `$a4ea` (discr-ovl.1, discr-0fm). A number

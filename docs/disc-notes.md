@@ -993,3 +993,121 @@ And in one-player mode the input that puts p2 into that state came from
 later a disc appears.** bd discr-fnl's "the dwell exit coincides with p2
 entering state 17" and bd discr-m4x's "what triggers a serve" were the same
 sentence read from two ends.
+
+## The AI's mechanism: rules write continuations, not button presses (Part 10)
+
+`$d2cc`'s loop (above) calls a rule's ACTION and then remembers the rule's
+IDENTITY routine in `$6da6`. Reading one action and two identities shows what
+those three pointers per table entry are actually for. **[code only]**
+
+The action does not touch `$6da1` at all. It writes a small record into a
+buffer, through the cursor `$6dfc` which `$d310` points at `$6dac`:
+
+```
+$e214  move.l #$e30a,(a1)+    ; a CONTINUATION routine
+$e21a  move.w d1,(a1)+        ; parameter 1  (the test left them in d1/d2)
+$e21c  move.w d2,(a1)+        ; parameter 2
+$e21e  clr.l (a1)+
+$e220  rts
+```
+
+and the identity routine, which `$d332` calls every frame while the behaviour is
+latched, re-runs that continuation until its precondition fails:
+
+```
+$e222  cmpa.l $6e00,a5 ; bne $e232   ; still the same disc record?
+$e228  tst.l (a1)      ; beq $e232   ; still a continuation to run?
+$e22c  movea.l (a1),a2 ; jsr (a2)    ; run it -- this is what writes $6da1
+$e230  rts
+$e232  clr.l $6da6                   ; otherwise DROP THE LATCH
+$e236  clr.w $6daa
+$e23a  move.l #$6dac,$6dfc           ; and reset the plan cursor
+```
+
+So the three pointers are **test / plan / keep-going**: a rule that fires
+compiles a two-parameter plan into `$6dac`, and its identity routine executes
+that plan once per frame and is also the thing that decides the behaviour is
+finished. That is why priority is a latch rather than a sort key -- the identity
+routine holds `$6daa` up until it releases it.
+
+`$6da6` in `rally_f100.seed` is `$e244`, the identity of table entry 5.
+
+### The two unconditional reflexes
+
+Entries 0 and 1 are the only ones with threshold 255, so they are the reflexes.
+Both open with the same four-way guard -- **do nothing at all while player 2 is
+in state `$15`, `$16`, `$1d` or `$1e`** (21, 22, 29, 30), which is presumably
+mid-animation:
+
+```
+$e0d8  cmpi.b #$15,$6d2e ; beq out      (and $16, $1d, $1e)
+```
+
+**Entry 0, priority 50: "the floor under me is gone."**
+
+```
+$e0f8  move.w $6d30,d1        ; player 2's grid_cell
+$e0fc  subi.w #$9,d1 ; bmi out          ; 9 is the floor bank's base
+$e102  lsl.w #3,d1
+$e104  lea $759e,a2           ; the FAR grid, one cell in
+$e108  move.w ($02,a2,d1),d1  ; that cell's hp word
+$e10c  andi.w #$7f,d1 ; bne out         ; only fires when hp (bonus bit masked
+                                        ; off) is ZERO
+$e114  ... $6d30 - 9 indexes byte tables at $1556 and $155e ...
+```
+
+It fires only when the cell player 2 is standing on has been reduced to zero,
+and then reads a per-cell table at `$1556`/`$155e` -- an escape route. Highest
+priority in the table, and unconditional: **not falling through the floor is the
+opponent's first concern.**
+
+**Entry 1, priority 30: "a disc is in my window -- play it."** It walks the 8
+disc records and applies four range tests to the first live one:
+
+```
+$e178  lea $6e3e,a2 ; moveq #7,d2
+$e17e  tst.b ($10,a2) ; bpl next         ; only a simulated slot
+$e186  d0 = $6d24 + $6d40               ; 99 + p2+$20  -> 80
+$e18e  d1 = disc+$02 (world_y)
+$e192  if d1 <  d0 -> next              ; too low
+$e198  d0 += $6d42                      ; + p2+$22 (17) -> 97
+$e19c  if d1 >  d0 -> next              ; too high
+$e1a2  d1 = disc+$04 (world_z)
+$e1a6  if d1 <= $6d26 -> next           ; not yet at player 2's depth
+$e1ae  d1 = $6d22 - 8 + $6d3c           ; an X window around player 2
+```
+
+So the reflex is a **box test in three dimensions**: `world_y` inside a band
+whose height and depth come from player 2's own record (`+$20`, `+$22`),
+`world_z` past player 2's own `world_y`, and `world_x` inside a window around
+player 2's `world_x`. Every threshold is a per-player field rather than a
+literal, which is exactly the shape a difficulty rank would use -- and remains a
+hypothesis, because only one set of values has been observed.
+
+The remaining 18 entries -- 11 distinct tests, 7 actions, the sensor pass
+`$cea6`, and the eight priority-10 test/action pairs that read like a coin flip
+between two responses to one situation -- are **not decoded**. bd discr-b6x
+stays open for them.
+
+## There are TWO 16-cell tile banks, not one 17-cell grid (Part 10)
+
+`$9f5e` reading `$7596` where `$a24c` reads `$7616` put a second grid on the
+board; entry 0 of the AI table pins down the layout. `$7596 + 16 * 8 = $7616`,
+so the two banks are adjacent and identically shaped, and the seed reads them as
+two plausible boards rather than one board and some noise.
+
+The indices that address them come out at:
+
+| who | index | where |
+|---|---|---|
+| a disc at the near wall (`$a24c`, `d5`) | 1..8 | `$7616` |
+| a player's `grid_cell` (`$f836`) | 9..16 | `$7616` for player 1 |
+| player 2's own cell (`$e104`) | `$6d30 - 9`, so 0..7 | `$759e`, i.e. `$7596` one cell in |
+
+**This makes `disc-core`'s `TILE_CELLS = 17` wrong.** A bank is 16 cells; the
+17th (`$7616 + 16*8` = `$7696`) is the first word past the end of the near bank
+and has never been part of the grid. It happens to read `(1,1)`, so nothing has
+ever noticed. Every tile event ever observed was at index 6, 7, 8 or 14, all
+inside the bank, so no result depends on it -- but the differ and the fixture
+both carry one word that is not a tile, and the far bank has never been carried
+at all. bd discr-ovl.3 and bd discr-ovl.5.
