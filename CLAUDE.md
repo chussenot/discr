@@ -76,7 +76,7 @@ _Add a brief overview of your project architecture_
 
 _Add your project-specific conventions here_
 
-<!-- pact:begin hash:8546f7af -->
+<!-- pact:begin hash:aa5591a1 -->
 ## pact coordination protocol
 
 Claude Code loads this file, not `AGENTS.md`, so the protocol is imported
