@@ -560,9 +560,17 @@ int main(int argc, char **argv)
     }
 
     hexdigest(ram, RAM_SIZE, digest);
-    {   /* the seed's own hash must match, or nothing downstream means anything */
-        const char *q = strstr(js, "\"sha256\"");
-        sha_ok = q && strstr(q, digest) && (strstr(q, digest) - q) < 24;
+    {   /* The seed's own hash must match, or nothing downstream means
+         * anything.  Check EVERY "sha256" key, not the first: a relayed seed
+         * records its parent's hash too, and matching only the first key made
+         * a perfectly good seed look corrupt. */
+        const char *q = js;
+        sha_ok = 0;
+        while ((q = strstr(q, "\"sha256\"")) != NULL) {
+            const char *d = strstr(q, digest);
+            if (d && d - q < 24) { sha_ok = 1; break; }
+            q += 8;
+        }
         if (!sha_ok) {
             fprintf(stderr, "seed sha256 mismatch: image hashes to %s\n", digest);
             return 2;

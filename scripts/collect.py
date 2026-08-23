@@ -554,6 +554,22 @@ class Hatari:
             raise RuntimeError("cpureg is missing %s in %r" % (missing, out))
         return regs
 
+    def run_to_counter(self, target, timeout=60):
+        """Advance until the game's own $6ab4 reaches `target`.
+
+        Counter-addressed, not wall-clock: the frame a seed is minted at has to
+        be the frame the differ validated, and wall time cannot promise that.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            cur = self.peek_word(0x6ab4)
+            if cur is None:
+                raise RuntimeError("cannot read $6ab4")
+            if cur >= target:
+                return cur
+            time.sleep(min(0.4, max(0.005, (target - cur) * 0.02 * 0.8)))
+        raise Timeout("$6ab4 never reached %d" % target)
+
     def seed(self, path, lo=0x0, hi=0x100000, at_pc=None):
         """Capture a frame-boundary seed for the oracle.
 
@@ -640,8 +656,13 @@ class Hatari:
         cnt = None
         if lo <= 0x6ab4 and 0x6ab6 <= hi:
             cnt = (blob[0x6ab4 - lo] << 8) | blob[0x6ab5 - lo]
+        # Record the decoded joystick byte: a seed frozen mid-press is a
+        # legitimate machine state but a trap for any consumer replaying a
+        # different input script from it.
+        joy = blob[0x6c58 - lo] if lo <= 0x6c58 < hi else None
         meta = {"ram": os.path.basename(path), "lo": lo, "hi": hi,
                 "sha256": digest, "registers": regs, "mfp": hw, "pc": pc,
+                "joystick_6c58": joy,
                 "vbl_counter_6ab4": cnt,
                 "note": "captured by a :file action at PC == $%x, before that "
                         "instruction executed" % pc}
