@@ -229,6 +229,32 @@ during the dwell. The one-step `vel_x` decay on the frame the dwell begins
 Note the racked disc of the earlier notes sits at world `(140, 53)` -- the same
 depth this cycle turns at. The rack is the far end of the run.
 
+## The dwell exit IS a serve (Part 9) -- two unknowns collapse into one
+
+Watching `$6e48` (disc 0's `dir_kind`) in Hatari over 180 in-match frames gives
+three writers, **twice each**, and they map one-for-one onto the three turn
+events of the flight cycle:
+
+| PC | instruction | fires | which turn |
+|---|---|---|---|
+| `$a9b8` | after `$a9b4 move.l d2,($0008,a1)` in the spawn routine `$a9a0` | 2 | the **dwell exit** |
+| `$a61e` | after `$a618 move.w #$0001,($000a,a5)` | 2 | the near-bound turn (`wz` 0) |
+| `$a60a` | after `$a606 neg.w ($000a,a5)` | 2 | the `world_x` floor flip |
+
+The dwell exit is not a sign flip -- `dir_kind` goes `+1` to `-3`, and `neg.w`
+of `+1` is `-1`, so it never could be. It is the **spawn routine rewriting the
+whole record**, which also explains the rest of that frame: `world_x` jumps
+45 -> 48 with `vel_x` dropping to 0, which is a rewrite, not an integration.
+
+**So "what ends the dwell" and "what triggers a serve" are the same question.**
+The disc is not turning round at the far end; it is being served again from
+there, which is consistent with the rack sitting at world `(140, 53)` -- the
+far end of the run. bd discr-fnl folds into bd discr-m4x: find `$a9a0`'s
+caller and both are answered.
+
+The n=2 correlation with player 2 entering `state_index` 17 now reads as the
+opponent *playing* the disc, which is what a serve is.
+
 ## The tile type word: gate polarity confirmed, second writer found (Part 9)
 
 The walkability gate polarity is settled by `$f634`-`$f64e`:
