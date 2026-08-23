@@ -1,0 +1,15 @@
+[package]
+name = "disc-core"
+description = "Deterministic integer-only re-implementation of the Disc (Loriciel, 1990) game rules."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Serialization of the public state types, for the tracecheck tool only.
+# disc-core has no non-optional dependencies.
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { workspace = true, optional = true }

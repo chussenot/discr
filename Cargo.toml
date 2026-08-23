@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/disc-core", "crates/disc-tools", "crates/disc-app"]
+# disc-app pulls macroquad, whose system deps may be missing on a build box.
+# Keeping it out of default-members means `make core-check` can never break on it.
+default-members = ["crates/disc-core", "crates/disc-tools"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+disc-core = { path = "crates/disc-core" }
+serde = { version = "1", default-features = false, features = ["derive"] }

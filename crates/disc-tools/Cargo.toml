@@ -1,0 +1,9 @@
+[package]
+name = "disc-tools"
+description = "Placeholder. Trace tooling (tracecheck) lands under bead discr-3g6."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+disc-core = { workspace = true, features = ["serde"] }

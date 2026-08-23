@@ -1,0 +1,9 @@
+[package]
+name = "disc-app"
+description = "Placeholder. The playable front end lands under bead discr-bih."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+disc-core = { workspace = true }
