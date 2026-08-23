@@ -549,3 +549,441 @@ $a9a0   disc spawn/serve (stores the record, bumps $6d8a)
 $a34c   tile damage store; $a354 destroys the cell
 $a71a   disc steering, homes on a player's coordinates
 ```
+
+## How Part 10 was read: Ghidra headless over a RAM image
+
+Everything in the Part 10 sections below came out of Ghidra 12.1.3 running
+headless over `seeds/rally_f100.seed` — the 1 MB RAM image of a live match —
+loaded as a raw `68000:BE:32` binary at address 0 and seeded with the entry
+points this file already knew. `scripts/ghidra/` has the harness; three
+commands do the work:
+
+```
+scripts/ghidra/import.sh              # one-off: import + analyse (about 90 s)
+scripts/ghidra/q.sh xref 6c59         # every reference to an address
+scripts/ghidra/q.sh scan a7d8         # every instruction with that operand
+scripts/ghidra/q.sh dis a4ea 60       # 60 instructions from there
+```
+
+Seeding 70 entry points was enough for auto-analysis to reach the whole game
+loop by following calls. `xref` and `scan` differ in an important way: `xref`
+uses Ghidra's reference model, `scan` walks every disassembled instruction and
+matches operands literally, so it finds `move.l #$a7d8,(a5+$12)` — an address
+used as *data* — which the reference model files elsewhere.
+
+**Two rules were kept.** A static read is a hypothesis until a trace shows it,
+so each finding below is tagged either **[code+trace]** (the oracle run named
+in the section confirms it) or **[code only]** (the instruction is there, no
+trace reaches it yet). And retractions are written down rather than edited out.
+
+The oracle grew columns for the fields this phase found — `vy`, `dk` (the
+signed `+$0a`), `act`, `own`, `hook`, `dmg` per disc, and `joy_6c59`,
+`ai_6da1`, `mode_6da0`, `bonus_6d9a` per frame. The reference run cited below
+is 240 frames from `seeds/rally_f100.seed`, whose first 116 frames are inside
+the window where that seed was verified against Hatari.
+
+## The control-mode dispatcher: where player 2's input comes from (Part 10)
+
+`$10eac` — immediately after the state jump table — chooses who drives whom.
+**[code+trace]**
+
+```
+$10eac  tst.b $6da0            ; != 0 -> ONE PLAYER
+$10eb0  beq.b $10ed4
+$10eb2  tst.b $6cab ; bpl      ; player 1 active?  (bit 7)
+$10eb8  lea $6c58,a0 ; bsr $f104      ; p1 = human on joystick 0
+$10ec0  tst.b $6d2b ; bpl      ; player 2 active?
+$10ec6  bsr $d2cc                     ; RUN THE AI
+$10eca  lea $6da1,a0 ; bsr $abb2      ; p2 = the byte the AI just wrote
+$10ed2  rts
+
+$10ed4  tst.b $6c97 ; bne $10ef8      ; two players, joysticks swapped?
+$10eda  lea $6c58,a0 ; bsr $f104      ; p1 joystick 0
+$10ee8  lea $6c59,a0 ; bsr $abb2      ; p2 joystick 1
+$10ef8  lea $6c59,a0 ; bsr $f104      ; swapped: p1 joystick 1
+$10f0c  lea $6c58,a0 ; bsr $abb2      ;          p2 joystick 0
+```
+
+So:
+
+* **`$6da0`** selects one-player mode. It is `$ff` in `rally_f100.seed`.
+* **`$6c97`** swaps the two joysticks in two-player mode.
+* **`$6cab` (p1+$0b) and `$6d2b` (p2+$0b)** gate control per player, tested
+  `tst.b` + `bpl` — **bit 7 set means "may act"**. They are counters, not
+  flags: `$10aba addq.b #3,$6cab` (state 23's handler) and `$12d36 subq.b
+  #1,$6cab`, mirrored for p2 at `$c3b2`/`$14078`. Read them as a recovery
+  timer whose sign bit is the lockout.
+* **`$f104` is player 1's control routine and `$abb2` is player 2's.** They are
+  different code, not one routine parameterised by player.
+* **`$6da1` is the byte the AI synthesises, and it is fed to `$abb2` at exactly
+  the position a human joystick byte occupies.** So the AI has no privileged
+  channel: it presses the same five bits a person does.
+
+The 240-frame reference run confirms it end to end: `mode_6da0` is 255 on every
+frame, **`joy_6c59` is 0 on every frame** — player 2's real joystick byte is
+never written in one-player mode — and `ai_6da1` takes ten distinct values,
+all of them joystick bit patterns:
+
+```
+0    2 (down)   4 (left)   5 (up|left)   6 (down|left)   8 (right)
+129 (fire|up)   133 (fire|up|left)   136 (fire|right)   137 (fire|up|right)
+```
+
+That answers the architecture half of bd discr-b6x: **whatever writes `$6da1`
+IS the opponent, and it is `$d2cc`.**
+
+## The AI is a priority rule table with a random gate (Part 10)
+
+`$d2cc`, in full. **[code+trace]**
+
+```
+$d2cc  lea $6da1,a0 ; clr.b (a0)      ; start from "no buttons"
+$d2d2  bsr $cea6                      ; sensor pass (not yet decoded)
+$d2d6  movea.l $6da2,a6               ; a6 = the rule table
+$d2da  tst.w (a6) ; beq $d324         ; word 0 terminates
+$d2de  clr.w d6 ; clr.w d2
+$d2e2  move.b (a6)+,d6                ; priority
+$d2e4  move.b (a6)+,d2                ; random threshold
+$d2e6  movea.l (a6)+,a2               ; TEST   routine
+$d2e8  movea.l (a6)+,a3               ; ACTION routine
+$d2ea  movea.l (a6)+,a4               ; BEHAVIOUR identity / continuation
+$d2ec  cmpa.l $6da6,a4  ; beq skip    ; already doing this -> skip
+$d2f2  cmp.w  $6daa,d6  ; ble skip    ; priority <= current -> skip
+$d2fa  move.b $6c5d,d0
+$d2fe  add.b  $6ab5,d0                ; += low byte of the frame counter
+$d302  move.b d0,$6c5d                ; the PRNG is one accumulating byte
+$d306  cmp.w  d2,d0     ; bgt skip    ; random > threshold -> skip
+$d30a  jsr (a2)                       ; TEST; d0 == 0 means "fires"
+$d30c  tst.w d0 ; bne skip
+$d310  lea $6dac,a1 ; move.l a1,$6dfc
+$d318  jsr (a3)                       ; ACTION -- writes bits into $6da1
+$d31a  move.l a4,$6da6                ; remember the behaviour
+$d31e  move.w d6,$6daa                ; and its priority
+       bra $d2da                      ; next entry
+$d324  tst.l $6da6 ; beq rts
+$d32a  movea.l $6dfc,a1 ; movea.l $6da6,a2 ; jsr (a2)   ; else CONTINUE
+$d334  rts
+```
+
+Each table entry is **14 bytes**: `byte priority, byte threshold, long test,
+long action, long identity`. A word of 0 ends the table. `$6da2` holds the
+table base — nothing in the disassembled image writes it, so the initialiser
+that does has not been found; in `rally_f100.seed` it is **`$efa8`**, and the
+table there has **20 entries**:
+
+```
+ #  entry     prio thresh  test     action   identity
+ 0  $efa8      50   255    $e0d8    $e214    $e290
+ 1  $efb6      30   255    $e158    $e214    $e290
+ 2  $efc4      20   200    $d4ea    $d6a2    $e222
+ 3  $efd2      20   150    $d554    $d672    $e222
+ 4  $efe0      10   100    $d5fe    $d672    $e222
+ 5  $efee      12   230    $d6b4    $d6da    $e244
+ 6  $effc      10    90    $dd68    $deea    $e274
+ 7  $f00a      10    90    $dd68    $df58    $e274
+ 8  $f018      10    90    $de8e    $deea    $e274
+ 9  $f026      10    90    $de8e    $df58    $e274
+10  $f034      10    90    $de12    $deea    $e274
+11  $f042      10    90    $de12    $df58    $e274
+12  $f050      10    90    $ddd4    $deea    $e274
+13  $f05e      10    90    $ddd4    $df58    $e274
+14  $f06c      10    90    $ddc4    $deea    $e274
+15  $f07a      10    90    $ddc4    $df58    $e274
+16  $f088      10    90    $da84    $deea    $e274
+17  $f096      10   100    $da84    $df58    $e274
+18  $f0a4       9    60    $da04    $df1c    $e274
+19  $f0b2       8    50    $dff6    $e04a    $e290
+20  $f0c0      terminator
+```
+
+Structural readings that follow directly:
+
+* **Priority is a latch, not a sort key.** `$6daa` holds the priority of the
+  behaviour currently running and a rule only fires if it *beats* that number.
+  So a committed behaviour cannot be interrupted by an equal or lower one, and
+  the four routines that `clr.l $6da6` / `clr.w $6daa` (`$e236`, `$e266`,
+  `$e282`, `$e29e` — the identity routines themselves) are how a behaviour
+  releases the latch when it is finished.
+* **The threshold is a per-rule reaction probability out of 255.** Entries 0
+  and 1 (priorities 50 and 30) are 255 — unconditional, so they are the
+  reflexes. The eight pairs at priority 10 are 90/255 ≈ 35%, and the two
+  lowest are 60 and 50. That is where "the AI gets tougher" most plausibly
+  lives, and it is a table in RAM, so a per-rank table is exactly the shape the
+  code would take. **Not yet demonstrated: only one table has been seen.**
+* **The PRNG is `$6c5d += $6ab5` — the accumulating low byte of the frame
+  counter.** It is shared: `$d07a`, `$da0e` and `$df8c` advance the same byte.
+  So the AI's randomness is a deterministic function of frame history, which is
+  why the oracle reproduces it at all.
+* **Rules 6..17 are eight tests each paired with two alternative actions**
+  (`$deea` and `$df58`), same priority and same threshold, consecutive in the
+  table. The first to pass its random roll wins, so the pair is a coin flip
+  between two responses to the same situation.
+
+What is **not** decoded yet: the 11 distinct test routines, the 7 action
+routines, `$cea6`'s sensor pass, and what `$6dac`/`$6dfc` carry. bd discr-b6x
+stays open for those, retargeted from "find the AI" to "name each rule".
+
+## The disc update loop `$a4ea`, in full (Part 10)
+
+This is the routine `disc-core`'s `disc::step` mirrors, and reading it resolves
+five open beads at once. **[code+trace]**
+
+```
+$a4ea  lea $6e3e,a5 ; moveq #7,d3          ; 8 records, stride $42
+$a4f0  tst.b ($10,a5) ; beq next           ; +$10 == 0  -> slot is FREE
+       ... copies the sprite record through +$1a / +$3e ...
+$a534  tst.b ($10,a5) ; bpl next           ; +$10 bit 7 clear -> do not simulate
+$a53c  move.w (a5),d0                      ; d0 = world_x  (+$00)
+$a53e  move.w ($02,a5),d1                  ; d1 = world_y  (+$02)
+$a542  move.w ($04,a5),d2                  ; d2 = world_z  (+$04)
+$a546  tst.l ($12,a5) ; beq $a552
+$a54c  movea.l ($12,a5),a0 ; jsr (a0)      ; the per-disc HOOK
+$a552  add.w ($06,a5),d0                   ; world_x += vel_x
+$a556  add.w ($08,a5),d1                   ; world_y += vel_y
+$a55a  add.w ($0a,a5),d2                   ; world_z += dir_kind
+$a55e  tst.b ($11,a5)                      ; the OWNER byte
+       ... per-owner housekeeping on $6d8a/$6d0a ...
+$a58e  cmp.w #$9b,d0 ; ble $a5a6           ; x > 155
+$a594    clr.l ($12,a5) ; neg.w ($06,a5) ; d0 = $9b ; d4 = d2 ; a1 = $4f00
+$a5a6  tst.w d0 ; bpl $a5ba                ; x < 0
+$a5aa    clr.l ($12,a5) ; neg.w ($06,a5) ; d0 = 0   ; d4 = d2 ; a1 = $4f00
+$a5ba  cmp.w #$4f,d2 ; ble $a5fe           ; z > 79  -- the FAR wall
+$a5c0    clr.l ($12,a5) ; neg.w ($0a,a5) ; d2 = $4f ; d4 = d2 ; a1 = $4eb6
+$a5d0    tst.b ($11,a5)
+$a5d6      owner != 0: dir_kind := -1 ; bsr $9f5e      ; far tile grid
+$a5e2      owner == 0: if $6ca0.b != 1 -> st ($11,a5)
+                       $6d8a-- $6d8c-- $6d0c++ $6d0a++
+$a5fe  tst.w d2 ; bpl $a640                ; z < 0   -- the NEAR wall
+$a602    clr.l ($12,a5) ; neg.w ($0a,a5) ; d2 = 0   ; d4 = d2 ; a1 = $4f4a
+$a612    tst.b ($11,a5)
+$a618      owner == 0: dir_kind := +1 ; bsr $a24c      ; near tile grid
+$a624      owner != 0: if $6ca0.b != 1 -> clr.b ($11,a5)
+                       $6d0a-- $6d0c-- $6d8c++ $6d8a++
+$a640  tst.w ($08,a5)                      ; VEL_Y DECAYS TOWARD ZERO
+$a644  beq $a652
+$a646  bmi $a64e -> addq.w #1,($08,a5)
+$a648            -> subq.w #1,($08,a5)
+$a652  bsr $10fd8                          ; player 1's hit test
+$a656  bsr $c826                           ; player 2's hit test
+$a65a  bsr $9b3e
+$a65e  move.w d0,(a5) ; move.w d1,($02,a5) ; move.w d2,($04,a5)   ; write back
+$a668  ... perspective projection -> +$0c / +$0e ...
+$a6ba  tst.w d4 ; bmi done                 ; d4 >= 0 -> a bound was hit
+$a6be  bsr $aae8 ; ... play the sample at a1
+```
+
+### `disc+$10` is the active byte and `disc+$11` the owner — un-waive both
+
+`+$10` is tested twice: `beq` for "free" and `bpl` for "simulate", so it is a
+byte whose **bit 7 means live**. It reads `$ff` on both live slots and `0` on
+all six free ones across the whole reference run, and `$a9a2 tst.b ($10,a1)` in
+the slot-fill loop is the same test. `+$11` reads `0` on both live slots and is
+the byte `$a55e`, `$a5d0` and `$a612` branch on.
+
+So `discs[n].active` and `discs[n].aim` are **mirrored ST fields, not models**,
+and the "the ST encoding of an unused slot is unknown" note in
+`docs/state-schema.md` is wrong. That half of bd discr-m4x is closed.
+
+The owner polarity is *not* settled. At the far wall an owner of 0 becomes `$ff`
+and simultaneously `$6d8a--`, `$6d8c--`, `$6d0c++`, `$6d0a++`; at the near wall
+`$ff` becomes 0 with the four counters moving the other way. Which of the two
+values names which player is a guess until a trace shows a disc changing hands,
+and no trace does yet — 240 frames of `own` are all 0.
+
+### The bounds: `world_x` in 0..155, `world_z` in 0..79 — [code only]
+
+Four bounds, each with the same three-part response: **clear the hook, negate
+the velocity, clamp the coordinate, and set `d4` so a sound plays.** So the
+"floor at `world_x == 0` that sign-flips `vel_x`" that `disc-core` inferred from
+golden frames 10-12 is the real rule, and the **ceiling it deliberately did not
+invent is at `$9b` = 155** (bd discr-1q7). The z bounds are 0 and `$4f` = 79.
+
+`world_z` was observed running 0..54, not 0..79, so the upper z bound is a code
+read with no trace behind it. `world_x` reaches 151 in the seed, never 155.
+
+### RETRACTED: "vel_y is inert -- do not model `world_y += vel_y`"
+
+The Part 9 section above says a core that integrates `world_y` by `vel_y` is
+"modelling a rule the evidence does not show". **`$a556 add.w ($08,a5),d1` is
+that rule, and it is unconditional.** The observation behind the retracted claim
+was correct — `vel_y` is 0 at every sampling point — and the inference from it
+was wrong, for a reason the code makes obvious:
+
+**`vel_y` is decayed toward zero by 1 at `$a640`, *after* the integration and
+before the sample.** A single-frame impulse of +1 therefore moves `world_y` by 1
+and is back to 0 by the time the VBL handler is reached. It is structurally
+invisible at the sampling point.
+
+The reference run shows it directly. At frames 113-115 the hook `$a816` is
+installed on disc 0 and `world_y` goes 81 -> 82 -> 83 while `vy` samples 0 on
+every one of those frames:
+
+```
+frame  hook   wy  vy
+  113  a816   81   0
+  114  a816   82   0
+  115  a816   83   0
+  116  a816   83   0
+```
+
+So bd discr-tan's answer is `$a556`, `world_y += vel_y`, with the caveat that
+**what sets `vel_y` is the hook, and the hooks are not fully decoded** — the
+81->82->83 pattern is consistent with the hook writing +1 on three frames, and
+that specific claim is still an inference.
+
+### bd discr-217 answered: the steering "gate" is the hook pointer `disc+$12`
+
+`disc+$12` is a longword function pointer, called at `$a54c` before the
+integration and **cleared by every one of the four bounds** and by `$a276` in
+the tile-damage path. Three routines are ever installed in it, and `scan` finds
+every site:
+
+| installed | by | inside |
+|---|---|---|
+| `$a71a` (aims via `$6ca2`, player 1's X) | `$113e2` | `$10fd8`, **player 1's hit test** |
+| `$a7d8` (aims via `$6d22 - 4`) | `$cb70`, `$cbae` | `$c826`, **player 2's hit test** |
+| `$a816` (aims via `$6d22 - $13`) | `$cc1e` | `$c826`, player 2's hit test |
+
+That is the whole selector. The steering block is not gated by a flag: **it runs
+exactly while a hook is installed, a player's hit test installs it, and any wall
+clears it.** Which of `$a7d8` and `$a816` p2's test installs depends on where in
+`$c826`'s cascade of range checks the disc was caught — `$cb70` is the first
+`vel_x`-side branch, `$cc1e` a later one.
+
+The reference run shows `hook` taking `0`, `$a7d8` and `$a816` on disc 0 within
+120 frames, which is why the Part 9 retraction found `$a816` fitting one stretch
+and `$a7d8` another: **both are live in one round because each is installed by a
+different catch.**
+
+### bd discr-5w5 answered: the collision test is `world_z` crossing a wall
+
+There is no geometric disc-vs-tile test. The disc reaches a wall — `z < 0` or
+`z > 79` — and the wall routine decides which cell it struck from the disc's
+`(world_x, world_y)`:
+
+```
+$a24c  lea $7bfe,a0
+$a250  move.b ($04,a0,d0.w),d5      ; d5 = colTable[$7c02 + world_x]
+$a254  cmp.w #$46,d1 ; ble $a25c
+$a25a  addq.b #4,d5                 ; world_y > 70 -> the far row
+$a25c  ext.w d5 ; lsl.w #3,d5       ; x8 -- the tile stride
+$a260  lea $7616,a0                 ; THE NEAR GRID
+$a264  move.w ($02,a0,d5),d6        ; the cell's HP word
+```
+
+So `d5` is `colTable[$7c02 + world_x]`, plus 4 when `world_y > $46`, times 8.
+The same `$7bfe` table the player's `grid_cell` uses, read at offset +4 rather
+than +0 — and the row threshold is `$46` = 70, not the player code's 14,
+because a disc's `world_y` runs around 81 while a player's runs 18/25.
+
+**There are two tile grids.** `$9f5e` is `$a24c` instruction-for-instruction
+with two substitutions: `lea $7596,a0` instead of `$7616`, and `$6d1c` instead
+of `$6d9a`. So `$7596` is the far wall's grid and `$7616` the near one, and each
+player has their own bonus-code word. `disc-core` and the differ have only ever
+looked at `$7616`. **[code only]** — no trace has covered `$7596`.
+
+## `$6d9a` is the active bonus code, NOT a difficulty rank (Part 10)
+
+The standing hypothesis was that `$6d9a` tested against 1, 2 and 3 was the
+interview's three ranks. **It is refuted, and by one instruction:**
+
+```
+$8240  tst.w $6d9c ; beq $8250
+$8246  subq.w #1,$6d9c            ; a countdown, every VBL
+$824a  bne $8250
+$824c  clr.w $6d9a                ; timer expired -> the code goes away
+```
+
+A per-match rank is not decremented to zero by the VBL handler. `$6d9a` is a
+**timed effect currently in force**, and `$a24c` is where one is picked up:
+
+```
+$a292  andi.w #$80,d6 ; beq $a30c     ; bit 7 of the cell's HP word?
+$a298  move.w ($02,a0,d5),d6
+$a29c  andi.w #$0f,d6
+$a2a0  move.w d6,($02,a0,d5)          ; strip bit 7 -- the cell is spent
+$a2a8  bsr $9956
+$a2ac  move.w $6e3a,d0
+$a2b0  move.w d0,$6d9a                ; the code
+$a2b4  subq.w #1,d0 ; lsl.w #2,d0 ; lea $9aa2,a0
+$a2be  move.w (a0,d0),$6d9e           ; its payload
+$a2c4  move.w ($02,a0,d0),$6d9c       ; its duration in frames
+$a2ca  clr.w $6e3a ; clr.w $6e38
+```
+
+The table at `$9aa2`, four bytes per code, as it reads in the image:
+
+| code | `$6d9e` | `$6d9c` (frames) | what the code gates |
+|---|---|---|---|
+| 1 | 5 | 0 (no timer) | `$a314 cmpi.w #1` applies the disc's `+$16` damage a second time |
+| 2 | 0 | 500 (~10 s) | `$c09c` serves with `dir_kind` = -5 instead of `$6d8e` |
+| 3 | 3 | 0 (no timer) | `$a32e`'s second damage path; also read by `$d0a0`/`$d0ca`/`$d158` in the AI |
+| 4 | 0 | 1000 (~20 s) | `$c9b4`, `$c9c8` in player 2's hit test |
+| 5 | 0 | 1000 (~20 s) | `$cb56`, `$cb78`: the catch reach becomes a flat `$32` = 50 instead of `$6d32` |
+
+Codes 1 and 3 have **no** timer and instead put 5 and 3 into `$6d9e`, so they
+are consumable counts rather than durations — which is why four separate sites
+(`$a32a`, `$a340`, `$111a6`, `$111bc`) `clr.w $6d9a` after acting on it.
+
+This closes three beads at once and reframes a fourth:
+
+* **bd discr-z8m** — `$6d9a` is not a damage multiplier variable, it is the
+  bonus code, and doubling the damage is what code 1 happens to do.
+* **bd discr-dc0** — the "second writer that sets and clears bit 7 of a tile's
+  HP word" is this. **Bit 7 marks a cell as carrying a bonus**, and `$a29c
+  andi.w #$0f` is the clear, on pickup. The `(1,5) -> (1,133)` transition the
+  bead was filed against is a bonus being *placed*; the writer that places it
+  has not been found.
+* **bd discr-b4q** — "a second writer clears the tile type without zeroing hp"
+  is the same instruction family: `$a29c` rewrites the HP word without touching
+  the type, and `andi.w #$0f` on an HP of 1 with bit 7 set gives 1 back, so the
+  frame-114 `(1,1) -> (0,1)` needs the *type* writer, still unidentified.
+* **The interview's three claims** — tougher AI, tiles take more hits, more
+  discs — do not map onto `$6d9a`. Tiles taking more hits is code 1 and code 3;
+  more discs is `$6d8a`/`$6d8c`; a tougher AI would be a different rule table at
+  `$6da2`, whose writer has not been found. Recorded as three separate leads,
+  not one resolved rank.
+
+`bonus_6d9a` is 0 on all 240 frames of the reference run, so **every row of that
+table is [code only]**. A trace in which a disc strikes a bit-7 cell is now the
+highest-value fixture this project does not have.
+
+## bd discr-m4x closed: what triggers a serve (Part 10)
+
+`$c06e` has **zero** references — like `$a9a0` before it, it is not an entry
+point but a block reached by falling through. It sits inside `FUN_0000abb2`,
+**player 2's control routine**, which dispatches on `$6d2e` (p2's state index)
+through a table:
+
+```
+$abb2  movea.l $6d4a,a2
+$abb6  tst.b $6d2e ; bne $afb0
+...
+$afb0  move.b $6d2e,d0 ; ext.w ; lsl.w #2,d0
+$afb8  lea ($1732,pc),a1
+$afbc  movea.l (a1,d0.w),a1
+$afc0  jmp (a1)                     ; -> $c068 for one of the states
+```
+
+and the block itself gates on the animation cursor:
+
+```
+$c068  move.b #$0f,$6d29
+$c06e  cmpi.l #$4602,$6d5a          ; is p2's animation AT the release frame?
+$c076  bne.w $ac40                  ;   no -> just advance the animation
+$c07a  ... build the disc record from p2's position and input ...
+$c0c0  bsr.w $a972                  ; SERVE
+$c0c4  move.b #$11,$6d2e            ; p2 state := 17
+```
+
+So a serve is not triggered by a timer or by the disc: **player 2's control
+routine enters a throw state, the throw animation plays, and the disc is
+released on the single frame where `$6d5a` — the animation-sequence pointer —
+equals `$4602`.** `$a972` has 12 call sites, nine of them elsewhere in `$abb2`,
+so the same release happens from several throw states.
+
+And in one-player mode the input that puts p2 into that state came from
+`$6da1`, which is to say: **the AI presses fire, and five frames of animation
+later a disc appears.** bd discr-fnl's "the dwell exit coincides with p2
+entering state 17" and bd discr-m4x's "what triggers a serve" were the same
+sentence read from two ends.

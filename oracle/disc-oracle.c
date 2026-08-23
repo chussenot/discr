@@ -463,7 +463,13 @@ static void emit_frame(FILE *out, long frame)
     char h[65];
     int i;
     hexdigest(ram + STATE_LO, STATE_HI - STATE_LO, h);
-    fprintf(out, "{\"frame\":%ld,\"vbl_6ab4\":%u,\"joy_6c58\":%u", frame, rd16(0x6ab4), ram[0x6c58]);
+    /* $6c59 is player 2's joystick byte; $6da1 is the byte the one-player AI
+     * ($d2cc) synthesises in its place, and $6da0 selects between them
+     * ($10eac).  $6d9a is the active bonus code.  Part 10. */
+    fprintf(out, "{\"frame\":%ld,\"vbl_6ab4\":%u,\"joy_6c58\":%u"
+                 ",\"joy_6c59\":%u,\"ai_6da1\":%u,\"mode_6da0\":%u,\"bonus_6d9a\":%d",
+            frame, rd16(0x6ab4), ram[0x6c58],
+            ram[0x6c59], ram[0x6da1], ram[0x6da0], (int16_t)rd16(0x6d9a));
     fprintf(out, ",\"player\":[");
     for (i = 0; i < 2; i++) {
         unsigned b = 0x6ca0 + i * 0x80;
@@ -473,9 +479,20 @@ static void emit_frame(FILE *out, long frame)
     fprintf(out, "],\"disc\":[");
     for (i = 0; i < 8; i++) {
         unsigned b = 0x6e3e + i * 0x42;
-        fprintf(out, "%s{\"wx\":%d,\"wy\":%d,\"wz\":%d,\"vx\":%d,\"flag\":%u,\"sx\":%d,\"sy\":%d}",
+        /* "flag" is the UNSIGNED +$0a and predates Part 10; "dk" is the same
+         * word read signed, which is what it is.  +$08/$10/$11/$12/$16 were
+         * added once $a4ea was disassembled: vel_y is integrated at $a556,
+         * +$10 is the active byte tested at $a4f0, +$11 the owner tested at
+         * $a55e, +$12 the per-disc hook called at $a54c and cleared on every
+         * bounce, +$16 the damage subtracted at $a31c. */
+        fprintf(out, "%s{\"wx\":%d,\"wy\":%d,\"wz\":%d,\"vx\":%d,\"vy\":%d,\"flag\":%u"
+                     ",\"dk\":%d,\"act\":%u,\"own\":%u,\"hook\":%u,\"dmg\":%d"
+                     ",\"sx\":%d,\"sy\":%d}",
                 i ? "," : "", (int16_t)rd16(b), (int16_t)rd16(b + 2), (int16_t)rd16(b + 4),
-                (int16_t)rd16(b + 6), rd16(b + 0x0a), (int16_t)rd16(b + 0x0c), (int16_t)rd16(b + 0x0e));
+                (int16_t)rd16(b + 6), (int16_t)rd16(b + 8), rd16(b + 0x0a),
+                (int16_t)rd16(b + 0x0a), ram[b + 0x10], ram[b + 0x11],
+                (rd16(b + 0x12) << 16) | rd16(b + 0x14), (int16_t)rd16(b + 0x16),
+                (int16_t)rd16(b + 0x0c), (int16_t)rd16(b + 0x0e));
     }
     fprintf(out, "],\"grid\":[");
     for (i = 0; i < 17; i++) {
