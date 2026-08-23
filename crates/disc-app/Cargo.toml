@@ -1,9 +1,13 @@
 [package]
 name = "disc-app"
-description = "Placeholder. The playable front end lands under bead discr-bih."
+description = "Playable macroquad front end over disc-core. Rendering and input only; every game rule lives in disc-core."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 disc-core = { workspace = true }
+# The only dependency. Kept out of the workspace default-members (see the root
+# Cargo.toml) so its system deps -- libGL, libX11, libasound -- can never break
+# `make core-check`.
+macroquad = "0.4"
