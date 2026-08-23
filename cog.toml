@@ -1,13 +1,33 @@
+# cocogitto configuration.
+#
+# The Rust workspace under crates/ is versioned as a MONOREPO: each package
+# carries its own tag and changelog, and `cog bump --auto` moves only the ones
+# whose files actually changed. Everything outside crates/ -- oracle/,
+# scripts/, docs/, reports/ -- is reverse-engineering apparatus, not a
+# published artifact, and rides the global tag.
+
 from_latest_tag = false
-ignore_merge_commits = false
+
+# pact merges the agent branches with --no-ff and signs them `Pact-Agent`, so
+# the history carries commits like "Merge agent/disc into master" that are not
+# conventional and never will be. Skipping them keeps `cog check` honest about
+# the commits we actually author.
+ignore_merge_commits = true
 ignore_fixup_commits = true
+
 disable_changelog = false
 disable_bump_commit = false
+
+# Both, deliberately. The package tags (disc-core-v0.2.0) are what a consumer
+# of the crate wants; the global tag is what dates a snapshot of the whole
+# reverse-engineering effort, which is the thing this repository actually is.
 generate_mono_repository_global_tag = true
 generate_mono_repository_package_tags = true
+
 branch_whitelist = []
 skip_ci = "[skip ci]"
 skip_untracked = false
+
 pre_bump_hooks = []
 post_bump_hooks = []
 pre_package_bump_hooks = []
@@ -15,7 +35,14 @@ post_package_bump_hooks = []
 
 [git_hooks]
 
+# This project measures things and occasionally retracts them, and both
+# deserve to be first-class in a changelog whose subject is reverse
+# engineering. `measure` is already in the history (the IKBD delivery offset);
+# `retract` names the most valuable kind of commit here -- one that withdraws
+# an earlier claim on new evidence.
 [commit_types]
+measure = { changelog_title = "Measurements" }
+retract = { changelog_title = "Retractions and corrections" }
 
 [changelog]
 path = "CHANGELOG.md"
@@ -23,4 +50,23 @@ authors = []
 
 [bump_profiles]
 
-[packages]
+# --- packages -------------------------------------------------------------
+# `public_api` decides whether a breaking change in the package can drive the
+# GLOBAL major version. Only disc-core is a library that anything else builds
+# against; the other two are binaries whose interface is a command line and a
+# window, so their breakage is theirs alone.
+
+[packages.disc-core]
+path = "crates/disc-core"
+public_api = true
+changelog_path = "crates/disc-core/CHANGELOG.md"
+
+[packages.disc-tools]
+path = "crates/disc-tools"
+public_api = false
+changelog_path = "crates/disc-tools/CHANGELOG.md"
+
+[packages.disc-app]
+path = "crates/disc-app"
+public_api = false
+changelog_path = "crates/disc-app/CHANGELOG.md"

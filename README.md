@@ -28,6 +28,33 @@ each say where their number came from and when to raise it.
 
 ## What you need installed
 
+## Versioning
+
+The Rust workspace is a **cocogitto monorepo**: `crates/disc-core`,
+`crates/disc-tools` and `crates/disc-app` each carry their own tag and
+changelog, and `cog bump --auto` moves only the packages whose files changed.
+
+    mise run check-commits    # lint commit messages
+    mise run changelog        # preview, writes nothing
+    cog bump --auto           # per-package + global tags (yours to run)
+
+Only `disc-core` is `public_api = true`: it is the library the other two build
+against, so its breaking changes drive the global major. `disc-tools` and
+`disc-app` are binaries whose interface is a command line and a window, so
+their breakage is theirs alone.
+
+Everything outside `crates/` — `oracle/`, `scripts/`, `docs/`, `reports/` — is
+reverse-engineering apparatus rather than a published artifact, and rides the
+global tag.
+
+Two commit types are registered beyond the conventional set, because this
+project does both often enough to want them in a changelog: **`measure`** (a
+number established by experiment) and **`retract`** (an earlier claim withdrawn
+on new evidence).
+
+The repository's first three commits predate the convention, so the lint runs
+from `$CONVENTIONAL_SINCE` in `mise.toml` rather than ignoring a rule.
+
 **`mise run core-check` needs a Rust toolchain and nothing else.** No system
 libraries, no network, no emulator, no disk image — it runs from a clean clone
 because `tests/fixtures/golden.ndjson` is committed (with `git add -f`; the

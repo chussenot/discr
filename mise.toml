@@ -22,6 +22,11 @@ rust = "latest"
 TRACE_MIN_AGREE = "10"
 GOLDEN = "tests/fixtures/golden.ndjson"
 
+# The repository's first three commits predate conventional commits (`bd init`
+# is not one of them), so cog is pointed at the range after them rather than
+# being told to ignore a rule. Everything since is compliant.
+CONVENTIONAL_SINCE = "ec61cbb"
+
 [tasks.oracle]
 description = "Build disc-oracle (vendored Musashi; see oracle/README.md)"
 run = "make -C oracle"
@@ -53,3 +58,11 @@ run = "cargo fmt"
 [tasks.clean]
 description = "Clean the oracle build and the Rust target directory"
 run = ["make -C oracle clean", "cargo clean"]
+
+[tasks.check-commits]
+description = "Lint commit messages with cocogitto, from the first conventional commit"
+run = "cog check $CONVENTIONAL_SINCE..HEAD"
+
+[tasks.changelog]
+description = "Preview the changelog cog would generate (does not write)"
+run = "cog changelog $CONVENTIONAL_SINCE..HEAD"
