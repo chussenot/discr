@@ -3,8 +3,28 @@
 //! ST `$a4ea` is the update loop entry (`lea $6e3e,a5`): 8 records of stride
 //! `$42`. Per slot the ST *can* nudge `vel_x` by +/-1 toward the aimed player,
 //! clamped `[-2,+2]` (`$a722`), integrates `world_x` by `+$06` (`$6e44`) and
-//! advances `world_z`, flips `+$0a` with `neg.w` on turn-around (`$a606`), and
+//! advances `world_z` by `dir_kind`, flips `+$0a` on turn-around (`$a606`), and
 //! on a tile hit subtracts `+$16` from the struck cell's HP (`$a31c`).
+//!
+//! # The flight cycle
+//!
+//! `world_z` runs a four-phase cycle between [`Z_NEAR`] and [`Z_FAR`], read off
+//! `tests/fixtures/tile_damage.ndjson` (disc 0, twice over; disc 1 repeats the
+//! near turn at f208):
+//!
+//! ```text
+//! f0  ..34    dir_kind +1   z +1    wz 20 -> 54     outbound
+//! f35 ..51    dir_kind +1   z  0    wz 54           DWELL, whole record frozen
+//! f52 ..52    dir_kind -3   z -1    wz 53           far turn
+//! f53 ..69    dir_kind -3   z -3    wz 50 -> 2      return, three times faster
+//! f70 ..70    dir_kind +1   z -2    wz 0            near turn (clamped)
+//! f71 ..124   dir_kind +1   z +1    wz 1  -> 54     outbound again
+//! f125..151   dir_kind +1   z  0    wz 54           dwell again
+//! ```
+//!
+//! The magnitude of `dir_kind` *is* the per-frame z step and its sign is the
+//! direction of travel. [`step`] models the near turn (it is in the loop) but
+//! **not** what ends the dwell -- see [`Z_FAR`] and bd discr-0fm.
 //!
 //! "Can": the `$a71a`/`$a722` steering block is **gated off in every trace we
 //! have**, so [`step`] does not call [`steer`]. What [`step`] models instead --
@@ -77,6 +97,43 @@ pub const AIM_Y_OFFSET: i16 = 0x10;
 /// starts climbing.
 pub const SERVE_DIR_KIND: i16 = 1;
 
+/// `dir_kind` on the return leg: the disc comes back three times faster.
+///
+/// Observed on both discs of `tests/fixtures/tile_damage.ndjson` and in
+/// `golden.ndjson`. Note this is **not** `neg.w` of [`SERVE_DIR_KIND`]: the
+/// magnitude changes 1 -> 3 across the turn, so `$a606` alone does not account
+/// for the flip and something else writes the kind.
+/// `// UNKNOWN: see bd discr-5w5`.
+pub const RETURN_DIR_KIND: i16 = -3;
+
+/// The near end of the run, where the return leg turns outbound again.
+///
+/// `world_z` clamps here rather than overshooting: fixture f70 steps 2 -> 0
+/// under `dir_kind` -3 (a move of -2) and `dir_kind` becomes
+/// [`SERVE_DIR_KIND`]. Disc 1 does the same at f208, so the near turn is in
+/// the loop and [`step`] models it.
+pub const Z_NEAR: i16 = 0;
+
+/// The far end of the run, where the disc **dwells**.
+///
+/// While `world_z` is here and `dir_kind` is still outbound the entire record
+/// is static -- `world_x` included, even with a nonzero `vel_x`. That is the
+/// "freeze" of bd discr-0fm, and it is a phase of the cycle, not an anomaly.
+///
+/// **How long it lasts is not decoded**: 17 frames in the fixture's first
+/// cycle (f35-51) and 27 in its second (f125-151), so there is no constant to
+/// mirror. [`step`] therefore *enters* the dwell and never leaves it on its
+/// own: the disc stays frozen until something writes a negative `dir_kind`.
+/// `// UNKNOWN: see bd discr-0fm`.
+///
+/// The one lead, unmodelled and n=2: both exits coincide with the aimed
+/// player entering state 17 (f52, f152), which is also the frame slot 1 is
+/// served at f190 -- so state 17 looks like "the opponent plays the disc".
+/// Not enough to build on; see the report on bd discr-0fm.
+///
+/// Leaving the dwell costs one z step, not three (54 -> 53 at f52 and f152).
+pub const Z_FAR: i16 = 54;
+
 /// Disc `world_y` at round init.
 ///
 /// ST record layout: `disc+$02` is `$52` after `$aa50`. Offered as a default
@@ -143,25 +200,31 @@ pub fn steer(vel: i16, pos: i16, target: i16) -> i16 {
 
 /// Advance one disc slot by one frame. ST `$a4ea`, one iteration.
 ///
-/// Three things happen, and only these three:
+/// Four things happen, and only these four:
 ///
+/// * a **dwell** at [`Z_FAR`] -- while the disc is parked at the far end with
+///   an outbound `dir_kind` the whole record is static and this returns early.
+///   Nothing here ends it; see [`Z_FAR`] and bd discr-0fm;
 /// * `world_x += vel_x` -- the invariant the notes verified 47/48 frames while
 ///   `world_z` advances, with `world_x` frozen whenever `world_z` is (17/17);
 /// * a **floor at `world_x == 0`** -- golden frame 10 -> 11 steps 1 -> 0, a
 ///   move of -1 under `vel_x` = -2, so the position clamps rather than passing
-///   zero;
-/// * `vel_x` **sign-flips on that clamp**, -2 -> +2 on the same frame.
+///   zero -- and `vel_x` **sign-flips on that clamp**, -2 -> +2 on the same
+///   frame;
+/// * `world_z += dir_kind`, bounded by [`Z_NEAR`] and [`Z_FAR`], with the near
+///   bound clamping and turning the disc outbound.
 ///
 /// `// MODELLED, not mirrored: trigger inferred from the fixture; ST guard
 /// $a600 bpl undecoded -- see bd discr-217`. The `neg.w` at `$a606` is real;
 /// what reaches it is a `bpl` on `d2` whose meaning is not decoded, so the
 /// floor-to-flip coupling is an inference from the trace, not a transcription.
 ///
-/// There is deliberately **no ceiling**. The fixture's two upper turnarounds
-/// (`world_x` 45 and 113) are not clamps: both decay through +1 and 0 before
-/// reversing, and they sit at different values, so nothing in evidence
-/// supports a symmetric upper bound. The asymmetry is the evidence's, not a
-/// bug.
+/// There is deliberately **no ceiling** on `world_x`. What earlier read as
+/// "upper turnarounds at `world_x` 45 and 113" were the [`Z_FAR`] dwells: the
+/// disc is not turning there, it is parked, and `world_x` simply stops
+/// wherever it had got to -- which is why the two values differ. Nothing in
+/// evidence bounds `world_x` from above. The asymmetry with the floor is the
+/// evidence's, not a bug.
 ///
 /// [`steer`] is **not** called -- see the module docs and bd discr-217.
 ///
@@ -188,6 +251,15 @@ pub fn step(
     // every trace we have it is off -- calling it diverges on golden frame 1.
     // // UNKNOWN: see bd discr-217.
 
+    // The dwell at the far end: the WHOLE record is static, world_x included,
+    // even though vel_x is 1 throughout (fixture f35-51 and f125-151). Its
+    // duration is not decoded -- 17 frames then 27 -- so nothing here ends it
+    // and the disc waits for a negative dir_kind from outside.
+    // // UNKNOWN: see bd discr-0fm.
+    if disc.world_z >= Z_FAR && disc.dir_kind > 0 {
+        return;
+    }
+
     // $6e44: world X integrates by vel_x, with a floor at 0 that sign-flips
     // the velocity ($a606 neg.w).
     // MODELLED, not mirrored: trigger inferred from the fixture; ST guard
@@ -208,8 +280,23 @@ pub fn step(
     // vertical block never fired -- neither its gate nor world_y's writer is
     // decoded. // UNKNOWN: see bd discr-tan.
 
-    // disc+$04: world Z advances +1 per frame while in flight.
-    disc.world_z = disc.world_z.saturating_add(1);
+    // disc+$04: world Z advances by dir_kind -- the sign is the direction of
+    // travel, the magnitude is the step, so the return leg (-3) comes back
+    // three times faster than the outbound (+1) goes out.
+    match disc.world_z.saturating_add(disc.dir_kind) {
+        // The near bound clamps and turns the disc outbound: f70 steps 2 -> 0
+        // under dir_kind -3 and writes dir_kind +1; slot 1 does the same at
+        // f208. Both discs, so this one is mirrored.
+        next if next < Z_NEAR => {
+            disc.world_z = Z_NEAR;
+            disc.dir_kind = SERVE_DIR_KIND;
+        }
+        // Leaving the dwell costs one step, not three: 54 -> 53 on f52 and on
+        // f152. Mirrored -- why the far turn is short is not decoded.
+        // // UNKNOWN: see bd discr-0fm.
+        _ if disc.world_z >= Z_FAR && disc.dir_kind < 0 => disc.world_z = Z_FAR - 1,
+        next => disc.world_z = next,
+    }
 }
 
 /// Spawn a disc into a slot. ST `$a9a0`, with `$a618` writing `dir_kind = +1`.
@@ -327,13 +414,73 @@ mod tests {
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        for _ in 0..80 {
+        // Z_NEAR -> Z_FAR is the whole outbound leg; the 55th frame dwells.
+        for _ in 0..Z_FAR {
             let (prev_x, prev_z) = (disc.world_x, disc.world_z);
             step(&mut disc, 0, &players, &mut tiles, &mut events);
-            assert_eq!(disc.world_z, prev_z + 1, "z advances +1 per frame");
+            assert_eq!(disc.world_z, prev_z + 1, "z advances by dir_kind (+1)");
             assert_eq!(disc.world_x - prev_x, disc.vel_x);
         }
-        assert_eq!(disc.world_x, 170);
+        assert_eq!((disc.world_x, disc.world_z), (118, Z_FAR));
+    }
+
+    /// tile_damage.ndjson f34 -> f35 and f124 -> f125: on reaching Z_FAR with
+    /// an outbound dir_kind the entire record freezes -- world_x too, even
+    /// with vel_x = 1. Its duration is bd discr-0fm, so step() enters the
+    /// dwell and never leaves.
+    #[test]
+    fn the_far_end_is_a_dwell_and_the_whole_record_holds() {
+        let players = players_at(117, 63);
+        let mut disc = DiscSlot {
+            vel_x: 1,
+            world_z: Z_FAR - 1,
+            ..flying(44, 83)
+        };
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        let mut events = Vec::new();
+
+        // f33 -> f34: the last outbound frame still moves x.
+        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        assert_eq!((disc.world_x, disc.world_z), (45, Z_FAR));
+
+        // f34 -> f35 and every frame after it: nothing at all.
+        let dwelling = disc;
+        for _ in 0..64 {
+            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            assert_eq!(disc, dwelling, "the dwell holds the whole record");
+        }
+    }
+
+    /// tile_damage.ndjson f52 -> f71: given a negative dir_kind the disc
+    /// leaves the dwell by one step (54 -> 53), returns at -3 per frame, and
+    /// clamps at Z_NEAR while turning outbound again. Disc 1 repeats the near
+    /// turn at f208.
+    #[test]
+    fn the_return_leg_steps_three_and_the_near_bound_turns_it_outbound() {
+        let players = players_at(117, 57);
+        let mut disc = DiscSlot {
+            world_z: Z_FAR,
+            dir_kind: RETURN_DIR_KIND,
+            ..flying(48, 81)
+        };
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        let mut events = Vec::new();
+
+        // f52: the far turn is a single step, not three.
+        for expected_z in [
+            53, 50, 47, 44, 41, 38, 35, 32, 29, 26, 23, 20, 17, 14, 11, 8, 5, 2,
+        ] {
+            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            assert_eq!((disc.world_z, disc.dir_kind), (expected_z, RETURN_DIR_KIND));
+        }
+
+        // f70: 2 - 3 would be -1, so it clamps and flips outbound.
+        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
+
+        // f71: and away it goes, +1 at a time.
+        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        assert_eq!(disc.world_z, 1);
     }
 
     /// discr-217: the $a722 block is gated off in every trace we have, so
@@ -384,8 +531,10 @@ mod tests {
         assert_eq!((disc.world_x, disc.vel_x), (2, 2), "and away it goes");
     }
 
-    /// The floor has no mirror: nothing in the evidence bounds world_x from
-    /// above, so step() lets it run past the fixture's turnaround values.
+    /// The floor has no mirror. What looked like upper turnarounds at world_x
+    /// 45 and 113 were the Z_FAR dwells -- the disc parked, world_x stopped
+    /// where it was -- so nothing in the evidence bounds world_x from above
+    /// and step() lets it run past both values.
     #[test]
     fn there_is_no_ceiling() {
         let players = players_at(117, 8);
