@@ -148,6 +148,48 @@ pub struct Player {
     pub grid_cell: u16,
 }
 
+/// The width of one arena column in world-X units. ST `$7bfe` is 152 bytes of
+/// `1 + x / 40`, so the boundaries sit at 40, 80 and 120.
+pub const COLUMN_WIDTH: i16 = 40;
+
+/// How many bytes of `$7bfe` are the column table: 152, covering world X 0..151.
+///
+/// It matters because the disc reads the table at `x + 4` (`$a250`), so an
+/// `x` above 147 indexes past the end -- see [`crate::disc::disc_cell`].
+pub const COLUMN_TABLE_LEN: i16 = 152;
+
+/// Which steering routine is installed in a disc's `+$12` hook.
+///
+/// ST Part 10. `scan` over the analysed image finds every site that writes the
+/// field, and there are only three routines and one clear:
+///
+/// | value | ST | aim | installed by |
+/// |---|---|---|---|
+/// | [`SteerHook::None`] | `clr.l ($12,a5)` | -- | every bound, and `$a276` |
+/// | [`SteerHook::AtP1`] | `$a71a` | `$6ca2 - $13`, then `$a758`'s `$6ca4 - $10` | `$113e2`, in player 1's hit test `$10fd8` |
+/// | [`SteerHook::AtP2Wide`] | `$a7d8` | `$6d22 - $04`, **X only** -- it `rts`es at `$a814` | `$cb70` and `$cbae`, in player 2's hit test `$c826` |
+/// | [`SteerHook::AtP2Deep`] | `$a816` | `$6d22 - $13`, then falls through to `$a854`'s `$6d24 - $10` | `$cc1e`, same routine |
+///
+/// The one structural difference between the three is that `$a7d8` returns
+/// before the vertical block and the other two fall into it, which is why a
+/// disc under `$a7d8` holds its `world_y` and one under `$a816` climbs to 83.
+/// `tests/fixtures/golden.ndjson` frames 11-28 show exactly that: `$a7d8` from
+/// frame 11 with `world_y` pinned at 81, `$a816` from frame 22, and `world_y`
+/// 81 -> 82 -> 83 on frames 23-24.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SteerHook {
+    /// No hook: the disc is not steered this frame.
+    #[default]
+    None,
+    /// ST `$a71a` (+ `$a758`): home on player 1, both axes.
+    AtP1,
+    /// ST `$a7d8`: home on player 2 with the shallow X offset, X only.
+    AtP2Wide,
+    /// ST `$a816` (+ `$a854`): home on player 2 with the deep X offset, both axes.
+    AtP2Deep,
+}
+
 /// One of the 8 disc records.
 ///
 /// ST `$6e3e`, 8 records, stride `$42`.
@@ -158,18 +200,48 @@ pub struct Player {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiscSlot {
-    /// Whether this slot is in play. Modelled, not an ST field: `+$0a` is a
-    /// signed direction/kind word, not a live flag (Part 7), and the ST
-    /// encoding of an unused slot is not yet known. Up to 3 of the 8 records
-    /// were seen live at once.
-    pub active: bool,
-    /// Which player this disc is homing on.
+    /// Whether the ST simulates this slot. **ST `disc+$10`, bit 7** (Part 10).
     ///
-    /// Modelled, not an ST field: Part 8 records that there is no possession --
-    /// a disc is always in flight and always homing on a target player's
-    /// coordinates -- and the target is implied by which steering routine runs
-    /// (`$a71a` reads `$6ca2`, `$a7d8` reads `$6d22`).
+    /// `$a4f0 tst.b ($10,a5); beq` skips a *free* slot and `$a534 tst.b; bpl`
+    /// skips an occupied one whose bit 7 is clear, so `+$10` is a byte with
+    /// three regimes and this field is its bit 7:
+    ///
+    /// ```text
+    /// $ff  live -- integrate the record
+    /// 3..1 occupied but NOT simulated: the whole record freezes
+    /// 0    free -- the slot may be filled by the serve loop at $a9a2
+    /// ```
+    ///
+    /// The 1..3 regime is the "dwell"/"freeze" of bd discr-0fm: it is not a
+    /// `world_z` phenomenon at all. `tests/fixtures/golden.ndjson` shows disc 0
+    /// going `255 -> 2 -> 1 -> 0` at frames 124-126 with `world_z` stuck at 54,
+    /// and the record then sits untouched until a fresh serve overwrites it.
+    /// **What retires a disc -- what takes `+$10` off `$ff` -- is not decoded**,
+    /// so nothing in this crate ever clears this field. `// UNKNOWN: see bd
+    /// discr-0fm`.
+    pub active: bool,
+    /// Which player "has" this disc. **ST `disc+$11`** (Part 10).
+    ///
+    /// `$a55e`, `$a5d0` and `$a612` branch on this byte, and the wall handlers
+    /// flip it (`st ($11,a5)` at the far wall, `clr.b ($11,a5)` at the near
+    /// one) while moving four counters -- `$6d8a`, `$6d8c`, `$6d0a`, `$6d0c` --
+    /// in opposite directions. So the ST field is real and mirrored, not
+    /// modelled. **Which byte value names which player is not settled**: every
+    /// trace we have reads 0 on every live slot, so no trace has ever seen a
+    /// disc change hands. `// UNKNOWN: see bd discr-ovl.2`.
+    ///
+    /// It is *not* what selects the steering aim point -- that is
+    /// [`DiscSlot::hook`].
     pub aim: PlayerId,
+    /// The per-disc steering hook. **ST `disc+$12`** (Part 10).
+    ///
+    /// A longword function pointer, called at `$a54c` *before* the integration
+    /// and cleared by every one of the four bounds. It is what the Part 9
+    /// section of `docs/disc-notes.md` was looking for when it asked "what
+    /// gates the `$a71a` steering block": nothing gates it -- it runs exactly
+    /// while a hook is installed, and only the two players' hit tests install
+    /// one.
+    pub hook: SteerHook,
     /// ST `disc+$00` (`$6e3e`): world X, signed; spans 0..153.
     pub world_x: i16,
     /// ST `disc+$02`: world Y / height.

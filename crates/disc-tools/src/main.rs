@@ -62,8 +62,19 @@ const SCHEMA_COMPARED: usize = 15;
 const SCHEMA_WAIVED: usize = 12;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 6;
-/// Compared rows this trace format carries no column for; see [`Frame`].
-const NOT_IN_TRACE: [&str; 2] = ["discs[n].vel_y (disc+$08)", "discs[n].damage (disc+$16)"];
+/// Compared rows a trace may carry no column for; see [`Frame`].
+///
+/// Part 10 added `vy` and `dmg` to the oracle's emitter, so a freshly generated
+/// trace has both and this list is empty for it. A trace recorded before that
+/// still loads -- the columns default -- and is reported as missing them, which
+/// is why this is computed per trace rather than being a constant.
+fn not_in_trace(f: &Frame) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if f.disc.iter().all(|d| d.dmg.is_none()) {
+        v.push("discs[n].damage (disc+$16)");
+    }
+    v
+}
 
 /// The `waived:` rows of `docs/state-schema.md` that name a field path this
 /// tool builds a [`Check`] for, as `(field-path prefix, bead)`.
@@ -172,6 +183,38 @@ struct TraceDisc {
     /// is the travel direction and the magnitude is the kind of disc; it is
     /// not a live flag, whatever the trace calls the column.
     flag: u16,
+    /// `disc+$08` `vel_y`. Part 10; absent from pre-Part-10 traces.
+    #[serde(default)]
+    vy: i16,
+    /// `disc+$10`, the active byte: `$ff` live, 1..3 occupied-but-frozen, 0
+    /// free. Part 10. Absent from pre-Part-10 traces, where `flag != 0` was
+    /// the only liveness proxy available.
+    #[serde(default)]
+    act: Option<u8>,
+    /// `disc+$11`, the owner byte. Part 10.
+    #[serde(default)]
+    own: Option<u8>,
+    /// `disc+$12`, the steering hook, as a raw ST address. Part 10.
+    #[serde(default)]
+    hook: Option<u32>,
+    /// `disc+$16`, the damage this disc does to a tile. Part 10.
+    #[serde(default)]
+    dmg: Option<i16>,
+}
+
+/// Map `disc+$12`'s raw ST pointer onto the enum.
+///
+/// Only three routines are ever installed (`docs/disc-notes.md`, Part 10); an
+/// unrecognised pointer is a fact about the trace, not something to paper over,
+/// so it panics rather than silently steering at nothing.
+fn steer_hook(raw: u32) -> disc_core::SteerHook {
+    match raw {
+        0 => disc_core::SteerHook::None,
+        0xa71a => disc_core::SteerHook::AtP1,
+        0xa7d8 => disc_core::SteerHook::AtP2Wide,
+        0xa816 => disc_core::SteerHook::AtP2Deep,
+        other => panic!("trace has an unknown disc+$12 hook: ${other:x}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,21 +250,28 @@ impl Frame {
         }
         for (d, t) in st.discs.iter_mut().zip(&self.disc) {
             *d = DiscSlot {
-                // `active` and `aim` are waived (discr-m4x) and the trace has
-                // no column for either. A nonzero dir_kind is the only signal
-                // the trace offers for "this slot is in play"; it matches the
-                // one live disc in the golden fixture.
-                // ponytail: dir_kind != 0 as the liveness proxy -- revisit when
-                // discr-m4x pins down how the ST marks an unused slot.
-                active: t.flag != 0,
-                aim: disc_core::PlayerId::One,
+                // Part 10: `disc+$10` bit 7 is the ST's own liveness bit
+                // ($a4f0 beq / $a534 bpl).  Pre-Part-10 traces have no `act`
+                // column, and there `flag != 0` is the only proxy available.
+                active: t.act.map_or(t.flag != 0, |a| a & 0x80 != 0),
+                // `disc+$11`. Which byte value names which player is not
+                // settled -- every trace reads 0 -- so 0 maps to One and
+                // anything else to Two, and the row stays waived.
+                // // UNKNOWN: see bd discr-ovl.2.
+                aim: match t.own {
+                    Some(0) | None => disc_core::PlayerId::One,
+                    Some(_) => disc_core::PlayerId::Two,
+                },
+                // `disc+$12`: reseeded every tick, because what installs it is
+                // the two hit tests. // UNKNOWN: see bd discr-ovl.1.
+                hook: t.hook.map_or(disc_core::SteerHook::None, steer_hook),
                 world_x: t.wx,
                 world_y: t.wy,
                 world_z: t.wz,
                 vel_x: t.vx,
-                vel_y: 0,
+                vel_y: t.vy,
                 dir_kind: t.flag as i16,
-                damage: 0,
+                damage: t.dmg.unwrap_or(0),
             };
         }
         for (tile, &(tile_type, hp)) in st.tiles.iter_mut().zip(&self.grid) {
@@ -302,7 +352,13 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
             i64::from(e.flag as i16),
             g.dir_kind.into(),
         );
-        // vel_y and damage: no column in this trace, see NOT_IN_TRACE.
+        // Part 10 columns. `vy` defaults to 0 on a pre-Part-10 trace, which is
+        // also what disc-core starts it at, so comparing it there is a no-op
+        // rather than a false failure.
+        push(format!("discs[{n}].vel_y"), e.vy.into(), g.vel_y.into());
+        if let Some(dmg) = e.dmg {
+            push(format!("discs[{n}].damage"), dmg.into(), g.damage.into());
+        }
     }
 
     for (n, (&(tile_type, hp), g)) in expected.grid.iter().zip(&got.tiles).enumerate() {
@@ -338,6 +394,22 @@ fn is_player_two(field: &str) -> bool {
 ///
 /// One arm per row of the schema's "Compared fields" table, in that order.
 /// `want` is `expected.seed()`: the trace record as a `GameState`.
+/// Feed the two `disc` fields that are ST **inputs** to the update loop rather
+/// than state it produces: `disc+$12` (the steering hook) and `disc+$10` bit 7
+/// (whether the ST simulates the record at all).
+///
+/// Both are written by code outside `$a4ea` -- the two hit tests install and
+/// clear hooks, and something not yet found retires a disc -- so `disc-core`
+/// can no more produce them than it can produce `$6c58`. They are supplied
+/// every tick for the same reason the joystick byte is, and the run says so in
+/// its header. `// UNKNOWN: see bd discr-ovl.1` and `bd discr-0fm`.
+fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
+    for (s, w) in state.discs.iter_mut().zip(&want.discs) {
+        s.hook = w.hook;
+        s.active = w.active;
+    }
+}
+
 fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool) {
     if skip("frame") {
         state.frame = want.frame;
@@ -377,7 +449,12 @@ fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool)
         if skip(&format!("discs[{n}].dir_kind")) {
             s.dir_kind = w.dir_kind;
         }
-        // vel_y and damage: no column in this trace, see NOT_IN_TRACE.
+        if skip(&format!("discs[{n}].vel_y")) {
+            s.vel_y = w.vel_y;
+        }
+        if skip(&format!("discs[{n}].damage")) {
+            s.damage = w.damage;
+        }
     }
     for n in 0..TILE_CELLS {
         let (s, w) = (&mut state.tiles[n], &want.tiles[n]);
@@ -496,11 +573,21 @@ fn run(cli: &Cli) -> Result<bool, String> {
         "docs/state-schema.md: {SCHEMA_COMPARED} compared, {SCHEMA_WAIVED} waived, \
          {SCHEMA_EXCLUDED} excluded"
     );
-    println!(
-        "  comparing {} of the {SCHEMA_COMPARED} compared rows; this trace has no column for: {}",
-        SCHEMA_COMPARED - NOT_IN_TRACE.len(),
-        NOT_IN_TRACE.join(", ")
-    );
+    {
+        let missing = not_in_trace(&frames[0]);
+        if missing.is_empty() {
+            println!(
+                "  comparing all {SCHEMA_COMPARED} compared rows -- this trace has every column"
+            );
+        } else {
+            println!(
+                "  comparing {} of the {SCHEMA_COMPARED} compared rows; \
+                 this trace has no column for: {}",
+                SCHEMA_COMPARED - missing.len(),
+                missing.join(", ")
+            );
+        }
+    }
     if cli.skip_waived {
         println!(
             "  waived rows: RESYNCED from the trace each tick, not compared -- {}",
@@ -523,6 +610,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     }
     println!(
+        "  disc inputs fed each tick, never modelled: disc+$12 (the steering hook,\n         \x20              discr-ovl.1) and disc+$10 bit 7 (whether the ST simulates the\n         \x20              record at all, discr-0fm)"
+    );
+    println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",
         first.frame, first.vbl_6ab4
     );
@@ -534,6 +624,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
 
     for expected in &rest[..ticks] {
         let input = prev.input(prev_joy);
+        feed_disc_inputs(&mut state, &prev.seed());
         state.tick([input, Input::default()]);
         resync(&mut state, &expected.seed(), &skip);
 
@@ -563,7 +654,7 @@ fn gated(min_agree: Option<usize>, matched: usize) -> bool {
     let Some(n) = min_agree else { return false };
     if matched >= n {
         println!(
-            "PASS: --min-agree {n} and {matched} tick(s) matched. The divergence above is\n      expected and owned by a bead; this gate fails when the prefix SHRINKS.\n      If it grew, raise --min-agree to {matched} in the Makefile."
+            "PASS: --min-agree {n} and {matched} tick(s) matched. The divergence above is\n      expected and owned by a bead; this gate fails when the prefix SHRINKS.\n      If it grew, raise the matching *_MIN_AGREE in mise.toml to {matched}."
         );
         true
     } else {
@@ -650,7 +741,8 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("screen")));
         assert_eq!(
             names.len(),
-            1 + 2 * 5 + DISC_SLOTS * 5 + TILE_CELLS * 2,
+            // Part 10 added discs[n].vel_y and discs[n].damage, so 7 per disc.
+            1 + 2 * 5 + DISC_SLOTS * 7 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
     }
@@ -668,6 +760,7 @@ mod tests {
 
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
+            feed_disc_inputs(&mut state, &prev.seed());
             state.tick([prev.input(prev_joy), Input::default()]);
             resync(&mut state, &expected.seed(), &skip);
             if let Some(d) = first_divergence(expected, &state) {
@@ -686,6 +779,7 @@ mod tests {
     fn without_skip_waived_the_run_stops_on_player_two() {
         let f = golden();
         let mut state = f[0].seed();
+        feed_disc_inputs(&mut state, &f[0].seed());
         state.tick([f[0].input(f[0].joy_6c58), Input::default()]);
         let d = first_divergence(&f[1], &state).expect("p2 cannot match");
         assert!(is_player_two(&d.field), "{}", d.field);

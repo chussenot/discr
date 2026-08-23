@@ -31,9 +31,9 @@ pub mod tile;
 mod types;
 
 pub use types::{
-    DISC_SLOTS, DirBits, DiscSlot, Event, FACING_LEFT, FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE,
-    GRID_CELL_FAR_ROW, Input, Player, PlayerId, TILE_CELLS, TILE_TYPE_DESTROYED, Tile, VEL_CLAMP,
-    WALK_STEP, WALK_X_MAX, WALK_X_MIN,
+    COLUMN_TABLE_LEN, COLUMN_WIDTH, DISC_SLOTS, DirBits, DiscSlot, Event, FACING_LEFT,
+    FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE, GRID_CELL_FAR_ROW, Input, Player, PlayerId, SteerHook,
+    TILE_CELLS, TILE_TYPE_DESTROYED, Tile, VEL_CLAMP, WALK_STEP, WALK_X_MAX, WALK_X_MIN,
 };
 
 /// The complete simulated state of one match.

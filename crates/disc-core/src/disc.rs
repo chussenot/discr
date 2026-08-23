@@ -1,70 +1,62 @@
 //! Disc flight, steering and impact. Owned by bead `discr-leu` (I3).
 //!
-//! ST `$a4ea` is the update loop entry (`lea $6e3e,a5`): 8 records of stride
-//! `$42`. Per slot the ST *can* nudge `vel_x` by +/-1 toward the aimed player,
-//! clamped `[-2,+2]` (`$a722`), integrates `world_x` by `+$06` (`$6e44`) and
-//! advances `world_z` by `dir_kind`, flips `+$0a` on turn-around (`$a606`), and
-//! on a tile hit subtracts `+$16` from the struck cell's HP (`$a31c`).
-//!
-//! # The flight cycle
-//!
-//! `world_z` runs a four-phase cycle between [`Z_NEAR`] and [`Z_FAR`], read off
-//! `tests/fixtures/tile_damage.ndjson` (disc 0, twice over; disc 1 repeats the
-//! near turn at f208):
+//! ST `$a4ea` is the update loop, disassembled in full in the Part 10 section
+//! of `docs/disc-notes.md`. Per record of the 8, stride `$42` from `$6e3e`:
 //!
 //! ```text
-//! f0  ..34    dir_kind +1   z +1    wz 20 -> 54     outbound
-//! f35 ..51    dir_kind +1   z  0    wz 54           DWELL, whole record frozen
-//! f52 ..52    dir_kind -3   z -1    wz 53           far turn
-//! f53 ..69    dir_kind -3   z -3    wz 50 -> 2      return, three times faster
-//! f70 ..70    dir_kind +1   z -2    wz 0            near turn (clamped)
-//! f71 ..124   dir_kind +1   z +1    wz 1  -> 54     outbound again
-//! f125..151   dir_kind +1   z  0    wz 54           dwell again
+//! $a4f0  tst.b ($10,a5) ; beq next      ; +$10 == 0 -> the slot is FREE
+//! $a534  tst.b ($10,a5) ; bpl next      ; bit 7 clear -> occupied, NOT simulated
+//! $a53c  d0 = +$00 world_x   d1 = +$02 world_y   d2 = +$04 world_z
+//! $a546  tst.l ($12,a5) ; jsr (a0)      ; the STEERING HOOK, if installed
+//! $a552  d0 += +$06 vel_x
+//! $a556  d1 += +$08 vel_y
+//! $a55a  d2 += +$0a dir_kind
+//! $a58e  d0 > $9b  -> clear hook, neg vel_x,    clamp d0 = $9b
+//! $a5a6  d0 < 0    -> clear hook, neg vel_x,    clamp d0 = 0
+//! $a5ba  d2 > $4f  -> clear hook, neg dir_kind, clamp d2 = $4f, far  wall
+//! $a5fe  d2 < 0    -> clear hook, neg dir_kind, clamp d2 = 0,   near wall
+//! $a640  vel_y decays one step toward zero
+//! $a652  bsr $10fd8  (player 1's hit test)   $a656  bsr $c826  (player 2's)
+//! $a65e  write d0/d1/d2 back
 //! ```
 //!
-//! The magnitude of `dir_kind` *is* the per-frame z step and its sign is the
-//! direction of travel. [`step`] models the near turn (it is in the loop) but
-//! **not** what ends the dwell -- see [`Z_FAR`] and bd discr-0fm.
+//! So the whole of flight is: optionally steer, integrate three coordinates by
+//! three velocities, clamp each against a bound that negates its velocity, and
+//! bleed `vel_y` back toward zero.
 //!
-//! "Can": the `$a71a`/`$a722` steering block **does fire, and it is aimed at
-//! player TWO**. With the aim at `$6d22 - $13` the rule predicts 23 of 23
-//! velocity transitions on frames 12-34 of `tests/fixtures/tile_damage.ndjson`,
-//! the last of them being the at-target decay itself -- p2 X 63, aim 44, disc
-//! at 44, `vel_x` 2 -> 1. So [`step`] calls [`steer`]. It does *not* fire on
-//! the descent to the near bound (f1-f11), where the aim sits above the disc
-//! and the ST holds `vel_x` at -2 until the floor flips it: there the bound
-//! governs. The rest -- integrate, floor at 0, sign-flip on the floor -- is
-//! read off `tests/fixtures/golden.ndjson`, and the floor's coupling to the
-//! flip is **modelled, not mirrored**. See [`step`] and bd discr-217.
+//! # What Part 10 settled
 //!
-//! There is no possession: a disc is always in flight and always homing on a
-//! target player, so the target lives in [`crate::DiscSlot::aim`].
+//! * **`world_y` IS integrated by `vel_y`** (`$a556`). The Part 9 note saying
+//!   otherwise is retracted in `docs/disc-notes.md`: `vel_y` is decayed at
+//!   `$a640` *after* the integration and before the sampling point, so a
+//!   one-frame impulse moves `world_y` by one and reads back as 0. It is
+//!   structurally invisible in a trace, which is why it looked inert.
+//! * **The steering "gate" is [`DiscSlot::hook`]** (`disc+$12`), not a flag.
+//!   Nothing gates `$a722`; it runs while a hook is installed. Each bound
+//!   clears the hook, and only the two players' hit tests install one -- which
+//!   is why both player-2 aim variants are live inside one round.
+//! * **The bounds are `world_x` in `0..=155` and `world_z` in `0..=79`.** The
+//!   ceiling this module used to refuse to invent is `$9b` = 155, and
+//!   `tests/fixtures/golden.ndjson` reaches it exactly.
+//! * **The "dwell" is not a `world_z` phase.** It is `disc+$10` losing bit 7,
+//!   after which the ST stops simulating the record entirely -- see
+//!   [`crate::DiscSlot::active`].
 //!
-//! # What this module does NOT decide
+//! # What this module still does NOT decide
 //!
-//! Two triggers inside the ST loop are not decoded, so they are exposed as
-//! explicit API calls rather than invented here:
-//!
-//! * *which* aim variant steers -- [`steer`] is the literal `$a722` rule and
-//!   the evidence runs it, but the ST has **two live player-2 variants** in
-//!   one round: `$a816` (`$6d22 - $13`) fits f12-f34 of the fixture exactly
-//!   and `$a7d8` (`$6d22 - 4`) fits f99-f124 of the same run exactly.
-//!   [`step`] uses the `$a816` form; what selects between them is
-//!   `// UNKNOWN: see bd discr-217`. So is what exempts the descent to the
-//!   near bound from steering at all.
-//! * [`serve`] -- `$a9a0` stores the spawn record and `$a618` writes
-//!   `dir_kind = +1`, but nothing says what *causes* a serve.
-//!   `// UNKNOWN: see bd discr-m4x`.
-//! * vertical motion -- `vel_y` (+$08) is 0 on all 84 frames of
-//!   `dumps/disc_trace` and `world_y` still moves, so `world_y` is not
-//!   integrated by `vel_y` and the `$a758` vertical steering block never
-//!   fired. [`step`] leaves `world_y` and `vel_y` alone; what writes `world_y`
-//!   and what gates `$a758` are both `// UNKNOWN: see bd discr-tan`.
-//! * [`reflect`] and [`impact`] -- `$a606` negates `+$0a` when the disc "turns
-//!   around" and `$a31c` damages cell `($00,a0,d5.w)`, but neither the
-//!   turn-around condition nor the computation of `d5` is decoded, so [`step`]
-//!   never touches `tiles` and never reflects on its own.
-//!   `// UNKNOWN: see bd discr-5w5`.
+//! * **what installs a hook** -- the two hit tests `$10fd8` and `$c826` do, off
+//!   a cascade of range checks against each player's position and reach. Not
+//!   decoded, so [`DiscSlot::hook`] is an input here, the way `state_index` is
+//!   an input to [`crate::player::step`]. `// UNKNOWN: see bd discr-ovl.1`.
+//! * **what retires a disc** -- what takes `disc+$10` off `$ff`.
+//!   `// UNKNOWN: see bd discr-0fm`.
+//! * **[`serve`]'s trigger** -- now *known* (`$c06e`: player 2's animation
+//!   cursor `$6d5a` reaching `$4602`) but it lives in player 2's control
+//!   routine, which this crate does not model. `// UNKNOWN: see bd discr-b6x`.
+//! * **[`impact`]'s cell** -- `$a24c` computes it as
+//!   `colTable[$7c02 + world_x] + (4 if world_y > $46)`, and the caller is the
+//!   near wall at `$a618`. The column table is `$7bfe` read at +4, which this
+//!   crate does not carry. `// UNKNOWN: see bd discr-5w5`.
 //!
 //! Screen X/Y (`+$0c` / `+$0e`) are projection, recomputed every frame at
 //! `$a6b2`/`$a6b6` from world (x, y, z) through LUTs. They are not state and do
@@ -72,13 +64,23 @@
 
 use core::cmp::Ordering;
 
-use crate::{DiscSlot, Event, Player, PlayerId, TILE_CELLS, Tile, VEL_CLAMP, tile};
+use crate::{
+    COLUMN_TABLE_LEN, COLUMN_WIDTH, DiscSlot, Event, Player, PlayerId, SteerHook, TILE_CELLS, Tile,
+    VEL_CLAMP, tile,
+};
 
 /// Subtracted from the aimed player's world X to get the disc's X aim point.
 ///
 /// ST `$a71a` `steer_at_p1_x`: the target is `$6ca2 - $13`. ST `$a816` is the
 /// player-2 variant of the same offset against `$6d22`.
 pub const AIM_X_OFFSET: i16 = 0x13;
+
+/// The other X aim offset: ST `$a7dc` `subq.w #$04,d5`.
+///
+/// `$a7d8` aims 4 short of player 2 rather than `$13` short, and steers only
+/// the X axis. Which of the two a disc gets is decided by player 2's hit test
+/// (`// UNKNOWN: see bd discr-ovl.1`), not by anything in this module.
+pub const AIM_X_WIDE_OFFSET: i16 = 0x04;
 
 /// The player record's constant height reference, ST `player+$04` (`$6ca4`).
 ///
@@ -120,25 +122,40 @@ pub const RETURN_DIR_KIND: i16 = -3;
 /// the loop and [`step`] models it.
 pub const Z_NEAR: i16 = 0;
 
-/// The far end of the run, where the disc **dwells**.
+/// The far bound on `world_z`. ST `$a5ba`: `cmp.w #$4f,d2`.
 ///
-/// While `world_z` is here and `dir_kind` is still outbound the entire record
-/// is static -- `world_x` included, even with a nonzero `vel_x`. That is the
-/// "freeze" of bd discr-0fm, and it is a phase of the cycle, not an anomaly.
+/// Reaching it clears the hook, negates `dir_kind` and clamps `world_z` to 79.
+/// **No trace reaches it** -- every disc we have recorded is retired or
+/// returned by player 2 well before, the deepest observed `world_z` being 54 --
+/// so this bound is a code read with no trace behind it.
 ///
-/// **How long it lasts is not decoded**: 17 frames in the fixture's first
-/// cycle (f35-51) and 27 in its second (f125-151), so there is no constant to
-/// mirror. [`step`] therefore *enters* the dwell and never leaves it on its
-/// own: the disc stays frozen until something writes a negative `dir_kind`.
-/// `// UNKNOWN: see bd discr-0fm`.
+/// It is emphatically *not* where the old "dwell at 54" came from. That was
+/// `disc+$10` losing bit 7; see [`crate::DiscSlot::active`].
+pub const Z_FAR: i16 = 0x4f;
+
+/// The low bound on `world_x`. ST `$a5a6`: `tst.w d0; bpl`.
+pub const X_MIN: i16 = 0;
+
+/// The disc reads the `$7bfe` column table **4 bytes in**. ST `$a250`:
+/// `move.b ($04,a0,d0.w),d5`, where the player's own lookup at `$f65c` is
+/// `move.b (a0,d0.w)`. So a disc's column boundaries sit 4 world units left of
+/// a player's: the table is 152 bytes of `1 + x / 40`, and reading it at
+/// `x + 4` puts the steps at 36, 76 and 116 rather than 40, 80 and 120.
+pub const DISC_COLUMN_OFFSET: i16 = 4;
+
+/// The disc's near/far row threshold. ST `$a254`: `cmp.w #$46,d1; ble`.
 ///
-/// The one lead, unmodelled and n=2: both exits coincide with the aimed
-/// player entering state 17 (f52, f152), which is also the frame slot 1 is
-/// served at f190 -- so state 17 looks like "the opponent plays the disc".
-/// Not enough to build on; see the report on bd discr-0fm.
+/// 70, against the *player* code's 14 (`$f838`) -- because a disc's `world_y`
+/// runs around 81 and a player's around 18. Both add 4 to the cell index for
+/// the far row.
+pub const DISC_FAR_ROW_Y: i16 = 0x46;
+
+/// The high bound on `world_x`. ST `$a58e`: `cmp.w #$9b,d0`.
 ///
-/// Leaving the dwell costs one z step, not three (54 -> 53 at f52 and f152).
-pub const Z_FAR: i16 = 54;
+/// The ceiling this module used to refuse to invent, now read off the
+/// instruction. `tests/fixtures/golden.ndjson` reaches `world_x` 155 exactly,
+/// so unlike [`Z_FAR`] this one is confirmed by trace as well as by code.
+pub const X_MAX: i16 = 0x9b;
 
 /// Disc `world_y` at round init.
 ///
@@ -206,52 +223,131 @@ pub fn steer(vel: i16, pos: i16, target: i16) -> i16 {
     }
 }
 
+/// One frame of *vertical* velocity steering: ST `$a758` / `$a854`.
+///
+/// The same three cases as [`steer`] with **one asymmetry, which is real**: the
+/// downward branch has no clamp.
+///
+/// ```text
+/// $a760  cmp.w d1,d5
+/// $a762  bgt -> $a780   aim > pos:  if vel < +2 then vel += 1     (clamp +2)
+/// $a764  beq -> $a76c   aim == pos: vel decays toward zero by 1
+///        else  $a766    aim < pos:  vel -= 1                      (NO clamp)
+/// ```
+///
+/// `$a7f8`, the X rule's `blt` arm, guards with `cmpi.w #-2,($06,a5); ble`.
+/// `$a766` has no such guard, so a disc held above its aim point can build up
+/// an unbounded downward `vel_y`. Transcribed rather than tidied: no trace
+/// reaches a `vel_y` below -1, so this is a code read, and inventing a
+/// symmetric clamp would be inventing a rule.
+#[must_use]
+pub fn steer_y(vel: i16, pos: i16, target: i16) -> i16 {
+    match target.cmp(&pos) {
+        // $a780: bgt -- clamp +2.
+        Ordering::Greater if vel < VEL_CLAMP => vel + 1,
+        Ordering::Greater => vel,
+        // $a76c-$a77a: at target, unwind one step toward zero.
+        Ordering::Equal => vel - vel.signum(),
+        // $a766: subq.w #1 with no clamp.
+        Ordering::Less => vel - 1,
+    }
+}
+
+/// The `(x, y)` aim point a hook steers toward, or `None` for an axis the hook
+/// does not touch.
+///
+/// The only difference between the three routines: `$a7d8` `rts`es at `$a814`
+/// before the vertical block, so it never writes `vel_y`.
+#[must_use]
+pub fn aim_for(hook: SteerHook, players: &[Player; 2]) -> (Option<i16>, Option<i16>) {
+    match hook {
+        SteerHook::None => (None, None),
+        // $a71a: $6ca2 - $13, falling through to $a758's $6ca4 - $10.
+        SteerHook::AtP1 => (
+            Some(players[PlayerId::One.index()].world_x - AIM_X_OFFSET),
+            Some(aim_y()),
+        ),
+        // $a7d8: $6d22 - 4, X only.
+        SteerHook::AtP2Wide => (
+            Some(players[PlayerId::Two.index()].world_x - AIM_X_WIDE_OFFSET),
+            None,
+        ),
+        // $a816: $6d22 - $13, falling through to $a854's $6d24 - $10.
+        SteerHook::AtP2Deep => (
+            Some(players[PlayerId::Two.index()].world_x - AIM_X_OFFSET),
+            Some(aim_y()),
+        ),
+    }
+}
+
+/// Which grid cell a disc at `(world_x, world_y)` strikes. ST `$a24c`, the
+/// first six instructions -- bd discr-5w5's `d5`.
+///
+/// ```text
+/// $a24c  lea $7bfe,a0
+/// $a250  move.b ($04,a0,d0.w),d5     ; the column, read 4 bytes in
+/// $a254  cmp.w #$46,d1 ; ble $a25c
+/// $a25a  addq.b #4,d5                ; world_y > 70 -> the far row
+/// $a25c  ext.w d5 ; lsl.w #3,d5      ; x8, the tile stride
+/// $a260  lea $7616,a0                ; the NEAR grid
+/// ```
+///
+/// So the cell index is `column(world_x + 4) + (4 if world_y > 70)`, which
+/// lands in **1..=8** -- and the player's `grid_cell` rule
+/// (`8 + column(x) + (4 if y > 14)`) lands in 9..=16. The 17 cells at `$7616`
+/// are therefore two banks of eight: **1..8 is the wall a disc hits and 9..16
+/// is the floor the players walk on**, with index 0 unused. That is consistent
+/// with the observed tile events -- cells 6, 7 and 8 changed under disc impact
+/// and cell 14, in the floor bank, changed under something else (bd discr-b4q).
+///
+/// `None` when `world_x + 4` falls off the end of the 152-byte table, which the
+/// ST would read as whatever byte follows it. `step` treats that as no impact
+/// rather than guessing.
+#[must_use]
+pub fn disc_cell(world_x: i16, world_y: i16) -> Option<usize> {
+    let x = world_x + DISC_COLUMN_OFFSET;
+    if !(0..COLUMN_TABLE_LEN).contains(&x) {
+        return None;
+    }
+    let column = 1 + (x / COLUMN_WIDTH) as usize;
+    Some(column + if world_y > DISC_FAR_ROW_Y { 4 } else { 0 })
+}
+
 /// Advance one disc slot by one frame. ST `$a4ea`, one iteration.
 ///
-/// Five things happen, and only these five:
+/// Transcribed from the disassembly in the module docs, in the ST's order,
+/// which matters in two places: the hook runs *before* the integration, and
+/// `vel_y` decays *after* it.
 ///
-/// * a **dwell** at [`Z_FAR`] -- while the disc is parked at the far end with
-///   an outbound `dir_kind` the whole record is static and this returns early.
-///   Nothing here ends it; see [`Z_FAR`] and bd discr-0fm;
-/// * **steering** -- `$a722` nudges `vel_x` one step toward player 2's aim
-///   point, *before* the integrate: fixture f33 has the disc at 44 with
-///   `vel_x` 2 and f34 has it at 45 with `vel_x` 1, so the decay lands on the
-///   same frame as the move it shortens. Suppressed while `vel_x` is
-///   negative -- see below;
-/// * `world_x += vel_x` -- the invariant the notes verified 47/48 frames while
-///   `world_z` advances, with `world_x` frozen whenever `world_z` is (17/17);
-/// * a **floor at `world_x == 0`** -- golden frame 10 -> 11 steps 1 -> 0, a
-///   move of -1 under `vel_x` = -2, so the position clamps rather than passing
-///   zero -- and `vel_x` **sign-flips on that clamp**, -2 -> +2 on the same
-///   frame;
-/// * `world_z += dir_kind`, bounded by [`Z_NEAR`] and [`Z_FAR`], with the near
-///   bound clamping and turning the disc outbound.
+/// 1. `$a4f0`/`$a534` -- an inactive slot is not touched at all. That is the
+///    "dwell": see [`crate::DiscSlot::active`].
+/// 2. `$a546` -- if a hook is installed, steer `vel_x` toward its X aim point
+///    and, for the two hooks that do not `rts` early, `vel_y` toward its Y aim
+///    point. [`aim_for`] has the table.
+/// 3. `$a552`/`$a556`/`$a55a` -- integrate all three coordinates.
+/// 4. `$a58e`..`$a5fe` -- four bounds. Each **clears the hook**, negates the
+///    velocity that carried the disc into it, and clamps the coordinate:
+///    `world_x` against [`X_MIN`]/[`X_MAX`] flipping `vel_x`, `world_z` against
+///    [`Z_NEAR`]/[`Z_FAR`] flipping `dir_kind`.
+/// 5. `$a640` -- `vel_y` decays one step toward zero.
 ///
-/// `// MODELLED, not mirrored: trigger inferred from the fixture; ST guard
-/// $a600 bpl undecoded -- see bd discr-217`. The `neg.w` at `$a606` is real;
-/// what reaches it is a `bpl` on `d2` whose meaning is not decoded, so the
-/// floor-to-flip coupling is an inference from the trace, not a transcription.
+/// Two ST behaviours inside this loop are deliberately **not** reproduced,
+/// because their triggers are outside it:
 ///
-/// There is deliberately **no ceiling** on `world_x`. What earlier read as
-/// "upper turnarounds at `world_x` 45 and 113" were the [`Z_FAR`] dwells: the
-/// disc is not turning there, it is parked, and `world_x` simply stops
-/// wherever it had got to -- which is why the two values differ. Nothing in
-/// evidence bounds `world_x` from above. The asymmetry with the floor is the
-/// evidence's, not a bug.
+/// * the near wall additionally forces `dir_kind` to `+1` and calls the
+///   tile-damage routine (`$a618`), and the far wall forces `-1` and calls the
+///   far grid's (`$a5d6`) -- but *only* for one value of `disc+$11`, whose
+///   polarity is not settled (`// UNKNOWN: see bd discr-ovl.2`), and the
+///   tile-damage call needs the `$7bfe` column table this crate does not carry
+///   (`// UNKNOWN: see bd discr-5w5`). So the bounds here negate `dir_kind` and
+///   stop, and `tiles` is untouched.
+/// * the two hit tests at `$a652`/`$a656` are what install hooks and retire
+///   discs. Not modelled: `// UNKNOWN: see bd discr-ovl.1`.
 ///
-/// [`steer`] **is** called, at `players[1]` -- see the module docs. Two parts
-/// of that call are inferred: the aim variant (`$a816`, `$6d22 - $13`) and the
-/// exemption of the descent. `// UNKNOWN: see bd discr-217`.
-///
-/// `tiles` is mutable because tile damage happens inside this loop on the ST
-/// (`$a31c`-`$a360`), but the collision test that selects the struck cell is
-/// not decoded, so nothing here writes it -- see [`impact`].
-/// `// UNKNOWN: see bd discr-5w5`.
-///
-/// `players` is read for the aim point only. [`DiscSlot::aim`] is *not*
-/// consulted: both decoded variants read player 2's record (`$6d22`), nothing
-/// decoded selects the aimed player, and the traces carry no column for it.
-/// `// UNKNOWN: see bd discr-217`.
+/// Because a bound clears the hook and the hit tests then re-install one within
+/// the same ST frame, [`DiscSlot::hook`] at the sampling point is what the hit
+/// tests decided, not what the bound left. A replay therefore has to reseed it
+/// each tick, exactly as it reseeds `state_index`.
 pub fn step(
     disc: &mut DiscSlot,
     _slot: usize,
@@ -259,75 +355,79 @@ pub fn step(
     _tiles: &mut [Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
+    // $a4f0 tst.b ($10,a5) beq / $a534 tst.b bpl: a slot the ST is not
+    // simulating is not touched -- no integration, no decay, nothing. This is
+    // the whole of the "dwell". // UNKNOWN (what retires it): see bd discr-0fm.
     if !disc.active {
         return;
     }
 
-    // The dwell at the far end: the WHOLE record is static, world_x included,
-    // even though vel_x is 1 throughout (fixture f35-51 and f125-151). Its
-    // duration is not decoded -- 17 frames then 27 -- so nothing here ends it
-    // and the disc waits for a negative dir_kind from outside.
-    // // UNKNOWN: see bd discr-0fm.
-    if disc.world_z >= Z_FAR && disc.dir_kind > 0 {
-        return;
+    // $a546-$a550: the hook, before the integrate.
+    let (aim_x, aim_y) = aim_for(disc.hook, players);
+    if let Some(target) = aim_x {
+        disc.vel_x = steer(disc.vel_x, disc.world_x, target);
+    }
+    if let Some(target) = aim_y {
+        disc.vel_y = steer_y(disc.vel_y, disc.world_y, target);
     }
 
-    // $a71a/$a722: nudge vel_x one step toward the aim point, before the
-    // integrate. The aim is PLAYER TWO's X, $6d22 - $13 (ST $a816): with it the
-    // rule predicts 23 of 23 velocity transitions on f12-f34 of
-    // tests/fixtures/tile_damage.ndjson, f34 being the at-target decay -- p2 X
-    // 63, aim 44, disc at 44, vel_x 2 -> 1. The other live variant, $a7d8
-    // ($6d22 - 4), fits f99-f124 of the same run; what selects between them is
-    // // UNKNOWN: see bd discr-217.
-    //
-    // MODELLED, not mirrored: the descent to the near bound is exempt. On
-    // f1-f11 the disc falls 21 -> 0 with the aim (44) above it the whole way,
-    // so $a722 would raise vel_x on every one of those frames and the ST holds
-    // it at -2 until the floor flips it -- the bound governs, not the
-    // steering. `vel_x < 0` reproduces f1-f34, but it is the shape of the
-    // stretch we can measure, not the ST's condition: the $a7d8 stretch does
-    // steer with vel_x negative. // UNKNOWN: see bd discr-217.
-    if disc.vel_x >= 0 {
-        disc.vel_x = steer(disc.vel_x, disc.world_x, aim_x(players, PlayerId::Two));
-    }
-
-    // $6e44: world X integrates by vel_x, with a floor at 0 that sign-flips
-    // the velocity ($a606 neg.w).
-    // MODELLED, not mirrored: trigger inferred from the fixture; ST guard
-    // $a600 bpl on d2 undecoded -- see bd discr-217.
+    // $a552: d0 = world_x + vel_x, then $a58e/$a5a6 bound it. Both bounds do
+    // the same three things: clear the hook, negate vel_x, clamp.
     match disc.world_x.saturating_add(disc.vel_x) {
-        next if next < 0 => {
-            disc.world_x = 0;
-            // dir_kind is NOT touched: the fixture holds it at +1 across the
-            // flip, so whatever $a606 negates here, it is not that field.
+        next if next > X_MAX => {
+            disc.hook = SteerHook::None;
             disc.vel_x = disc.vel_x.wrapping_neg();
+            disc.world_x = X_MAX;
+        }
+        next if next < X_MIN => {
+            disc.hook = SteerHook::None;
+            disc.vel_x = disc.vel_x.wrapping_neg();
+            disc.world_x = X_MIN;
         }
         next => disc.world_x = next,
     }
 
-    // world_y is deliberately NOT advanced. In dumps/disc_trace (84 frames)
-    // vel_y (+$08) is 0 on every frame while world_y (+$02) moves on three
-    // frame pairs, so world_y is not integrated by vel_y and the $a758
-    // vertical block never fired -- neither its gate nor world_y's writer is
-    // decoded. // UNKNOWN: see bd discr-tan.
+    // $a556: add.w ($08,a5),d1. Unconditional, no bound of its own.
+    disc.world_y = disc.world_y.saturating_add(disc.vel_y);
 
-    // disc+$04: world Z advances by dir_kind -- the sign is the direction of
-    // travel, the magnitude is the step, so the return leg (-3) comes back
-    // three times faster than the outbound (+1) goes out.
+    // $a55a: d2 = world_z + dir_kind, then $a5ba/$a5fe bound it. The magnitude
+    // of dir_kind is the step and its sign the direction, so the return leg
+    // (-3) comes back three times faster than the outbound (+1) goes out.
     match disc.world_z.saturating_add(disc.dir_kind) {
-        // The near bound clamps and turns the disc outbound: f70 steps 2 -> 0
-        // under dir_kind -3 and writes dir_kind +1; slot 1 does the same at
-        // f208. Both discs, so this one is mirrored.
-        next if next < Z_NEAR => {
-            disc.world_z = Z_NEAR;
-            disc.dir_kind = SERVE_DIR_KIND;
+        next if next > Z_FAR => {
+            disc.hook = SteerHook::None;
+            disc.dir_kind = disc.dir_kind.wrapping_neg();
+            disc.world_z = Z_FAR;
+            // $a5d0-$a5e0: for the OTHER owner value the ST forces dir_kind to
+            // -1 and damages the far grid at $7596, a second 8-cell bank this
+            // crate does not carry. // UNKNOWN: see bd discr-ovl.3.
         }
-        // Leaving the dwell costs one step, not three: 54 -> 53 on f52 and on
-        // f152. Mirrored -- why the far turn is short is not decoded.
-        // // UNKNOWN: see bd discr-0fm.
-        _ if disc.world_z >= Z_FAR && disc.dir_kind < 0 => disc.world_z = Z_FAR - 1,
+        next if next < Z_NEAR => {
+            disc.hook = SteerHook::None;
+            disc.world_z = Z_NEAR;
+            if disc.aim == PlayerId::One {
+                // $a618: this owner value forces dir_kind to +1 -- NOT the
+                // neg.w, which would give +3 off the -3 return leg -- and then
+                // calls the near grid's damage routine $a24c. tile_damage.ndjson
+                // f70 is exactly this: dir_kind -3 -> +1 and cell 6 destroyed
+                // on the same frame.
+                disc.dir_kind = SERVE_DIR_KIND;
+                if let Some(cell) = disc_cell(disc.world_x, disc.world_y) {
+                    impact(disc, cell, _tiles, _events);
+                }
+            } else {
+                // $a624: the other owner value transfers possession instead,
+                // moving four counters this crate does not model. The neg.w
+                // from $a602 stands. // UNKNOWN: see bd discr-ovl.2.
+                disc.dir_kind = disc.dir_kind.wrapping_neg();
+            }
+        }
         next => disc.world_z = next,
     }
+
+    // $a640-$a650: vel_y bleeds one step toward zero, AFTER the integration.
+    // This is why vel_y reads 0 at every sampling point while world_y moves.
+    disc.vel_y -= disc.vel_y.signum();
 }
 
 /// Spawn a disc into a slot. ST `$a9a0`, with `$a618` writing `dir_kind = +1`.
@@ -352,6 +452,10 @@ pub fn serve(
         world_z: 0,
         vel_x: 0,
         vel_y: 0,
+        // $a9a2's slot fill writes +$00..+$0a and nothing else, so a freshly
+        // served disc carries no hook: the first steering it gets comes from a
+        // hit test.
+        hook: SteerHook::None,
         // $a618: move.w #$0001,($000a,a5)
         dir_kind: SERVE_DIR_KIND,
         damage: 0,
@@ -432,90 +536,93 @@ mod tests {
         }
     }
 
-    /// $6e44 / disc+$04: while world_z advances, world_x[n+1] - world_x[n]
-    /// == vel_x[n+1] (47/48 in the notes). Away from the floor, that is all
-    /// step() does to x.
+    /// $a552/$a55a with no hook installed: world_x integrates by vel_x and
+    /// world_z by dir_kind, and nothing else touches either. golden.ndjson
+    /// frames 6-10 are this, at vel_x -2.
     #[test]
     fn world_x_integrates_by_vel_x_while_z_advances() {
-        // p2 at 152 -> aim 133, above the whole climb, so $a722 holds vel_x at
-        // the +2 clamp and the integrate is all that moves x.
-        let players = players_at(8, 152);
+        let players = players_at(117, 63);
         let mut disc = DiscSlot {
             vel_x: 2,
             ..flying(10, aim_y())
         };
+        assert_eq!(disc.hook, SteerHook::None, "no hook, so no steering");
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        // Z_NEAR -> Z_FAR is the whole outbound leg; the 55th frame dwells.
+        let mut clamped = false;
         for _ in 0..Z_FAR {
             let (prev_x, prev_z) = (disc.world_x, disc.world_z);
             step(&mut disc, 0, &players, &mut tiles, &mut events);
             assert_eq!(disc.world_z, prev_z + 1, "z advances by dir_kind (+1)");
-            assert_eq!(disc.world_x - prev_x, disc.vel_x);
+            if disc.world_x == X_MAX {
+                // $a58e: the only frame that does not integrate cleanly.
+                assert_eq!(disc.vel_x, -2, "the ceiling negates vel_x");
+                clamped = true;
+            } else {
+                assert_eq!(disc.world_x - prev_x, disc.vel_x, "{disc:?}");
+            }
         }
-        assert_eq!((disc.world_x, disc.world_z), (118, Z_FAR));
+        // 10 + 2*79 would be 168, so $a58e's ceiling is reached and bounces.
+        assert!(clamped, "the run should reach the $9b ceiling");
+        assert_eq!(disc.world_z, Z_FAR);
     }
 
-    /// tile_damage.ndjson f34 -> f35 and f124 -> f125: on reaching Z_FAR with
-    /// an outbound dir_kind the entire record freezes -- world_x too, even
-    /// with vel_x = 1. Its duration is bd discr-0fm, so step() enters the
-    /// dwell and never leaves.
+    /// The "dwell" is `disc+$10` losing bit 7, not a `world_z` phase.
+    /// golden.ndjson frames 124-126: `act` goes 255 -> 2 -> 1 -> 0 with
+    /// world_z stuck at 54 -- nowhere near [`Z_FAR`] -- and the record then
+    /// never moves again. So an inactive slot is simply not stepped, and
+    /// nothing in this crate reactivates it (bd discr-0fm).
     #[test]
-    fn the_far_end_is_a_dwell_and_the_whole_record_holds() {
+    fn the_dwell_is_an_inactive_slot_not_a_z_phase() {
         let players = players_at(117, 63);
-        // f33: on the aim point (63 - $13 = 44) at vel_x 2; the step into the
-        // far end decays it to 1 and moves x to 45.
-        let mut disc = DiscSlot {
+        let frozen = DiscSlot {
+            active: false,
             vel_x: 2,
-            world_z: Z_FAR - 1,
-            ..flying(44, 83)
+            world_z: 54,
+            hook: SteerHook::AtP2Deep,
+            ..flying(40, 83)
         };
+        let mut disc = frozen;
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        // f33 -> f34: the last outbound frame still moves x.
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
-        assert_eq!((disc.world_x, disc.vel_x, disc.world_z), (45, 1, Z_FAR));
-
-        // f34 -> f35 and every frame after it: nothing at all.
-        let dwelling = disc;
         for _ in 0..64 {
             step(&mut disc, 0, &players, &mut tiles, &mut events);
-            assert_eq!(disc, dwelling, "the dwell holds the whole record");
+            assert_eq!(disc, frozen, "an inactive record is not touched at all");
         }
+        assert!(
+            disc.world_z < Z_FAR,
+            "and it froze well short of the z bound"
+        );
     }
 
-    /// tile_damage.ndjson f52 -> f71: given a negative dir_kind the disc
-    /// leaves the dwell by one step (54 -> 53), returns at -3 per frame, and
-    /// clamps at Z_NEAR while turning outbound again. Disc 1 repeats the near
+    /// tile_damage.ndjson f53 -> f71: the return leg steps -3 a frame and
+    /// $a5fe clamps at Z_NEAR while negating dir_kind. Disc 1 repeats the near
     /// turn at f208.
     #[test]
     fn the_return_leg_steps_three_and_the_near_bound_turns_it_outbound() {
         let players = players_at(117, 57);
         let mut disc = DiscSlot {
-            world_z: Z_FAR,
+            world_z: 53,
             dir_kind: RETURN_DIR_KIND,
             ..flying(48, 81)
         };
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        // f52: the far turn is a single step, not three.
         for expected_z in [
-            53, 50, 47, 44, 41, 38, 35, 32, 29, 26, 23, 20, 17, 14, 11, 8, 5, 2,
+            50, 47, 44, 41, 38, 35, 32, 29, 26, 23, 20, 17, 14, 11, 8, 5, 2,
         ] {
             step(&mut disc, 0, &players, &mut tiles, &mut events);
             assert_eq!((disc.world_z, disc.dir_kind), (expected_z, RETURN_DIR_KIND));
         }
 
-        // f70: 2 - 3 would be -1, so it clamps and flips outbound.
+        // f70: 2 - 3 would be -1, so $a5fe clamps -- and $a618 writes +1
+        // outright rather than letting the neg.w stand, which off a -3 return
+        // leg would have given +3.
         step(&mut disc, 0, &players, &mut tiles, &mut events);
         assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
-
-        // f71: and away it goes, +1 at a time.
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
-        assert_eq!(disc.world_z, 1);
     }
 
     /// tile_damage.ndjson f0 -> f11, the descent to the near bound: the aim
@@ -548,32 +655,117 @@ mod tests {
         assert_eq!((disc.world_x, disc.vel_x), (0, 2));
     }
 
-    /// tile_damage.ndjson f11 -> f34 with the $a816 aim, `$6d22 - $13` = 44:
-    /// the disc climbs from the floor pinned at the +2 clamp, and on the frame
-    /// it lands on the aim point $a728 decays vel_x 2 -> 1 -- before the
-    /// integrate, so that frame still moves x by 1, to 45. 23 of 23 velocity
-    /// transitions.
+    /// $a250/$a25a: the disc's cell is the column table read at `x + 4`, plus 4
+    /// for the far row. tile_damage.ndjson f70 destroys cell 6 with the disc at
+    /// world (67, 81); f170 and f208 damage cells 7 and 8.
+    #[test]
+    fn disc_cell_matches_the_observed_impacts() {
+        // f70: (67 + 4) / 40 = 1 -> column 2; y 81 > 70 -> +4 = cell 6.
+        assert_eq!(disc_cell(67, 81), Some(6));
+        // The 4-unit offset is real: 36 is already the second column for a
+        // disc, where a player at 36 is still in the first.
+        assert_eq!(disc_cell(35, 0), Some(1));
+        assert_eq!(disc_cell(36, 0), Some(2));
+        // Two banks of four, never the players' 9..16.
+        for x in 0..148 {
+            let near = disc_cell(x, DISC_FAR_ROW_Y).unwrap();
+            let far = disc_cell(x, DISC_FAR_ROW_Y + 1).unwrap();
+            assert!((1..=4).contains(&near), "x={x} -> {near}");
+            assert_eq!(far, near + 4);
+        }
+        // Past the end of the 152-byte table there is no answer to give.
+        assert_eq!(disc_cell(148, 81), None);
+    }
+
+    /// $a5fe/$a618: reaching the near bound damages the cell the disc is over
+    /// and forces dir_kind to +1. tile_damage.ndjson f70: disc 0 arrives at
+    /// world (67, 81) on a -3 return leg and cell 6 goes (1,1) -> (0,0).
+    #[test]
+    fn the_near_bound_damages_the_cell_the_disc_is_over() {
+        let players = players_at(117, 63);
+        let mut disc = DiscSlot {
+            world_z: 2,
+            dir_kind: RETURN_DIR_KIND,
+            damage: 3,
+            ..flying(67, 81)
+        };
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        tiles[6] = Tile {
+            tile_type: 1,
+            hp: 1,
+        };
+        let mut events = Vec::new();
+
+        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
+        assert_eq!(
+            tiles[6],
+            Tile {
+                tile_type: 0,
+                hp: 0
+            },
+            "hp 1 - 3 clamps to 0 and $a354 clears the type"
+        );
+        assert!(!events.is_empty(), "the impact is reported");
+    }
+
+    /// golden.ndjson frames 11-28, the two player-2 hooks back to back. This
+    /// is the test the old `vel_x >= 0` invention was standing in for.
+    ///
+    /// Frames 11-21 run under `$a7d8` (aim `63 - 4` = 59, X only): the disc
+    /// climbs from the floor at the +2 clamp and `world_y` does **not** move,
+    /// because `$a7d8` returns before the vertical block. Frame 22 switches to
+    /// `$a816` (aim `63 - $13` = 44, both axes) and `world_y` climbs 81 -> 82
+    /// -> 83 on frames 23-24 and then stops dead on the aim point -- which is
+    /// the whole of the retracted "vel_y is inert" story.
+    #[test]
+    fn the_two_player_two_hooks_differ_only_in_the_vertical_axis() {
+        let players = players_at(117, 63);
+        assert_eq!(aim_for(SteerHook::AtP2Wide, &players), (Some(59), None));
+        assert_eq!(aim_for(SteerHook::AtP2Deep, &players), (Some(44), Some(83)));
+
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        let mut events = Vec::new();
+
+        // f11 -> f21 under $a7d8: x climbs by 2, world_y pinned at 81.
+        let mut disc = DiscSlot {
+            vel_x: 2,
+            world_z: 31,
+            hook: SteerHook::AtP2Wide,
+            ..flying(0, 81)
+        };
+        for n in 1..=10 {
+            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            assert_eq!((disc.world_x, disc.vel_x), (2 * n, 2), "{disc:?}");
+            assert_eq!((disc.world_y, disc.vel_y), (81, 0), "$a7d8 is X only");
+        }
+
+        // f22 -> f24 under $a816: world_y climbs to the aim and stays.
+        disc.hook = SteerHook::AtP2Deep;
+        for expected_y in [82, 83, 83, 83] {
+            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            assert_eq!(disc.world_y, expected_y, "{disc:?}");
+            assert_eq!(disc.vel_y, 0, "$a640 decays vel_y before the sample");
+        }
+    }
+
+    /// $a722 lands the at-target decay on the same frame as the move it
+    /// shortens, because the hook runs before the integrate: f33 has the disc
+    /// on the aim point at vel_x 2 and f34 has it one further on at vel_x 1.
     #[test]
     fn step_steers_at_player_two_and_decays_on_the_aim_point() {
         let players = players_at(117, 63);
         let mut disc = DiscSlot {
             vel_x: 2,
             world_z: 31,
-            ..flying(0, 81)
+            hook: SteerHook::AtP2Deep,
+            ..flying(44, 83)
         };
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        // f12..f33: aim above, vel_x already at the clamp, so +2 a frame.
-        for n in 1..=22 {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
-            assert_eq!((disc.world_x, disc.vel_x), (2 * n, 2), "{disc:?}");
-        }
-        assert_eq!((disc.world_x, disc.world_z), (44, 53));
-
-        // f34: on the aim point. The decay lands on the same frame as the move.
         step(&mut disc, 0, &players, &mut tiles, &mut events);
-        assert_eq!((disc.world_x, disc.vel_x, disc.world_z), (45, 1, Z_FAR));
+        assert_eq!((disc.world_x, disc.vel_x), (45, 1));
     }
 
     /// tests/fixtures/golden.ndjson frames 10 -> 12: world_x 1 -> 0 -> 2 with

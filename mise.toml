@@ -22,6 +22,21 @@ rust = "latest"
 TRACE_MIN_AGREE = "10"
 GOLDEN = "tests/fixtures/golden.ndjson"
 
+# The second gate, added in Part 10.  tests/fixtures/tile_damage.ndjson is the
+# idle fixture, so player 1 never changes state and the discr-75o wall above
+# never comes up -- which makes it the fixture that measures the DISC model
+# rather than the player state machine.  51 ticks with NO --resync at all; the
+# wall is trace frame 52, where the ST re-serves disc 0 into the same slot from
+# inside player 2's control routine (discr-b6x).  Before Part 10 the same run
+# stopped at 10.
+#
+# Supplying the disc row as well (--resync discs[0]) reaches 118, past the tile
+# event at frame 70 that tile::damage now reproduces end to end, and stops on
+# the frame-119 anomaly bd discr-b4q owns.  That number is deliberately NOT
+# gated: a resynced row is one disc-core was given, not one it produced.
+TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
+TILE_MIN_AGREE = "51"
+
 # The repository's first three commits predate conventional commits (`bd init`
 # is not one of them), so cog is pointed at the range after them rather than
 # being told to ignore a rule. Everything since is compliant.
@@ -45,11 +60,19 @@ run = [
   "cargo clippy --all-targets -- -D warnings",
   "cargo test",
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived --min-agree $TRACE_MIN_AGREE",
+  "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived --min-agree $TILE_MIN_AGREE",
 ]
 
 [tasks.tracecheck]
-description = "The ungated view: same run without --min-agree, so it exits 1 on the divergence"
-run = "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived"
+description = "The ungated view: both fixtures without --min-agree, so a divergence exits 1"
+run = [
+  "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived",
+  "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived",
+]
+
+[tasks.tracecheck-deep]
+description = "How far the disc model reaches with the disc row supplied: a measurement, not a gate"
+run = "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived --resync 'discs[0]'"
 
 [tasks.fmt]
 description = "Format the Rust workspace"

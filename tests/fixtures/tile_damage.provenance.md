@@ -39,3 +39,18 @@ Recording this fixture required widening the Hatari memdump window. At
 compared** — the far row of the floor, where the player stands. `hatari.cfg`
 now uses 232 lines and `scripts/oracle_diff.py` asserts full coverage instead
 of skipping absent bytes.
+
+## Regenerated for Part 10
+
+Re-emitted from the same seed and the same input programme with the oracle's
+Part 10 columns added. **Every pre-existing column is byte-identical on every
+frame** -- checked field by field, not assumed -- so this is a strict superset
+of the file it replaces and no earlier result is invalidated.
+
+New per-disc columns: `vy` (`disc+$08`), `dk` (`disc+$0a` read **signed**, where
+`flag` is the same word unsigned and is kept for compatibility), `act`
+(`disc+$10`), `own` (`disc+$11`), `hook` (`disc+$12`) and `dmg` (`disc+$16`).
+New per-frame columns: `joy_6c59`, `ai_6da1`, `mode_6da0`, `bonus_6d9a`.
+
+With `dmg` present, `tracecheck` compares all 15 of `docs/state-schema.md`'s
+compared rows and says so in its header instead of naming missing columns.

@@ -35,8 +35,9 @@ const PROBE_AHEAD: i16 = 24;
 
 /// Width of one floor column in world X units.
 ///
-/// ST `$7bfe`: 145 bytes indexed by world X 8..152, 4 columns of 40 X-units.
-const COLUMN_WIDTH: i16 = 40;
+/// ST `$7bfe`: 152 bytes indexed by world X, 4 columns of 40 X-units. Shared
+/// with [`crate::disc::disc_cell`], which reads the same table 4 bytes in.
+use crate::COLUMN_WIDTH;
 
 /// First world X past the last column, i.e. outside the arena.
 ///

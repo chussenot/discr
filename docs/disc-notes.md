@@ -485,7 +485,13 @@ is gated off" was a claim about the code drawn from a single hypothesis about
 its input. bd discr-217 is retargeted from "what gates it" to "which aim
 variant is selected when".
 
-## vel_y is inert in all the evidence we have (Part 9)
+## RETRACTED by Part 10: "vel_y is inert in all the evidence we have" (Part 9)
+
+**This section is wrong and is kept for the record.** `$a556 add.w ($08,a5),d1`
+integrates `world_y` by `vel_y` unconditionally, and `$a640` decays `vel_y`
+toward zero *after* the integration -- so a one-frame impulse is invisible at
+the sampling point. See "RETRACTED: vel_y is inert" under the `$a4ea` section
+above. What follows is the original text.
 
 Do not model vertical motion as `world_y += vel_y`. In `dumps/disc_trace`
 (84 frames) **`vel_y` (+$08) is 0 on every single frame**, while `world_y`

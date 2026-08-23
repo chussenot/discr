@@ -106,17 +106,17 @@ Notes on individual rows:
 | field path | Rust type | ST address | status |
 | --- | --- | --- | --- |
 | `players[1].*` (all 5 fields) | as `players[0]` | `$6d20` + `$02`/`$06`/`$09`/`$0e`/`$10` | waived:discr-b6x |
-| -- (player-2 inputs) | -- | `$6c59` | waived:discr-b6x |
-| `discs[n].active` | `bool` | -- | waived:discr-m4x |
-| `discs[n].aim` | `PlayerId` | -- | waived:discr-m4x |
+| -- (the opponent's input channel) | -- | `$6da1`, written by `$d2cc` | waived:discr-b6x |
+| `discs[n].active` | `bool` | `disc+$10` bit 7 | waived:discr-0fm |
+| `discs[n].aim` | `PlayerId` | `disc+$11` | waived:discr-ovl.2 |
+| `discs[n].hook` | `SteerHook` | `disc+$12` | waived:discr-ovl.1 |
 | -- (round init, score, win) | -- | `$aa50`, `$6d8a` | waived:discr-st8 |
 | -- (player state semantics) | -- | `$10e2c` entries 5,11,14,19,20,21,23,24,27,31 | waived:discr-75o |
 | -- (player states 16, 17) | -- | `$10e2c` entries 16, 17 | waived:discr-rf9 |
-| -- (tile HP bit-7 writer) | -- | `tile+$02` bit 7 | waived:discr-dc0 |
-| -- (`disc+$02`'s writer) | -- | whatever advances `world_y` | waived:discr-tan |
-| -- (the `$a71a` steering gate) | -- | `$a71a`, `$a758` | waived:discr-217 |
-| -- (disc collision test) | -- | `$a606`'s condition, `$a31c`'s `d5` | waived:discr-5w5 |
-| -- (damage multiplier) | -- | `$6d9a` (`$a314`, `$a32e`) | waived:discr-z8m |
+| -- (tile type cleared with hp intact) | -- | `tile+$00`, the frame-119 writer | waived:discr-b4q |
+| -- (what places a bonus on a cell) | -- | `tile+$02` bit 7, and `$6e3a` | waived:discr-ovl.4 |
+| -- (the bonus effects) | -- | `$6d9a`/`$6d9c`/`$6d9e`, table `$9aa2` | waived:discr-z8m |
+| -- (the far wall's tile grid) | -- | `$7596`, damaged by `$9f5e` | waived:discr-ovl.3 |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
 | -- (disc sub-record pointers) | -- | `disc+$1a`, `disc+$3e` | excluded:pointer |
@@ -125,50 +125,83 @@ Notes on individual rows:
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
 18 waived or excluded rows: 12 waived against a filed unknown, 6 excluded by
-scope. With the 15 compared rows above, that is the whole table, and
+scope. **The count is unchanged from before Part 10 and that is the honest
+number**: five waivers were resolved and five new ones filed from what the
+answers exposed -- a second tile grid, the bonus placer, the hook installer, the
+owner polarity, and what retires a disc. What changed is not how many unknowns
+there are but where they sit: six of them used to stand between the disc model
+and the fixture, and now one does. `reports/part10-report.md` has the
+before-and-after gate numbers. With the 15 compared rows above, that is the
+whole table, and
 `tracecheck`'s header prints these three numbers so a drift between tool and
 file is visible on every run.
 
 Why each waiver or exclusion:
 
-* `discs[n].active` and `aim` are **modelled, not mirrored**. `disc+$0a` is a
-  direction/kind word, not a live flag (Part 7), so the ST encoding of an
-  unused slot is not known; and there is no possession -- a disc is always in
-  flight and always homing on a target player, whose identity is implied by
-  which steering routine runs (`$a71a` reads `$6ca2`, `$a7d8` reads `$6d22`).
-  Both are filed under **discr-m4x** because the serve trigger is what decides
-  when a slot goes live and who it aims at.
-* Opponent AI (**discr-b6x**): `disc-core` takes both players' `Input` from its
-  caller. Whatever drives player 2 on the ST is not in this crate. That is why
-  `players[1].*` is waived and not merely "expected to be wrong": the trace
-  carries no `$6c59` column, so a replay drives p2 with nothing while the ST
-  walks it, and those five rows can never match. They were marked `compared`
-  until discr-z72; leaving them there made `tracecheck` stop on frame 1 of
-  every trace and report a waiver as a divergence, which is the tool
-  contradicting this file. `tracecheck --skip-waived` resyncs them from the
-  trace each tick instead.
-* Round, scoring and win (**discr-st8**): `GameState::default()` is all zeroes,
-  which is deliberately *not* the ST's round-init state -- `$aa50` initialises
-  the 8 disc records and their sub-records with values not yet recovered.
-* Player state semantics (**discr-75o**, **discr-rf9**): the handler addresses
-  are known and the state numbers are compared, but what those handlers *do* is
-  not. States 16 and 17 have only ever been seen in an oracle autopilot run,
-  never in Hatari, so they are not even notes-grade yet.
-* Screen X/Y are recomputed from world `(x, y, z)` through LUTs every frame at
-  `$a6b2`/`$a6b6`. They are rendering output derived from compared state, so
-  comparing them would test the projection, not the rules.
-* The four rules discovered *during* wave 2 -- **discr-tan** (`disc+$02`'s
-  writer), **discr-217** (the `$a71a` gate), **discr-5w5** (the collision test)
-  and **discr-z8m** (`$6d9a`) -- are waived as ST *behaviour*, not as fields.
-  The fields they would move (`discs[n].world_y`, `vel_x`, `dir_kind`,
-  `tiles[n].*`) stay `compared`: they are mirrored and seeded correctly, they
-  match for as long as the ST leaves them alone, and the frame on which one
-  stops matching is the most useful number this phase produces. Waiving the
-  field would delete that signal; waiving the rule records the gap.
-* **discr-g38** (what damps `vel_y`) is CLOSED, resolved by evidence rather
-  than by a new model: the damping is the literal at-target decay at
-  `$a728`-`$a736`, and the oscillation it was filed against cannot occur
-  because `vel_y` is 0 throughout. What was left of it moved to discr-tan.
+* **`discs[n].active`, `aim` and `hook` are now MIRRORED ST FIELDS**, not
+  models. Part 10 disassembled `$a4ea`: `disc+$10` is a byte whose bit 7 says
+  whether the ST simulates the record (`$a4f0 beq` free, `$a534 bpl` frozen),
+  `disc+$11` is the owner the wall handlers flip, and `disc+$12` is a longword
+  hook holding one of three steering routines. The old note here -- "the ST
+  encoding of an unused slot is not known", "there is no possession" -- was
+  wrong on both counts and is retracted.
+  They stay waived because each is written by code **outside** the disc loop:
+  what retires a disc (**discr-0fm**) and what installs a hook (**discr-ovl.1**,
+  the two hit tests `$10fd8`/`$c826`) are not decoded, and the owner byte's
+  polarity (**discr-ovl.2**) cannot be settled because every trace reads 0 on
+  every live slot -- no trace has ever seen a disc change hands. `tracecheck`
+  feeds `active` and `hook` in every tick, the way it feeds `$6c58`, and says so
+  in its header.
+* Opponent AI (**discr-b6x**): the architecture is now known -- `$10eac` selects
+  one-player mode on `$6da0`, `$d2cc` writes a synthetic joystick byte to
+  `$6da1`, and player 2's control routine `$abb2` consumes it exactly where a
+  human's `$6c59` would go. **So the waived input row is `$6da1`, not `$6c59`**:
+  `$6c59` is 0 on every frame of every trace we have. What is still waived is
+  the *policy* -- the 20-entry priority rule table at `$efa8`, its 11 test and
+  7 action routines, and the sensor pass `$cea6`.
+* Round, scoring and win (**discr-st8**): unchanged. `GameState::default()` is
+  all zeroes, deliberately not `$aa50`'s round-init state.
+* Player state semantics (**discr-75o**, **discr-rf9**): unchanged, and this is
+  what stops the `golden.ndjson` gate at 10 ticks. State 17 is now partly
+  explained -- `$c0c4 move.b #$11,$6d2e` is the serve setting it -- but the
+  handler's behaviour is still unrecovered.
+* The tile unknowns are **narrower than they were**. Bit 7 of `tile+$02` is now
+  known to mark a cell as carrying a bonus, and `$a29c andi.w #$0f` is the
+  writer that clears it on pickup, which closes the old discr-dc0. What is left
+  is who *places* a bonus (**discr-ovl.4**) and the separate frame-119 writer that
+  clears a cell's *type* while leaving its hp (**discr-b4q**).
+* The bonus system (**discr-z8m**, retargeted): `$6d9a` is not a damage
+  multiplier and not a difficulty rank -- `$824c` clears it on a VBL countdown.
+  It is the active bonus code, 1..5, with its payload and duration in the table
+  at `$9aa2`. The five effects are documented in `docs/disc-notes.md` and none
+  is modelled, because `bonus_6d9a` is 0 on every frame of both fixtures.
+* The far wall's grid (**discr-ovl.3**): `$9f5e` is `$a24c` with `$7596`
+  substituted for `$7616`, so there is a **second 8-cell bank** this crate does
+  not carry and the differ has never looked at.
+* Screen X/Y are projection, recomputed from world `(x, y, z)` through LUTs at
+  `$a6b2`/`$a6b6`. Comparing them would test the projection, not the rules.
+
+### Resolved in Part 10, and worth knowing why
+
+Five waivers came off, and none of them by modelling harder -- all five were
+answered by reading `$a4ea` and its callees in Ghidra.
+
+* **discr-217** (what gates the `$a71a` steering block) -- nothing gates it. It
+  runs while `disc+$12` holds a hook. Replaced by `discs[n].hook`/discr-ovl.1,
+  which asks the narrower question of what *installs* one.
+* **discr-tan** (what advances `disc+$02`) -- `$a556 add.w ($08,a5),d1`. It is
+  `world_y += vel_y` after all; `$a640` decays `vel_y` toward zero after the
+  integration, so an impulse is invisible at the sampling point. Both this file
+  and `docs/disc-notes.md` said not to model it. Both were wrong.
+* **discr-5w5** (the collision test) -- the test is `world_z` crossing a wall,
+  and `d5` is `column(world_x + 4) + (4 if world_y > $46)`, which lands in
+  1..=8. `disc::step` now calls `tile::damage`, and the tile event at frame 70
+  of `tile_damage.ndjson` reproduces end to end.
+* **discr-dc0** (the tile HP bit-7 writer) -- bit 7 marks a bonus cell; the
+  clear is `$a29c`.
+* **discr-m4x** (what triggers a serve) -- player 2's animation cursor `$6d5a`
+  reaching `$4602` inside `$abb2`. It is a *player-2 behaviour*, so what remains
+  of it is discr-b6x.
 
 ## Resolved since the first revision
 
@@ -184,7 +217,8 @@ never changes. Nothing was quietly repointed.
 ## Open question for the next revision
 
 **Is `player+$09` a facing flag at all?** See the `players[0].facing` note
-above and **discr-xfw**. Whoever answers it should also decide whether
+above and **discr-xfw**. Part 10 did not touch it: it is a player-state
+question, and the player state machine (discr-75o) is the next phase's subject. Whoever answers it should also decide whether
 `Player::facing` keeps its name: if `+$09` is the previous state, then
 `disc-core` currently has no field for facing and an extra one for state, and
 the row above is passing for the wrong reason.
