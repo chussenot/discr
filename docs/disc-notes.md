@@ -196,6 +196,40 @@ $6ca6  player_y           (word)  the walkable row; > 14 = far row
 So: player movement and the grid cell use `+$06`; disc vertical homing uses
 `+$04`. A core that steers the disc at `+$06` will diverge from the trace.
 
+## The tile type word: gate polarity confirmed, second writer found (Part 9)
+
+The walkability gate polarity is settled by `$f634`-`$f64e`:
+
+```
+$f63e  tst.w ($00,a1,d0.w)   ; the cell's TYPE word
+$f642  bne.b $f648           ; type != 0 -> d0 = $ff
+$f644  moveq #$00,d0         ; type == 0 -> d0 = 0
+$f64a  bne.w $f650           ; d0 != 0 skips the next instruction
+$f64e  st.b  d2              ; ...so type == 0 SETS the blocked flag
+```
+
+So **type 0 blocks and non-zero is walkable** -- read it as tile presence, not
+occupancy. A hole, not a person standing there.
+
+But something else clears it. In the idle Hatari reference, inside the
+275-frame validated window:
+
+| frame | cell | change | |
+|---|---|---|---|
+| 65 | 6 | `(1,1) -> (0,0)` | destroyed by `$a354` |
+| **114** | **14** | **`(1,1) -> (0,1)`** | **type cleared, hp still 1 -- NOT `$a354`** |
+| 165 | 7 | `(2,4) -> (2,1)` | damaged -3 |
+| 203 | 8 | `(1,4) -> (1,1)` | damaged -3 |
+| 273 | 7 | `(2,1) -> (0,0)` | destroyed by `$a354` |
+
+`$a354` only clears the type *after* hp reaches 0, so frame 114 has a second
+writer punching a hole with hp intact (bd discr-b4q).
+
+Finding these at all required widening the memdump window: at
+`nMemdumpLines = 200` it stopped at `$767f` and cells **13-16 were never
+compared** -- the far row, where the player stands (idle cell 15). The differ
+skipped the absent bytes silently. It now asserts coverage.
+
 ## Two corrections from trace comparison (Part 9)
 
 Both were found by replaying an oracle trace through the Rust core and asking

@@ -16,10 +16,16 @@ from collect import Hatari, load_scenario   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ORACLE = os.path.join(ROOT, "oracle", "disc-oracle")
-# One 3200-byte memdump window covers every address the oracle reports:
-# $6ab4 counter, $6c58 joystick, $6ca0/$6d20 players, $6e3e disc array,
-# $7616 tile grid.
-WIN_LO, WIN_HI = 0x6a00, 0x76c0
+# One memdump window covers every address the oracle reports: $6ab4 counter,
+# $6c58 joystick, $6ca0/$6d20 players, $6e3e disc array, $7616 tile grid.
+#
+# It has to reach $769d -- the END of tile cell 16.  At nMemdumpLines = 200 the
+# window stopped at $767f, so cells 13-16 were never compared: exactly the far
+# row of the floor, where the player stands (its idle cell is 15).  The differ
+# skipped the missing bytes silently, which is how a blind spot survives.  The
+# window is now 232 lines and coverage is ASSERTED below, not assumed.
+WIN_LO, WIN_HI = 0x6a00, 0x76a0
+GRID_END = 0x7616 + 17 * 8          # $769e, one past the last tile byte
 
 # The screen double-buffer pointers. They swap every frame EXCEPT on a frame
 # the game drops, and whether a frame drops depends on whether the main loop
@@ -257,6 +263,18 @@ def main(argv=None):
                          "trace (oracle %s.., Hatari %s..)"
                          % (recs[0]["vbl_6ab4"], snaps[0][0]))
     start = hat_by_cnt[recs[ostart]["vbl_6ab4"]]
+    have = snaps[start][1]
+    missing = [x for x in range(WIN_LO, WIN_HI) if x not in have]
+    if missing:
+        raise SystemExit(
+            "Hatari's memdump window does not cover the compared range: %d of "
+            "%d bytes absent, first $%04x last $%04x. Raise nMemdumpLines in "
+            "hatari.cfg and re-record the reference -- comparing a partial "
+            "window silently under-reports coverage."
+            % (len(missing), WIN_HI - WIN_LO, missing[0], missing[-1]))
+    if GRID_END > WIN_HI:
+        raise SystemExit("the window stops at $%04x, before the tile grid ends "
+                         "at $%04x" % (WIN_HI, GRID_END))
     print("   aligned on $6ab4=%d: oracle frame %d == Hatari trace index %d"
           % (recs[ostart]["vbl_6ab4"], ostart, start))
     if ostart:
