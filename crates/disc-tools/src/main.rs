@@ -18,6 +18,25 @@
 //! counts noise. The first mismatch is the only one with a cause you can chase,
 //! which is the standard `reports/` sets for the oracle diffs.
 //!
+//! # Waived rows and `--skip-waived`
+//!
+//! `docs/state-schema.md` marks `players[1].*` `waived:discr-b6x`. Those rows
+//! *cannot* match: `disc-core` takes player 2's `Input` from its caller and the
+//! trace carries no `$6c59` column, so p2 stands still while the ST walks it.
+//! By default they are still compared, and the run therefore always stops on
+//! frame 1 -- which hides every number worth having.
+//!
+//! `--skip-waived` **resyncs** the waived rows from the trace after each tick
+//! instead of comparing them, so a waived row can neither fail nor poison the
+//! next tick, and the run continues to the first divergence among `compared`
+//! rows. The default is unchanged and both modes say which one is in force.
+//!
+//! `--resync <FIELD>` extends that to any field path, for measuring past a
+//! divergence that already has an owning bead. `--min-agree <N>` turns the
+//! measured prefix into a regression gate -- exit 0 at or above `N` matched
+//! ticks, still printing the divergence -- the same idiom
+//! `scripts/oracle_diff.py` uses for the oracle's 275-frame boundary.
+//!
 //! # Input decoding (ST `$6c58`)
 //!
 //! Direction bits are levels -- `$01` up, `$02` down, `$04` left, `$08` right.
@@ -39,12 +58,20 @@ use serde::Deserialize;
 
 /// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
 const SCHEMA_COMPARED: usize = 15;
-/// `docs/state-schema.md`, "Waived and excluded": 7 rows marked `waived:`.
-const SCHEMA_WAIVED: usize = 7;
+/// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
+const SCHEMA_WAIVED: usize = 12;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 6;
 /// Compared rows this trace format carries no column for; see [`Frame`].
 const NOT_IN_TRACE: [&str; 2] = ["discs[n].vel_y (disc+$08)", "discs[n].damage (disc+$16)"];
+
+/// The `waived:` rows of `docs/state-schema.md` that name a field path this
+/// tool builds a [`Check`] for, as `(field-path prefix, bead)`.
+///
+/// The other eleven waived rows are `--` rows: ST behaviour `disc-core` does
+/// not model at all, with no field of its own to resync. They shorten the run
+/// (see `reports/core-report.md`) but there is nothing here to skip.
+const WAIVED: [(&str, &str); 1] = [("players[1].", "discr-b6x")];
 
 /// ST `$6c58` direction bits (`$01` up, `$02` down, `$04` left, `$08` right).
 const JOY_DIR_MASK: u8 = 0x0f;
@@ -62,6 +89,37 @@ struct Cli {
     /// Stop after this many ticks instead of running the whole trace.
     #[arg(long, value_name = "N")]
     frames: Option<usize>,
+    /// Resync the schema's waived rows from the trace each tick instead of
+    /// comparing them, so the run reaches the first divergence among the
+    /// `compared` rows. Off by default.
+    #[arg(long)]
+    skip_waived: bool,
+    /// Also resync any field whose path starts with this, e.g.
+    /// `players[0].state_index`. Repeatable. For measuring past a divergence
+    /// that already has an owning bead.
+    #[arg(long, value_name = "FIELD")]
+    resync: Vec<String>,
+    /// Exit 0 when at least N ticks matched, still printing the divergence.
+    /// Without it any divergence exits 1.
+    #[arg(long, value_name = "N")]
+    min_agree: Option<usize>,
+}
+
+impl Cli {
+    /// The bead a field is waived under, or `None` if it is compared.
+    ///
+    /// `--resync` paths report as `--resync` rather than inventing a bead.
+    fn waiver(&self, field: &str) -> Option<&str> {
+        if self.skip_waived
+            && let Some((_, bead)) = WAIVED.iter().find(|(p, _)| field.starts_with(p))
+        {
+            return Some(bead);
+        }
+        self.resync
+            .iter()
+            .any(|p| field.starts_with(p.as_str()))
+            .then_some("--resync")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +332,64 @@ fn is_player_two(field: &str) -> bool {
     field.starts_with("players[1]")
 }
 
+/// Overwrite every compared field the predicate accepts with the trace's own
+/// value for it, so a row nobody claims disc-core can produce neither fails
+/// nor feeds the next tick.
+///
+/// One arm per row of the schema's "Compared fields" table, in that order.
+/// `want` is `expected.seed()`: the trace record as a `GameState`.
+fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool) {
+    if skip("frame") {
+        state.frame = want.frame;
+    }
+    for n in 0..state.players.len() {
+        let (s, w) = (&mut state.players[n], &want.players[n]);
+        if skip(&format!("players[{n}].world_x")) {
+            s.world_x = w.world_x;
+        }
+        if skip(&format!("players[{n}].world_y")) {
+            s.world_y = w.world_y;
+        }
+        if skip(&format!("players[{n}].facing")) {
+            s.facing = w.facing;
+        }
+        if skip(&format!("players[{n}].state_index")) {
+            s.state_index = w.state_index;
+        }
+        if skip(&format!("players[{n}].grid_cell")) {
+            s.grid_cell = w.grid_cell;
+        }
+    }
+    for n in 0..DISC_SLOTS {
+        let (s, w) = (&mut state.discs[n], &want.discs[n]);
+        if skip(&format!("discs[{n}].world_x")) {
+            s.world_x = w.world_x;
+        }
+        if skip(&format!("discs[{n}].world_y")) {
+            s.world_y = w.world_y;
+        }
+        if skip(&format!("discs[{n}].world_z")) {
+            s.world_z = w.world_z;
+        }
+        if skip(&format!("discs[{n}].vel_x")) {
+            s.vel_x = w.vel_x;
+        }
+        if skip(&format!("discs[{n}].dir_kind")) {
+            s.dir_kind = w.dir_kind;
+        }
+        // vel_y and damage: no column in this trace, see NOT_IN_TRACE.
+    }
+    for n in 0..TILE_CELLS {
+        let (s, w) = (&mut state.tiles[n], &want.tiles[n]);
+        if skip(&format!("tiles[{n}].tile_type")) {
+            s.tile_type = w.tile_type;
+        }
+        if skip(&format!("tiles[{n}].hp")) {
+            s.hp = w.hp;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reporting
 // ---------------------------------------------------------------------------
@@ -385,11 +501,33 @@ fn run(cli: &Cli) -> Result<bool, String> {
         SCHEMA_COMPARED - NOT_IN_TRACE.len(),
         NOT_IN_TRACE.join(", ")
     );
+    if cli.skip_waived {
+        println!(
+            "  waived rows: RESYNCED from the trace each tick, not compared -- {}",
+            WAIVED
+                .iter()
+                .map(|(p, b)| format!("{p}* ({b})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        println!(
+            "  waived rows: COMPARED anyway (the default), so {}* ({}) stops the run on\n               its first tick -- it cannot match. --skip-waived resyncs waived rows\n               from the trace instead and reports the first divergence among the\n               compared rows.",
+            WAIVED[0].0, WAIVED[0].1
+        );
+    }
+    if !cli.resync.is_empty() {
+        println!(
+            "  also resynced (--resync, not a waiver): {}",
+            cli.resync.join(", ")
+        );
+    }
     println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",
         first.frame, first.vbl_6ab4
     );
 
+    let skip = |field: &str| cli.waiver(field).is_some();
     let mut state = first.seed();
     let mut prev_joy = first.joy_6c58;
     let mut prev = first;
@@ -397,23 +535,41 @@ fn run(cli: &Cli) -> Result<bool, String> {
     for expected in &rest[..ticks] {
         let input = prev.input(prev_joy);
         state.tick([input, Input::default()]);
+        resync(&mut state, &expected.seed(), &skip);
 
         let cs = checks(expected, &state);
         if let Some(r) = report(prev, expected, input, &cs) {
+            let matched = expected.frame.saturating_sub(first.frame + 1) as usize;
             print!("\n{r}");
-            println!(
-                "\n{} tick(s) matched before this one.",
-                expected.frame.saturating_sub(first.frame + 1)
-            );
-            return Ok(false);
+            println!("\n{matched} tick(s) matched before this one.");
+            return Ok(gated(cli.min_agree, matched));
         }
 
         prev_joy = prev.joy_6c58;
         prev = expected;
     }
 
-    println!("\nOK: {ticks} tick(s), no divergence.");
+    println!("\nOK: {ticks} tick(s) matched, no divergence.");
     Ok(true)
+}
+
+/// Whether a divergence after `matched` ticks still counts as a pass.
+///
+/// `--min-agree N` makes a known, bead-owned divergence a *boundary* instead of
+/// a permanent red: the gate catches the prefix getting shorter and says so
+/// when it gets longer. Same idiom, and the same reasoning, as
+/// `scripts/oracle_diff.py --min-agree`.
+fn gated(min_agree: Option<usize>, matched: usize) -> bool {
+    let Some(n) = min_agree else { return false };
+    if matched >= n {
+        println!(
+            "PASS: --min-agree {n} and {matched} tick(s) matched. The divergence above is\n      expected and owned by a bead; this gate fails when the prefix SHRINKS.\n      If it grew, raise --min-agree to {matched} in the Makefile."
+        );
+        true
+    } else {
+        println!("FAIL: --min-agree {n} but only {matched} tick(s) matched -- a regression.");
+        false
+    }
 }
 
 fn main() -> ExitCode {
@@ -497,6 +653,71 @@ mod tests {
             1 + 2 * 5 + DISC_SLOTS * 5 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
+    }
+
+    /// The number `make core-check` gates on and `reports/core-report.md`
+    /// cites: with the schema's waived rows resynced from the trace, the
+    /// golden fixture matches for 10 ticks and then diverges on a row that
+    /// bead discr-75o owns. Mirrors the loop in `run`.
+    #[test]
+    fn skip_waived_matches_ten_ticks_then_stops_on_state_index() {
+        let f = golden();
+        let skip = |field: &str| WAIVED.iter().any(|(p, _)| field.starts_with(p));
+        let mut state = f[0].seed();
+        let mut prev_joy = f[0].joy_6c58;
+
+        for (matched, w) in f.windows(2).enumerate() {
+            let (prev, expected) = (&w[0], &w[1]);
+            state.tick([prev.input(prev_joy), Input::default()]);
+            resync(&mut state, &expected.seed(), &skip);
+            if let Some(d) = first_divergence(expected, &state) {
+                assert_eq!(matched, 10, "matched ticks before the divergence");
+                assert_eq!(d.field, "players[0].state_index");
+                assert_eq!((d.expected, d.got), (20, 0));
+                return;
+            }
+            prev_joy = prev.joy_6c58;
+        }
+        panic!("expected a divergence within the fixture");
+    }
+
+    /// Resyncing is opt-in: the default still stops on the waived row.
+    #[test]
+    fn without_skip_waived_the_run_stops_on_player_two() {
+        let f = golden();
+        let mut state = f[0].seed();
+        state.tick([f[0].input(f[0].joy_6c58), Input::default()]);
+        let d = first_divergence(&f[1], &state).expect("p2 cannot match");
+        assert!(is_player_two(&d.field), "{}", d.field);
+    }
+
+    #[test]
+    fn waiver_is_off_by_default_and_resync_is_reported_as_itself() {
+        let bare = Cli::parse_from(["tracecheck", "t.ndjson"]);
+        assert_eq!(bare.waiver("players[1].world_x"), None);
+
+        let skipping = Cli::parse_from(["tracecheck", "t.ndjson", "--skip-waived"]);
+        assert_eq!(skipping.waiver("players[1].world_x"), Some("discr-b6x"));
+        assert_eq!(skipping.waiver("players[0].world_x"), None);
+
+        let extra = Cli::parse_from([
+            "tracecheck",
+            "t.ndjson",
+            "--resync",
+            "players[0].state_index",
+        ]);
+        assert_eq!(extra.waiver("players[0].state_index"), Some("--resync"));
+        assert_eq!(extra.waiver("players[0].world_x"), None);
+    }
+
+    /// --min-agree turns a bead-owned divergence into a boundary: it passes at
+    /// or above the recorded prefix and fails when the prefix shrinks.
+    #[test]
+    fn min_agree_gates_on_the_prefix_not_on_being_clean() {
+        assert!(gated(Some(10), 10), "at the boundary");
+        assert!(gated(Some(10), 11), "past it");
+        assert!(!gated(Some(10), 9), "a shorter prefix is a regression");
+        assert!(!gated(None, 99), "without the flag any divergence fails");
     }
 
     #[test]

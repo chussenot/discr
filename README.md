@@ -1,0 +1,61 @@
+# Disc (Loriciel, 1990, Atari ST) — reverse engineering
+
+Recovering the game rules of *Disc* from the original 68000 code, with every
+claim tied to an address and a measurement. Three things live here:
+
+| | |
+|---|---|
+| `oracle/` | `disc-oracle` — the game code running headless under Musashi, differentially validated against Hatari. `oracle/README.md`. |
+| `crates/disc-core` | The rules, re-implemented in Rust from `docs/disc-notes.md`. No dependencies, integer arithmetic only. |
+| `crates/disc-tools` | `tracecheck` — replays an ST trace against `disc-core` and reports the first divergence. |
+
+Read `reports/` before the code: `exploration-report.md` (what the game does),
+`oracle-report.md` (how far the oracle is trusted), `core-report.md` (how far
+`disc-core` reproduces the ST, and what is waived). `docs/state-schema.md` is
+the field-by-field contract between `disc-core` and a trace, and
+`KNOWN_ISSUES.md` is the standing list of things that bite.
+
+## The two gates
+
+    make oracle-check      # oracle vs Hatari, differential
+    make core-check        # fmt + clippy + tests + tracecheck on the golden fixture
+
+Both are green today. Neither is green *clean*: each gates on a **measured
+prefix** via `--min-agree` rather than on zero divergence, because both
+divergences are understood and owned by a bead, and a gate that is red by
+design gets ignored. `reports/oracle-report.md` and `reports/core-report.md`
+each say where their number came from and when to raise it.
+
+## What you need installed
+
+**`make core-check` needs a Rust toolchain and nothing else.** No system
+libraries, no network, no emulator, no disk image — it runs from a clean clone
+because `tests/fixtures/golden.ndjson` is committed (with `git add -f`; the
+`*.ndjson` rule in `.gitignore` would otherwise catch it). `mise.toml` pins the
+toolchain; `mise install` is enough.
+
+`make oracle-check` needs more, and cannot run from a clean clone at all:
+
+* a C compiler, `make`, and **OpenSSL headers** — `oracle/Makefile` links
+  `-lcrypto` for the per-frame state hash (`apt install libssl-dev`, or
+  `openssl` from your package manager);
+* Python 3 and **Hatari** with a TOS ROM, to record or refresh the reference;
+* `seeds/` and the disk image, which are **gitignored and never committed** —
+  the whole directory is, so it is absent from a fresh clone. That is
+  deliberate: the fixtures are committed precisely because their inputs are
+  not. (`scripts/regen_golden.sh` and `tests/fixtures/golden.provenance.md`
+  both point at a `seeds/MANIFEST.md` that is gitignored along with everything
+  else under `seeds/`, so a fresh clone cannot read it.)
+
+`crates/disc-app` (the playable macroquad front end) is deliberately **outside
+the workspace `default-members`** so its system dependencies — `libGL`,
+`libX11`, `libasound` — can never break `make core-check`. Build it explicitly:
+
+    cargo run -p disc-app
+
+## Working here
+
+`AGENTS.md` is the coordination protocol (pact) and the issue tracker (bd)
+contract. `docs/disc-notes.md` is the evidence base: implement from a citation
+in it, never from memory, and if a note and the code disagree the note wins
+until someone re-measures.
