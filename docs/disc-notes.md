@@ -280,6 +280,44 @@ every served disc has been observed to carry.
 The n=2 correlation between the dwell exit and p2 entering state 17 was not a
 correlation at all -- it is the same instruction sequence, three lines apart.
 
+### Where the served `dir_kind` comes from
+
+The register shuffle is easy to misread -- there are **two** swaps, and
+stopping at the first one inverts the answer:
+
+```
+$c090  move.w $6d8e,d2        ; d2.low  = $6d8e            (reads -3)
+$c094  cmp.w  #$0002,$6d9a
+$c09a  bne.b  $c0a0
+$c09c  move.w #$fffb,d2       ; $6d9a == 2 -> -5 instead
+$c0a0  swap.w d2              ; d2.high = that value
+$c0a2  clr.w  d2              ; d2.low  = 0
+$c0a4  btst.b #0,(a0)
+$c0a8  beq.b  $c0ac
+$c0aa  subq.w #$05,d2         ; p2 flag bit 0 -> d2.low = -5
+$c0ac  swap.w d2              ; SWAP BACK
+```
+
+After the second swap `d2.low` is the `$6d8e` value again and `d2.high` is 0
+or -5, so `move.l d2,($0008,a1)` lands:
+
+```
++$08 vel_y    = d2.high = 0, or -5 when player 2's flag bit 0 is set
++$0a dir_kind = d2.low  = $6d8e, or -5 when $6d9a == 2
+```
+
+which is exactly what the traces show -- `vel_y` 0 and `dir_kind` -3 on every
+served disc.
+
+**So `dir_kind = -3` is not a constant in the code: it is the contents of
+`$6d8e`**, which reads -3 for the whole of the idle reference and never moves
+(bd discr-qqt). Given the magnitude is the per-frame `world_z` step, `$6d8e` plausibly
+sets how fast a served disc travels -- a rank or difficulty knob.
+
+One more detail from the direction branches: `$c0d0`/`$c0e8` compare `d2` with
+`#$ffff` and double the `vel_x` adjustment when it matches, so a `dir_kind` of
+-1 is served with twice the sideways speed of a -3.
+
 Note `$6d9a` appears here too, tested against 2, having already appeared in the
 tile-damage path tested against 1 and 3 (bd discr-z8m). Whatever it is, it
 modulates both damage and serves.
