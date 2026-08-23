@@ -4,7 +4,7 @@ Runs the Disc (Loriciel, 1990) game code under [Musashi] as a headless,
 deterministic 68000 trace generator. Hatari remains the reference; this
 exists so traces are cheap enough for a test suite.
 
-    make
+    mise run oracle        # or: make -C oracle
     ./disc-oracle --seed ../seeds/match_challenge.seed \
                   --script script.txt --frames 300 \
                   --window 0x6a00 0x76c0 --trace out.ndjson

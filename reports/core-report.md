@@ -8,7 +8,7 @@ actually goes, what is deliberately not modelled, and who owns each gap.
 Same standard as `reports/oracle-report.md`: a number here was measured by a
 command you can re-run, and a gap is named with the bead that tracks it.
 
-Reproduce with `make core-check`, or ungated with `make tracecheck`.
+Reproduce with `mise run core-check`, or ungated with `mise run tracecheck`.
 
 ## Result
 
@@ -203,7 +203,7 @@ rule *as decoded* would not produce it either: the aim point is 98 and the
 disc is at 45, so the rule says `vel_x += 1`, while the ST decays it. Whatever
 gates `$a71a`, recovering the gate alone will not explain the turnaround.
 
-## What `make core-check` gates on, and why
+## What `mise run core-check` gates on, and why
 
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
@@ -234,7 +234,7 @@ boundary:
 recorded in `Makefile` as `TRACE_MIN_AGREE`** with the reason next to it. Raise
 it when the prefix grows.
 
-`make tracecheck` is the ungated view: same run, no `--min-agree`, exits 1.
+`mise run tracecheck` is the ungated view: same run, no `--min-agree`, exits 1.
 
 Two things `core-check` deliberately does **not** do. It does not build
 `disc-app` — that crate stays outside the workspace `default-members` so a
@@ -242,7 +242,7 @@ missing `libGL`/`libX11`/`libasound` can never break the gate — and it does no
 touch `oracle/`, `scripts/` or `seeds/`, so it needs no C compiler, no
 emulator, and no disk image. **It runs from a clean clone with only a Rust
 toolchain**, because `tests/fixtures/golden.ndjson` is committed. There is no
-new system dependency; `README.md` says so next to the ones `make oracle-check`
+new system dependency; `README.md` says so next to the ones `mise run oracle-check`
 does need.
 
 ## The coordination account
@@ -356,7 +356,7 @@ five agents said so independently and none tried to force it.
 ## Honest limits
 
 * **The gate is a 10-tick prefix on one fixture.** `--min-agree 10` is what
-  `make core-check` enforces. Everything past frame 10 in the table above needs
+  `mise run core-check` enforces. Everything past frame 10 in the table above needs
   `--resync`, which is a measuring tool, not a claim: a resynced row is one
   `disc-core` was *given*, not one it produced.
 * **The tile module is entirely untested by trace comparison.** All 17 cells

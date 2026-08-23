@@ -4,7 +4,7 @@
 seed. This is what it agrees with Hatari about, where it stops agreeing, and
 why.
 
-Reproduce with `make oracle-check`.
+Reproduce with `mise run oracle-check`.
 
 ## Result
 

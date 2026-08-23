@@ -17,8 +17,8 @@ the field-by-field contract between `disc-core` and a trace, and
 
 ## The two gates
 
-    make oracle-check      # oracle vs Hatari, differential
-    make core-check        # fmt + clippy + tests + tracecheck on the golden fixture
+    mise run oracle-check      # oracle vs Hatari, differential
+    mise run core-check      # fmt + clippy + tests + tracecheck on the golden fixture
 
 Both are green today. Neither is green *clean*: each gates on a **measured
 prefix** via `--min-agree` rather than on zero divergence, because both
@@ -28,13 +28,13 @@ each say where their number came from and when to raise it.
 
 ## What you need installed
 
-**`make core-check` needs a Rust toolchain and nothing else.** No system
+**`mise run core-check` needs a Rust toolchain and nothing else.** No system
 libraries, no network, no emulator, no disk image — it runs from a clean clone
 because `tests/fixtures/golden.ndjson` is committed (with `git add -f`; the
 `*.ndjson` rule in `.gitignore` would otherwise catch it). `mise.toml` pins the
 toolchain; `mise install` is enough.
 
-`make oracle-check` needs more, and cannot run from a clean clone at all:
+`mise run oracle-check` needs more, and cannot run from a clean clone at all:
 
 * a C compiler, `make`, and **OpenSSL headers** — `oracle/Makefile` links
   `-lcrypto` for the per-frame state hash (`apt install libssl-dev`, or
@@ -49,7 +49,7 @@ toolchain; `mise install` is enough.
 
 `crates/disc-app` (the playable macroquad front end) is deliberately **outside
 the workspace `default-members`** so its system dependencies — `libGL`,
-`libX11`, `libasound` — can never break `make core-check`. Build it explicitly:
+`libX11`, `libasound` — can never break `mise run core-check`. Build it explicitly:
 
     cargo run -p disc-app
 

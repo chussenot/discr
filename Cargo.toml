@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/disc-core", "crates/disc-tools", "crates/disc-app"]
 # disc-app pulls macroquad, whose system deps may be missing on a build box.
-# Keeping it out of default-members means `make core-check` can never break on it.
+# Keeping it out of default-members means `mise run core-check` can never break on it.
 default-members = ["crates/disc-core", "crates/disc-tools"]
 
 [workspace.package]

@@ -3,7 +3,7 @@
 # reference if one exists; pass --refresh to re-record it.
 set -e
 cd "$(dirname "$0")/.."
-make -s -C oracle
+mise run oracle
 
 SEED=${SEED:-seeds/diff.seed}
 FRAMES=${FRAMES:-400}

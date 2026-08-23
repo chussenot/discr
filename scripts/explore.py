@@ -68,7 +68,7 @@ def main(argv=None):
                     help="keep inside the differentially validated window")
     a = ap.parse_args(argv)
     if not os.path.exists(ORACLE):
-        raise SystemExit("build the oracle first: make -C oracle")
+        raise SystemExit("build the oracle first: mise run oracle")
 
     baseline, _ = run(a.seed, a.frames, 0, 0, 0, "idle")
     base = summarise(baseline)

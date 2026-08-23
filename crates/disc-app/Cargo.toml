@@ -9,5 +9,5 @@ license.workspace = true
 disc-core = { workspace = true }
 # The only dependency. Kept out of the workspace default-members (see the root
 # Cargo.toml) so its system deps -- libGL, libX11, libasound -- can never break
-# `make core-check`.
+# `mise run core-check`.
 macroquad = "0.4"
