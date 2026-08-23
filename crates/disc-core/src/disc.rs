@@ -1,11 +1,10 @@
 //! Disc flight, steering and impact. Owned by bead `discr-leu` (I3).
 //!
 //! ST `$a4ea` is the update loop entry (`lea $6e3e,a5`): 8 records of stride
-//! `$42`. Per slot the ST steers `vel_x`/`vel_y` by +/-1 toward the aimed
-//! player, clamped `[-2,+2]` (`$a722`-`$a860`), integrates `world_x` by `+$06`
-//! (`$6e44`) and advances `world_z`, flips `+$0a` with `neg.w` on turn-around
-//! (`$a606`), and on a tile hit subtracts `+$16` from the struck cell's HP
-//! (`$a31c`).
+//! `$42`. Per slot the ST nudges `vel_x` by +/-1 toward the aimed player,
+//! clamped `[-2,+2]` (`$a722`), integrates `world_x` by `+$06` (`$6e44`) and
+//! advances `world_z`, flips `+$0a` with `neg.w` on turn-around (`$a606`), and
+//! on a tile hit subtracts `+$16` from the struck cell's HP (`$a31c`).
 //!
 //! There is no possession: a disc is always in flight and always homing on a
 //! target player, so the target lives in [`crate::DiscSlot::aim`].
@@ -18,6 +17,11 @@
 //! * [`serve`] -- `$a9a0` stores the spawn record and `$a618` writes
 //!   `dir_kind = +1`, but nothing says what *causes* a serve.
 //!   `// UNKNOWN: see bd discr-m4x`.
+//! * vertical motion -- `vel_y` (+$08) is 0 on all 84 frames of
+//!   `dumps/disc_trace` and `world_y` still moves, so `world_y` is not
+//!   integrated by `vel_y` and the `$a758` vertical steering block never
+//!   fired. [`step`] leaves `world_y` and `vel_y` alone; what writes `world_y`
+//!   and what gates `$a758` are both `// UNKNOWN: see bd discr-tan`.
 //! * [`reflect`] and [`impact`] -- `$a606` negates `+$0a` when the disc "turns
 //!   around" and `$a31c` damages cell `($00,a0,d5.w)`, but neither the
 //!   turn-around condition nor the computation of `d5` is decoded, so [`step`]
@@ -27,6 +31,8 @@
 //! Screen X/Y (`+$0c` / `+$0e`) are projection, recomputed every frame at
 //! `$a6b2`/`$a6b6` from world (x, y, z) through LUTs. They are not state and do
 //! not appear here.
+
+use core::cmp::Ordering;
 
 use crate::{DiscSlot, Event, Player, PlayerId, TILE_CELLS, Tile, VEL_CLAMP, tile};
 
@@ -48,7 +54,8 @@ pub const PLAYER_HEIGHT_REF: i16 = 99;
 /// Subtracted from [`PLAYER_HEIGHT_REF`] to get the disc's Y aim point.
 ///
 /// ST `$a758` `steer_at_p1_y`: the target is `$6ca4 - $10`, i.e. `99 - 16` =
-/// 83, and the observed disc `world_y` converges 81 -> 82 -> 83.
+/// 83, and the observed disc `world_y` settles at 83. That block never fired
+/// in any trace we have, so [`step`] does not use this -- see [`aim_y`].
 pub const AIM_Y_OFFSET: i16 = 0x10;
 
 /// `dir_kind` written when a disc is served.
@@ -79,32 +86,41 @@ pub fn aim_x(players: &[Player; 2], aim: PlayerId) -> i16 {
 
 /// The disc's Y aim point. ST `$a758`: `$6ca4 - $10`, the same for both
 /// players because `player+$04` is a constant.
+///
+/// Exposed but unused by [`step`]: `$a758` never fired in the 84 recorded
+/// frames, so what gates it is not decoded. `// UNKNOWN: see bd discr-tan`.
 #[must_use]
 pub const fn aim_y() -> i16 {
     PLAYER_HEIGHT_REF - AIM_Y_OFFSET
 }
 
-/// One frame of velocity steering: nudge `vel` by +/-1 toward `target`.
+/// One frame of velocity steering: the literal `$a722`-`$a758` rule.
 ///
-/// ST `$a722`-`$a860`: `+/-1` per frame, clamped `[-2,+2]` (`cmp.w #$fffe` /
-/// `cmp.w #$0002`). There is no angle table.
+/// Three cases and no others -- `d5` is the aim point, `d0` the coordinate,
+/// `($0006,a5)` the velocity:
 ///
-/// The result is additionally limited to the remaining gap so the disc cannot
-/// step past its aim point. That limit is what reproduces the observed
-/// `world_y` convergence 81 -> 82 -> 83 (Part 9); a bare `[-2,+2]` clamp
-/// reaches 82 and then overshoots to 84 and oscillates. Which ST instructions
-/// produce the damping is not identified.
-/// `// UNKNOWN: see bd discr-g38`.
+/// ```text
+/// $a722  cmp.w d0,d5
+/// $a724  bgt -> $a74c   aim > pos:  if vel < +2 then vel += 1   (clamp +2)
+/// $a726  blt -> $a73c   aim < pos:  if vel > -2 then vel -= 1   (clamp -2)
+///        else  $a728    aim == pos: vel decays TOWARD ZERO by 1
+///                         $a72c bmi -> $a736 addq  (vel < 0: += 1)
+///                         $a72e beq -> done        (vel == 0: nothing)
+///                         $a730      subq          (vel > 0: -= 1)
+/// ```
+///
+/// The at-target decay is the whole of the damping: no gap limiting, no
+/// proportional term, no angle table.
 fn steer(vel: i16, pos: i16, target: i16) -> i16 {
-    let gap = target - pos;
-    let nudged = match gap.signum() {
-        1 => vel.saturating_add(1),
-        -1 => vel.saturating_sub(1),
-        _ => 0,
-    };
-    nudged
-        .clamp(-VEL_CLAMP, VEL_CLAMP)
-        .clamp(gap.min(0), gap.max(0))
+    match target.cmp(&pos) {
+        // $a74c: bgt -- clamp +2.
+        Ordering::Greater if vel < VEL_CLAMP => vel + 1,
+        // $a73c: blt -- clamp -2.
+        Ordering::Less if vel > -VEL_CLAMP => vel - 1,
+        // $a728-$a736: at target, unwind one step toward zero.
+        Ordering::Equal => vel - vel.signum(),
+        _ => vel,
+    }
 }
 
 /// Advance one disc slot by one frame. ST `$a4ea`, one iteration.
@@ -129,13 +145,17 @@ pub fn step(
         return;
     }
 
-    // $a722-$a860: steer both components toward the aimed player.
+    // $a722: steer the horizontal component toward the aimed player.
     disc.vel_x = steer(disc.vel_x, disc.world_x, aim_x(players, disc.aim));
-    disc.vel_y = steer(disc.vel_y, disc.world_y, aim_y());
 
-    // $6e44: world X integrates by vel_x. world_y follows vel_y the same way.
+    // $6e44: world X integrates by vel_x.
     disc.world_x = disc.world_x.saturating_add(disc.vel_x);
-    disc.world_y = disc.world_y.saturating_add(disc.vel_y);
+
+    // world_y is deliberately NOT advanced. In dumps/disc_trace (84 frames)
+    // vel_y (+$08) is 0 on every frame while world_y (+$02) moves on three
+    // frame pairs, so world_y is not integrated by vel_y and the $a758
+    // vertical block never fired -- neither its gate nor world_y's writer is
+    // decoded. // UNKNOWN: see bd discr-tan.
 
     // disc+$04: world Z advances +1 per frame while in flight.
     disc.world_z = disc.world_z.saturating_add(1);
@@ -292,34 +312,43 @@ mod tests {
             for _ in 0..96 {
                 step(&mut disc, 0, &players, &mut tiles, &mut events);
                 assert!((-VEL_CLAMP..=VEL_CLAMP).contains(&disc.vel_x), "{disc:?}");
-                assert!((-VEL_CLAMP..=VEL_CLAMP).contains(&disc.vel_y), "{disc:?}");
+                // dumps/disc_trace: vel_y is 0 on all 84 frames.
+                assert_eq!(disc.vel_y, 0, "{disc:?}");
             }
         }
     }
 
-    /// Part 9: vel_y homes on $6ca4 - $10 = 83, NOT on the player's Y at
-    /// +$06, and world_y converges 81 -> 82 -> 83.
+    /// $a728-$a736: at the aim point the velocity unwinds toward zero one
+    /// step per frame. That decay is the whole of the damping -- the only
+    /// part of the steering rule the ST actually shows.
     #[test]
-    fn vel_y_homes_on_the_height_reference() {
+    fn at_target_the_velocity_decays_toward_zero() {
+        assert_eq!(steer(2, 50, 50), 1);
+        assert_eq!(steer(1, 50, 50), 0);
+        assert_eq!(steer(0, 50, 50), 0);
+        assert_eq!(steer(-1, 50, 50), 0);
+        assert_eq!(steer(-2, 50, 50), -1);
+        // $a724 / $a726: away from target, +/-1 up to the clamp and no further.
+        assert_eq!(steer(1, 50, 60), 2);
+        assert_eq!(steer(2, 50, 60), 2);
+        assert_eq!(steer(-1, 50, 40), -2);
+        assert_eq!(steer(-2, 50, 40), -2);
+    }
+
+    /// Part 9: vel_y is 0 on all 84 recorded frames and world_y still moves,
+    /// so step() must not touch either. What advances world_y is bd discr-tan.
+    #[test]
+    fn step_leaves_world_y_and_vel_y_alone() {
         assert_eq!(aim_y(), 83);
-        let players = [
-            Player {
-                world_x: 117,
-                world_y: 18, // $6ca6: the walkable row -- must NOT be the target
-                ..Player::default()
-            },
-            Player::default(),
-        ];
-        let mut disc = flying(aim_x(&players, PlayerId::One), 81);
+        let players = players_at(117, 8);
+        let mut disc = flying(0, 81);
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        let mut ys = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..96 {
             step(&mut disc, 0, &players, &mut tiles, &mut events);
-            ys.push(disc.world_y);
+            assert_eq!((disc.world_y, disc.vel_y), (81, 0), "{disc:?}");
         }
-        assert_eq!(ys, vec![82, 83, 83, 83]);
     }
 
     /// $a606: neg.w -- a sign flip that preserves the kind magnitude.
