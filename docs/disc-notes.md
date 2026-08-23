@@ -320,34 +320,41 @@ The at-target decay is the whole of the damping. There is **no** gap limiting
 and no proportional term: the velocity is a bounded integer nudged one step
 per frame, and it unwinds only once the disc is level with the aim point.
 
-## The steering block is GATED OFF in all the evidence we have (Part 9)
+## RETRACTED: "the steering block is gated off" -- it aims at PLAYER 2 (Part 9)
 
-The rule at `$a722` is known exactly (above), but it does not run. In
-`tests/fixtures/golden.ndjson` the aim point is `$6ca2 - $13` = 98 and disc 0
-starts at `world_x` 21 and falls:
+An earlier revision of this file claimed the `$a71a` steering block never
+fires, on the evidence that with the aim at `$6ca2 - $13` = 98 the rule would
+increment `vel_x` on eleven consecutive frames where the ST holds it at -2.
+**That was the wrong conclusion from a correct observation.** The block runs;
+it is simply not aimed at player 1.
+
+Re-tested against `tests/fixtures/tile_damage.ndjson` with the `$a816` aim,
+`$6d22 - $13` (player TWO's X):
 
 ```
-frame   0   1   2   3   4   5   6   7   8   9  10  11  12
-wx     21  19  17  15  13  11   9   7   5   3   1   0   2
-vel_x  -2  -2  -2  -2  -2  -2  -2  -2  -2  -2  -2  +2  +2
+frames 12..34:  23 of 23 velocity transitions predicted exactly
 ```
 
-Every one of those frames has aim (98) > pos, so the rule would have
-incremented `vel_x` each time. It holds at -2 for eleven frames. **The block is
-gated by something undecoded** (bd discr-217) -- exactly like the vertical block
-below, which never fired either.
+and frame 34 is the at-target decay itself -- p2 X 63, aim 44, disc at 44,
+`vel_x` 2 -> 1 -- which is the `$a728` case, not an anomaly. The "unexplained
+one-step decay at the dwell" recorded above is explained: it is the steering
+rule reaching its target.
 
-What the trace DOES show, and what a core should model:
+`$a7d8` (`$6d22 - 4`) fits a different stretch of the same run, f99..f124,
+exactly. So **both player-2 aim variants are live within one round** and the
+open question is which is selected when -- not whether the block runs.
 
-* `world_x += vel_x` each frame;
-* a **floor at 0**: frame 10 -> 11 moves 1 -> 0, a step of -1 with `vel_x` = -2,
-  so the position is clamped rather than allowed past 0;
-* the velocity **sign-flips on hitting that floor**, -2 -> +2, which is the
-  `neg.w` at `$a606`.
+Where it does NOT fit:
 
-The `neg.w` itself is guarded by `$a600 bpl` on `d2`, whose meaning is not
-decoded, so the *trigger* is inferred from the coincidence with the floor and
-should be labelled as modelled, not mirrored.
+* **f1..f11**, the descent to the near bound: aim 44 sits above the disc, so
+  the rule says raise `vel_x`, and the ST holds it at -2 until the bound flips
+  it. The bound governs, not the steering.
+* **the dwell** (f35 on): the whole record is frozen, so nothing updates.
+
+The lesson is worth keeping: testing one aim variant and concluding "the block
+is gated off" was a claim about the code drawn from a single hypothesis about
+its input. bd discr-217 is retargeted from "what gates it" to "which aim
+variant is selected when".
 
 ## vel_y is inert in all the evidence we have (Part 9)
 
