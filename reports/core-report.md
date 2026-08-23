@@ -1,5 +1,22 @@
 # `disc-core` — acceptance report
 
+> **Superseded in part by [`part10-report.md`](part10-report.md).** Five of the
+> gaps this report names were resolved by a static read in Part 10, and three of
+> its statements are now wrong and are corrected there, not here:
+>
+> * "The tile module is entirely untested by trace comparison" — `disc::step`
+>   now calls `tile::damage` and the frame-70 event in
+>   `tests/fixtures/tile_damage.ndjson` reproduces end to end.
+> * "A trace in which a disc destroys a cell is the highest-value fixture this
+>   project does not have" — it exists and is committed. The new one is a trace
+>   in which a disc picks up a bonus.
+> * The 33-tick row of the table below is now 51, and the 10-tick gate has a
+>   second gate beside it. See Part 10's scoreboard.
+>
+> Everything else here still stands, including the coordination account and the
+> reasoning behind gating on a prefix length. It is left unedited on purpose:
+> the record of what was known when is the point.
+
 `disc-core` re-implements the rules of Disc (Loriciel, 1990) in Rust from the
 addresses in `docs/disc-notes.md`. `tracecheck` replays an Atari ST trace
 against it and reports the first divergence. This is how far that agreement
