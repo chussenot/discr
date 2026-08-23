@@ -152,12 +152,41 @@ held state. `disc-core` should model `Disc { aim: PlayerId, .. }`, not
 
 ```
 $6e3e+n*$42 +$06  vel_x   (word) steered +/-1 per frame toward $6ca2, clamped [-2,+2]
-$6e3e+n*$42 +$08  vel_y   (word) steered the same way toward $6ca4
+$6e3e+n*$42 +$08  vel_y   (word) steered the same way toward $6ca4 -- see below
 $6e3e+n*$42 +$16  damage  (word) subtracted from tile HP on impact
 $a71a  steer_at_p1_x  (code)  $6ca2 - $13
 $a758  steer_at_p1_y  (code)  $6ca4 - $10
 $a7d8  steer_at_p2_x  (code)  $6d22 - 4     ($a816 uses $6d22 - $13)
 ```
+
+## Player +$04 is NOT the player's Y (resolved, Part 9)
+
+`contract` flagged an apparent conflict: the record layout puts the player's Y
+at `+$06` (`$6ca6`), but `$a758 steer_at_p1_y` homes the disc's `vel_y` on
+`$6ca4` = `player+$04`. Both are right; they are different quantities.
+
+From the Part-5 hexdump of the player record:
+
+```
+$6ca0:  0001   0075   0063   0012
+        +$00   +$02   +$04   +$06
+        flag   X=117  99     Y=18
+```
+
+`+$04` is a **constant 99** -- a height/altitude reference, not a coordinate
+the player moves along. It never changed across the X and Y hunts. The disc's
+`vel_y` homes on `$6ca4 - $10` = 83, and the observed disc `world_y` converges
+81 -> 82 -> 83. That is the confirmation: the disc rises to the player's
+height, while `$6ca6` (18 / 25 / 2) is the walkable row that selects the near
+or far half of the floor grid.
+
+```
+$6ca4  player_height_ref  (word)  constant 99; disc vel_y homes on this - $10
+$6ca6  player_y           (word)  the walkable row; > 14 = far row
+```
+
+So: player movement and the grid cell use `+$06`; disc vertical homing uses
+`+$04`. A core that steers the disc at `+$06` will diverge from the trace.
 
 ## Player states validated tier 1 (Part 8)
 
