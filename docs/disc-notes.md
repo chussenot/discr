@@ -229,6 +229,61 @@ during the dwell. The one-step `vel_x` decay on the frame the dwell begins
 Note the racked disc of the earlier notes sits at world `(140, 53)` -- the same
 depth this cycle turns at. The rack is the far end of the run.
 
+## THE SERVE, decoded (Part 9)
+
+Found with Hatari's instruction history (`history cpu 60` + `lock history 40`
+on a breakpoint at `$a9b4`), which showed the whole path in one hit.
+
+**`$a972` is the serve routine.** It claims the sound-effect slot, points USP
+at sample `$66f16` and starts Timer A, then fills the first free disc slot:
+
+```
+$a972  cmp.b #$01,$6c5c        ; sfx priority
+$a97a  move.b #$01,$6c5c
+$a982  lea.l  $00066f16,a0     ; the serve sample
+$a988  st.b   $6c5b
+$a98c  move.l a0,usp           ; Timer A's stream cursor
+$a98e  move.b #$7c,$fffa1f     ; TADR
+$a994  move.b #$01,$fffa19     ; TACR -- start it
+$a99c  lea.l  $6e3e.w,a1       ; the disc array
+$a9a0  moveq  #$07,d3          ; 8 slots
+$a9a2  tst.b  ($0010,a1)       ; free?
+$a9a6  bne.w  $aa46            ;   no -> next slot
+$a9aa  addq.w #$01,$6d8a
+$a9ae  move.l d0,(a1)          ; +$00 world_x : +$02 world_y
+$a9b0  move.l d1,($0004,a1)    ; +$04 world_z : +$06 vel_x
+$a9b4  move.l d2,($0008,a1)    ; +$08 vel_y   : +$0a dir_kind
+```
+
+**Its caller is `$c06e`-`$c0fa`, and the serve is PLAYER 2's action.** Every
+parameter comes from player 2:
+
+```
+$c07a  move.w $6d22,d0 ; sub.w #9 ; swap ; move.w #$0051,d0
+                                 -> world_x = p2.x - 9,  world_y = $51 = 81
+$c088  move.w $6d26,d1 ; subq #1 ; swap ; (later) clr.w d1
+                                 -> world_z = p2.y - 1,  vel_x = 0
+$c090  move.w $6d8e,d2 ; swap ; clr.w d2
+                                 -> vel_y = $6d8e,       dir_kind = 0
+$c094  cmp.w #$0002,$6d9a        ; the damage-multiplier variable, again
+$c0b0  btst.b #2,(a0) -> $c0ce   ; p2 LEFT  : subq #1,d1 (twice if d2 = -1)
+$c0b8  btst.b #3,(a0) -> $c0e6   ; p2 RIGHT : addq #1,d1 (twice if d2 = -1)
+$c0c0  bsr.w  $a972              ; straight
+$c0c4  move.b #$11,$6d2e         ; p2 state_index := $11 = 17
+```
+
+So the throw direction is **player 2's own left/right input**: straight gives
+`vel_x` 0, left -1 or -2, right +1 or +2. `world_y` = 81 is exactly the value
+every served disc has been observed to carry.
+
+`$c0c4` settles a loose end: the serve **sets player 2's `state_index` to 17**.
+The n=2 correlation between the dwell exit and p2 entering state 17 was not a
+correlation at all -- it is the same instruction sequence, three lines apart.
+
+Note `$6d9a` appears here too, tested against 2, having already appeared in the
+tile-damage path tested against 1 and 3 (bd discr-z8m). Whatever it is, it
+modulates both damage and serves.
+
 ## The dwell exit IS a serve (Part 9) -- two unknowns collapse into one
 
 Watching `$6e48` (disc 0's `dir_kind`) in Hatari over 180 in-match frames gives
