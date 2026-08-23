@@ -196,6 +196,39 @@ $6ca6  player_y           (word)  the walkable row; > 14 = far row
 So: player movement and the grid cell use `+$06`; disc vertical homing uses
 `+$04`. A core that steers the disc at `+$06` will diverge from the trace.
 
+## The disc flight cycle (Part 9) -- resolves the "freeze" and the "turnarounds"
+
+Segmenting `tests/fixtures/tile_damage.ndjson` by `(dir_kind, world_z step)`
+shows disc 0 running a four-phase cycle, twice over, with hard boundaries:
+
+```
+f0  ..34    dir_kind +1   z +1    wz 20 -> 54     outbound
+f35 ..51    dir_kind +1   z  0    wz 54           DWELL, whole record frozen
+f52 ..52    dir_kind -3   z -1    wz 53           turn
+f53 ..69    dir_kind -3   z -3    wz 50 -> 2      return, three times faster
+f70 ..70    dir_kind +1   z -2    wz 0            turn
+f71 ..124   dir_kind +1   z +1    wz 1 -> 54      outbound again
+f125..151   dir_kind +1   z  0    wz 54           dwell again
+```
+
+So:
+
+* `world_z` runs between **0 and 54** and the sign of `dir_kind` says which way;
+* the magnitude of `dir_kind` **is** the z step -- outbound `+1`, return `-3`,
+  so the disc comes back three times faster than it goes out;
+* the **"freeze" is a dwell at the far end** (`wz` = 54), about 17 frames, with
+  the entire record static including `world_x`. That is bd discr-0fm, and it is
+  a phase of the cycle rather than an anomaly;
+* what `disc` read as "upper turnarounds at `world_x` 45 and 113" were these
+  dwells. They differ because `world_x` simply stops wherever it had got to.
+
+`world_x` keeps integrating by `vel_x` during outbound and return, and holds
+during the dwell. The one-step `vel_x` decay on the frame the dwell begins
+(2 -> 1 at f34) is not explained.
+
+Note the racked disc of the earlier notes sits at world `(140, 53)` -- the same
+depth this cycle turns at. The rack is the far end of the run.
+
 ## The tile type word: gate polarity confirmed, second writer found (Part 9)
 
 The walkability gate polarity is settled by `$f634`-`$f64e`:
