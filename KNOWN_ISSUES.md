@@ -259,3 +259,54 @@ Phase 0 read Timer A's 12-instruction loop, saw only PSG writes, and concluded
 the timer could be skipped. Its exit path -- eight bytes further on, taken once
 per sample -- clears two bytes below $8000. The differential phase found it
 immediately. Read to the `rte`, on every branch.
+
+
+---
+
+# Part 8 additions
+
+## The validated-window law (a permanent property, not a bug)
+
+Agreement length between disc-oracle and Hatari falls as input density rises,
+and always ends the same way: the video double-buffer pointers desync one
+frame before everything else.
+
+| programme | frames of tier-1 agreement |
+|---|---|
+| idle, from the original CHALLENGE seed | 275 |
+| sweep (one press per direction) | ~364 |
+| rightfire (24 fire pulses) | 116 |
+| idle, from the relayed `rally_f100` seed | 30 |
+
+The last row is the one to plan around: a seed minted inside an active
+three-disc rally verifies at only 30 frames, because a busy frame is a frame
+that can overrun its budget. **Proximal seeds bought by relay are cheap; quiet
+proximal seeds are what is actually scarce.**
+
+## Realigning after a dropped frame does not work
+
+Tempting and wrong. At a divergence the oracle really is one frame ahead --
+shifting it back leaves exactly 4 differing bytes, all of them per-frame
+counters (`$6ab4`, `$6ab6`, `$6c81`) off by exactly one. But the alignment
+holds for a single frame and then collapses (64, 59, 116, 32 stray bytes on
+the following frames). Once the game's own timing counters differ, the two
+runs take different paths rather than the same path offset in time.
+`oracle_diff.py --tier2` implements the realignment with a counter-confirming
+guard and prints that evidence table when it refuses. It has never accepted a
+realignment, and no result in this repo rests on one.
+
+## Seeds must not be minted mid-press
+
+A seed frozen while a key is held bakes `$6c58 = $80` into the image. A
+reference trace then decodes the release a few frames later while a replay
+running a different script never does, and verification fails on the joystick
+byte for a reason that has nothing to do with emulation. `seed_relay.py` waits
+for the decoded byte to settle, `seed()` records it as `joystick_6c58`, and
+relay refuses to mint with input held.
+
+## A nested key can shadow the one you are checking
+
+A relayed seed records its parent's hash, so its JSON contains two `"sha256"`
+keys. disc-oracle matched the first one it found -- the parent's -- and
+rejected a perfectly good seed. The nested key is now `parent_sha256`, and the
+check scans every occurrence rather than the first.

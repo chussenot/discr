@@ -28,4 +28,12 @@ echo "== differential validation against Hatari (joystick sweep)"
 
 echo
 echo "== differential validation against Hatari (right+fire: disc serve path)"
-exec ./scripts/oracle_diff.py --frames "$FRAMES" --input rightfire --min-agree 112 "$@"
+./scripts/oracle_diff.py --frames "$FRAMES" --input rightfire --min-agree 112 "$@"
+
+if [ -f seeds/rally_f100.seed ] && [ -f tmp/hatari_ref_rally_f100.json ]; then
+  echo
+  echo "== relayed seed (rally_f100)"
+  exec ./scripts/seed_verify.sh seeds/rally_f100.seed tmp/hatari_ref_rally_f100.json 30
+fi
+echo
+echo "(relayed seed absent -- mint with scripts/seed_relay.py to include it)"

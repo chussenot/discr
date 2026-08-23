@@ -116,6 +116,65 @@ Disc `world_x` spans **0..153**, i.e. the same range as the player's walkable
 X (8..152) -- an earlier trace that only showed 0..48 had simply caught one
 leg of a flight.
 
+## Tile damage (Part 8, tier 1)
+
+The cell is `{+$00 type, +$02 hit points}` -- **not** occupancy in `+$02`; that
+was a Part-5 misreading, and `+$00` is the occupancy/type word the movement
+code `tst.w`s as a walkability gate. This **resolves the design-intent
+conflict in favour of the creator interview's HP model**, the same way the
+angle-table claim was resolved against it earlier.
+
+```
+$a31c  sub.w  ($0016,a5),d6      ; HP -= the DISC record's damage field (+$16)
+$a34a  clr.w  d6                 ; clamped at 0, never negative
+$a34c  move.w d6,($02,a0,d5.w)   ; writer; Hatari reports PC $a350
+$a354  clr.w  ($00,a0,d5.w)      ; HP == 0 also clears the TYPE word
+$a360  move.b #$03,$6c5c         ; and queues the destruction sample
+```
+
+Observed tier 1: `(2,4)->(2,1)`, `(1,4)->(1,1)`, `(2,5)->(2,2)` (all -3, the
+damage that disc carried), then `(2,1)->(0,0)` and `(1,1)->(0,0)` on the
+killing hit. A second, unidentified writer sets bit 7 of the HP word
+(`(1,5)->(1,133)`) and clears it later; not explained.
+
+```
+$7616+cell*8 +$00  tile_type      (word) {0,1,2}; 0 = destroyed; walkability gate
+$7616+cell*8 +$02  tile_hp        (word) -= disc[+$16] per hit, clamped at 0
+$a34c              tile_damage    (code) the HP store; $a354 destroys the cell
+```
+
+## Disc steering and possession (Part 8, tier 1)
+
+There is **no possession**. A disc is always in flight and always homing on a
+target player's coordinates; the engine has serve, home and reflect, and no
+held state. `disc-core` should model `Disc { aim: PlayerId, .. }`, not
+`held_by: Option<PlayerId>`.
+
+```
+$6e3e+n*$42 +$06  vel_x   (word) steered +/-1 per frame toward $6ca2, clamped [-2,+2]
+$6e3e+n*$42 +$08  vel_y   (word) steered the same way toward $6ca4
+$6e3e+n*$42 +$16  damage  (word) subtracted from tile HP on impact
+$a71a  steer_at_p1_x  (code)  $6ca2 - $13
+$a758  steer_at_p1_y  (code)  $6ca4 - $10
+$a7d8  steer_at_p2_x  (code)  $6d22 - 4     ($a816 uses $6d22 - $13)
+```
+
+## Player states validated tier 1 (Part 8)
+
+Handlers from the `$10e2c` jump table; each seen inside a window where the
+oracle and Hatari agree byte-for-byte.
+
+```
+$6cae = 1   walk left       $f5e2      $6cae = 2   walk right      $f7f6
+$6cae = 5   $fb6e (tests fire, btst #7,(a0) at $fb74)
+$6cae = 14  $106b2   entered under Right+Fire; idle play never reaches it
+$6cae = 20  $1094a   transient entered when walking starts
+$6cae = 21  $109aa   $6cae = 24  $10ac4   $6cae = 27  $10c8a
+```
+
+States 11, 16, 17, 19, 23 and 31 were observed only outside validated windows
+and are deliberately NOT recorded here; see reports/exploration-report.md.
+
 ## Ghidra bookmark set
 
 ```
@@ -133,4 +192,6 @@ $83d2   Timer A PSG streamer; $83fe is its end-of-stream path
 $a6c2   disc engine sound trigger (sets $6c5b/$6c5c, arms Timer A)
 $a606   disc turn-around: neg.w on the owner/direction field
 $a9a0   disc spawn/serve (stores the record, bumps $6d8a)
+$a34c   tile damage store; $a354 destroys the cell
+$a71a   disc steering, homes on a player's coordinates
 ```
