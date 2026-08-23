@@ -20,3 +20,4 @@
 {"id":"int-8c46dd3a2c99e6a779cacbc9c9c09fde","kind":"field_change","created_at":"2026-08-23T11:03:50.472513844Z","actor":"orchestrator","issue_id":"discr-b4q","extra":{"field":"status","new_value":"blocked","old_value":"open"}}
 {"id":"int-e8aa6e43b9dbe9985a799d5171e5d1e8","kind":"field_change","created_at":"2026-08-23T11:20:31.790078212Z","actor":"orchestrator","issue_id":"discr-fnl","extra":{"field":"status","new_value":"blocked","old_value":"open"}}
 {"id":"int-3b20635a64087324a728d68a23b349d2","kind":"field_change","created_at":"2026-08-23T11:20:32.0741129Z","actor":"orchestrator","issue_id":"discr-1q7","extra":{"field":"status","new_value":"blocked","old_value":"open"}}
+{"id":"int-983920eda6d03759c86de98ed3dcd54f","kind":"field_change","created_at":"2026-08-23T12:10:41.730567899Z","actor":"orchestrator","issue_id":"discr-m4x","extra":{"field":"priority","new_value":"0","old_value":"2"}}
