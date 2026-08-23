@@ -196,6 +196,41 @@ $6ca6  player_y           (word)  the walkable row; > 14 = far row
 So: player movement and the grid cell use `+$06`; disc vertical homing uses
 `+$04`. A core that steers the disc at `+$06` will diverge from the trace.
 
+## The steering rule, literally (Part 9)
+
+`$a722`-`$a758`, three cases and no others. `d5` is the aim point, `d0` the
+disc's coordinate, `($0006,a5)` the velocity:
+
+```
+$a722  cmp.w d0,d5
+$a724  bgt -> $a74c   aim > pos:  if vel < +2 then vel += 1     (clamp +2)
+$a726  blt -> $a73c   aim < pos:  if vel > -2 then vel -= 1     (clamp -2)
+       else  $a728    aim == pos: vel decays TOWARD ZERO by 1
+                        $a72c bmi -> $a736 addq  (vel < 0: += 1)
+                        $a72e beq -> done        (vel == 0: nothing)
+                        $a730      subq          (vel > 0: -= 1)
+```
+
+The at-target decay is the whole of the damping. There is **no** gap limiting
+and no proportional term: the velocity is a bounded integer nudged one step
+per frame, and it unwinds only once the disc is level with the aim point.
+
+## vel_y is inert in all the evidence we have (Part 9)
+
+Do not model vertical motion as `world_y += vel_y`. In `dumps/disc_trace`
+(84 frames) **`vel_y` (+$08) is 0 on every single frame**, while `world_y`
+(+$02) changes on 3 frame pairs only, 81 -> 82 -> 83. So:
+
+* `world_x` is integrated by `vel_x` -- verified 47/48 in flight;
+* `world_y` is **not** integrated by `vel_y`, and whatever advances it is
+  unknown (bd discr-tan);
+* the `$a758` vertical steering block never fired for that disc, so its gate
+  is unknown too.
+
+A core that integrates `world_y` by `vel_y` will overshoot the aim point and
+oscillate. That is a symptom of modelling a rule the evidence does not show,
+not a missing damping term.
+
 ## Player states validated tier 1 (Part 8)
 
 Handlers from the `$10e2c` jump table; each seen inside a window where the
