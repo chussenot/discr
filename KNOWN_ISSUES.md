@@ -216,6 +216,27 @@ advancing by 2 per frame instead of 1 -- and both are fixed by *sampling* from
 inside the instruction hook (which does fire pre-execution) rather than trying
 to stop there.
 
+## Emulating the IKBD
+
+**The ACIA must not deassert its interrupt on acknowledge.** It stays asserted
+for as long as a byte is waiting in the receive register, and the handler
+clears it by reading `$FFFC02`. The game's decoder is a two-interrupt state
+machine -- `$FF` re-points vector `$118` to `$83b2`, and the *next* interrupt
+reads the joystick state byte -- so clearing on acknowledge means the second
+interrupt never happens and `$6c58` never changes.
+
+**Packets do not arrive on the frame boundary.** The IKBD is a 7812.5-baud
+serial device with no relationship to the VBL, so a byte lands somewhere
+inside the frame, in practice after the VBL handler's movement code has
+already sampled `$6c58`. Queuing packets at the frame boundary makes the
+player react one frame early -- `$6cae` = `$14` (walking) while the reference
+still shows `0` -- even though `$6c58` itself matches, which is a confusing
+way for the bug to present. disc-oracle stages bytes and releases them
+partway into the frame (`--ikbd-delay`, default half a frame).
+
+Neither of these is visible with an idle input script. Both appeared on the
+first frame of the first scripted joystick run.
+
 ## Method
 
 **Disassembling a handler's hot path is not disassembling the handler.**

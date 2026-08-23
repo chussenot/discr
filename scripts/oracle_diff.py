@@ -58,7 +58,21 @@ def label_for(addr):
     return "unlabelled"
 
 
-def hatari_side(scn, seed_path, frames, keep_window=False):
+# A joystick programme, in wall-clock seconds from the start of the trace.
+# Frames are ~20 ms, so these land within a frame or two; the differ does not
+# assume where -- it reads back the frames on which $6c58 actually changed and
+# builds the oracle's script from those.  What is being validated is the whole
+# IKBD path: Hatari's real IKBD emits packets, the oracle's synthetic ACIA
+# emits packets, and both games decode them into $6c58 themselves.
+INPUT_PROGRAMME = [
+    (1.2, "Right", True), (2.0, "Right", False),
+    (2.6, "Left", True),  (3.4, "Left", False),
+    (4.0, "Up", True),    (4.5, "Up", False),
+    (5.0, "Fire", True),  (5.2, "Fire", False),
+]
+
+
+def hatari_side(scn, seed_path, frames, keep_window=False, programme=None):
     """Capture a seed and, in the same session, trace from it."""
     name = scn.get("name", "oracle_diff")
     h = Hatari(logpath="tmp/%s-hatari.log" % name,
@@ -69,10 +83,45 @@ def hatari_side(scn, seed_path, frames, keep_window=False):
                       mode=scn.get("mode", "training"))
         h.wait_frames(scn.get("settle", 15))
         meta = h.seed(seed_path)
-        snaps = h.frame_trace(WIN_LO, frames + 8)
+        during = None
+        if programme:
+            def during():
+                t0 = time.time()
+                for when, key, down in programme:
+                    time.sleep(max(0.0, t0 + when - time.time()))
+                    (h.pad.keydown if down else h.pad.keyup)(key)
+                time.sleep(max(0.0, t0 + (frames + 8) * 0.021 - time.time()))
+            h.release()
+        snaps = h.frame_trace(WIN_LO, frames + 8, during=during, at=None)
+        h.release()
         return meta, snaps
     finally:
         h.stop()
+
+
+def script_from_trace(snaps, seed_counter, path):
+    """Turn the joystick bytes Hatari actually decoded into an oracle script.
+
+    The stimulus is injected into Hatari by wall-clock XTEST, so which frame it
+    lands on is not ours to choose -- we read it back instead.  $6c58/$6c59 are
+    what the GAME decoded, and a byte first seen at frame F was decoded during
+    frame F-1, so the packet is scheduled a frame earlier.  The oracle still
+    has to decode it: the script queues IKBD packets, never the byte.
+    """
+    lines = ["# derived from the joystick bytes Hatari decoded", "j 0 00 00"]
+    prev = None
+    changes = []
+    for cnt, m in snaps:
+        cur = (m.get(0x6c58, 0), m.get(0x6c59, 0))
+        if prev is not None and cur != prev:
+            f = cnt - seed_counter - 1
+            if f >= 1:
+                lines.append("j %d %02x %02x" % (f, cur[0], cur[1]))
+                changes.append((f, cur[0], cur[1]))
+        prev = cur
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return changes
 
 
 def oracle_side(seed_path, script_path, frames, out_path):
@@ -99,6 +148,8 @@ def main(argv=None):
     ap.add_argument("--seed", default="seeds/diff.seed")
     ap.add_argument("--script", default=None,
                     help="oracle input script; default: idle")
+    ap.add_argument("--input", action="store_true",
+                    help="drive a joystick programme through both sides")
     ap.add_argument("--keep-window", action="store_true")
     ap.add_argument("--cache", default="tmp/hatari_ref.json",
                     help="reuse a saved Hatari reference run if present")
@@ -112,6 +163,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     scn = load_scenario(a.scenario)
+    if a.input and a.cache == ap.get_default("cache"):
+        a.cache = "tmp/hatari_ref_input.json"
     script = a.script
     if not script:
         script = "tmp/idle.script"
@@ -130,7 +183,8 @@ def main(argv=None):
     else:
         print("== Hatari side (seed + trace) ...", flush=True)
         t0 = time.time()
-        meta, snaps = hatari_side(scn, a.seed, a.frames, a.keep_window)
+        meta, snaps = hatari_side(scn, a.seed, a.frames, a.keep_window,
+                                  INPUT_PROGRAMME if a.input else None)
         hat_secs = time.time() - t0
         if a.cache:
             with open(a.cache, "w") as f:
@@ -139,6 +193,15 @@ def main(argv=None):
                                      for c, m in snaps]}, f)
     print("   seed $6ab4=%d sha256=%s.. ; %d traced frames in %.1fs"
           % (meta["vbl_counter_6ab4"], meta["sha256"][:16], len(snaps), hat_secs))
+
+    if a.input:
+        script = "tmp/derived.script"
+        ch = script_from_trace(snaps, meta["vbl_counter_6ab4"], script)
+        print("   joystick changes Hatari decoded: %s"
+              % (", ".join("f%d=$%02x/$%02x" % c for c in ch) or "NONE"))
+        if not ch:
+            raise SystemExit("no joystick activity reached the game -- the "
+                             "input programme did not land")
 
     print("== oracle side ...", flush=True)
     recs, orc_secs = oracle_side(a.seed, script, a.frames, "tmp/oracle_diff.ndjson")

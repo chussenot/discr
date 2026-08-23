@@ -19,5 +19,9 @@ else
   echo "   FAIL: runs differ"; exit 1
 fi
 
-echo "== differential validation against Hatari"
-exec ./scripts/oracle_diff.py --frames "$FRAMES" "$@"
+echo "== differential validation against Hatari (idle)"
+./scripts/oracle_diff.py --frames "$FRAMES" --min-agree 275 "$@"
+
+echo
+echo "== differential validation against Hatari (scripted joystick)"
+exec ./scripts/oracle_diff.py --frames "$FRAMES" --input --min-agree 363 "$@"

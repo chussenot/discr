@@ -693,11 +693,17 @@ class Hatari:
                 time.sleep(settle)
             total = frames * 0.02 * 1.15 + 0.3
             if during:
-                # fire the stimulus from inside the trace window; XTEST does
-                # not go through the control socket, so it costs no frames
-                time.sleep(total * at)
-                during()
-                time.sleep(total * (1 - at))
+                # Fire the stimulus from inside the trace window; XTEST does
+                # not go through the control socket, so it costs no frames.
+                # A callable that owns the whole timeline (its own sleeps)
+                # gets `at=None`; otherwise it is a one-shot at that fraction.
+                if at is None:
+                    during()
+                    time.sleep(0.3)
+                else:
+                    time.sleep(total * at)
+                    during()
+                    time.sleep(total * (1 - at))
             else:
                 time.sleep(total)
         finally:

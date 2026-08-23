@@ -37,6 +37,7 @@ static int permissive = 0, debug_regs = 0;
 static long dump_pcs = 0;
 static long win_lo = -1, win_hi = -1;
 static long frame_cycles = FRAME_CYCLES_DEFAULT;
+static double cycles_now = 0;
 static long unstubbed = 0;
 
 static uint8_t mfp_tacr, mfp_tbcr, mfp_tadr, mfp_tbdr;
@@ -54,7 +55,14 @@ int disc_int_ack(int level)
     if (level == 6) {
         /* MFP priority is by source number: Timer A (13) outranks ACIA (6). */
         if (tima_pending) { tima_pending = 0; refresh_irq(); return TIMERA_VECTOR; }
-        acia_pending = 0; refresh_irq(); return ACIA_VECTOR;
+        /* The ACIA does NOT deassert on acknowledge -- it keeps its interrupt
+         * up for as long as a byte is waiting in the receive register, and the
+         * handler clears it by reading $FFFC02.  Clearing it here instead lost
+         * the second byte of every IKBD packet: the decoder is a two-interrupt
+         * state machine ($FF, then the joystick state), so $6c58 never
+         * updated.  An idle script cannot see this; the input differ found it
+         * on the first press. */
+        return ACIA_VECTOR;
     }
     if (level == 4) { vbl_pending = 0; refresh_irq(); return M68K_INT_ACK_AUTOVECTOR; }
     return M68K_INT_ACK_SPURIOUS;
@@ -68,7 +76,7 @@ int disc_int_ack(int level)
  * before pointing USP at the sample and starting the timer.  The differ found
  * it as a 2-byte disagreement.  So Timer A is emulated for real. */
 static const int MFP_PRESCALE[8] = {0, 4, 10, 16, 50, 64, 100, 200};
-static double cycles_now = 0, tima_deadline = 0;
+static double tima_deadline = 0;
 static double tima_period = 0;
 
 static void tima_reload(void)
@@ -111,13 +119,25 @@ void disc_instr_hook(unsigned int pc)
 static uint8_t ikbd_q[256];
 static int ikbd_head = 0, ikbd_tail = 0;
 
+/* Packets do not arrive on the frame boundary.  The IKBD runs at 7812.5 baud
+ * and is not synchronised to the VBL, so a byte lands somewhere inside the
+ * frame -- in practice after the VBL handler's movement code has already
+ * sampled $6c58.  Delivering at the boundary instead made the player react a
+ * frame early ($6cae = $14 while Hatari still had 0), even though $6c58
+ * itself matched.  Staged bytes are released partway into the frame; the
+ * offset is a modelling choice, tunable with --ikbd-delay. */
+static uint8_t stage_q[64];
+static int stage_n = 0;
+static double stage_at = -1;
+static long ikbd_delay = -1;          /* cycles into the frame; <0 = half */
+
 static void ikbd_push(uint8_t b)
 {
     int n = (ikbd_tail + 1) & 255;
     if (n == ikbd_head) { fprintf(stderr, "ikbd queue overflow\n"); exit(3); }
     ikbd_q[ikbd_tail] = b;
     ikbd_tail = n;
-    acia_pending = 1;
+    acia_pending = 1;          /* RDRF: a byte is waiting */
     refresh_irq();
 }
 
@@ -129,7 +149,8 @@ static uint8_t ikbd_pop(void)
     if (ikbd_empty()) return 0;
     b = ikbd_q[ikbd_head];
     ikbd_head = (ikbd_head + 1) & 255;
-    if (ikbd_empty()) { acia_pending = 0; refresh_irq(); }
+    acia_pending = !ikbd_empty();   /* still set while more bytes wait */
+    refresh_irq();
     return b;
 }
 
@@ -262,6 +283,11 @@ static void run_cycles(double n)
 {
     while (n > 0) {
         int chunk = (int)(n > 100000 ? 100000 : n), got;
+        if (stage_at >= 0) {
+            double d = stage_at - cycles_now;
+            if (d < 1) d = 1;
+            if (d < chunk) chunk = (int)d;
+        }
         if (tima_period > 0) {
             double d = tima_deadline - cycles_now;
             if (d < 1) d = 1;
@@ -271,6 +297,11 @@ static void run_cycles(double n)
         got = m68k_execute(chunk);
         cycles_now += got;
         n -= got;
+        if (stage_at >= 0 && cycles_now >= stage_at) {
+            int k;
+            for (k = 0; k < stage_n; k++) ikbd_push(stage_q[k]);
+            stage_n = 0; stage_at = -1;
+        }
         if (tima_period > 0 && cycles_now >= tima_deadline) {
             tima_pending = 1;
             refresh_irq();
@@ -352,18 +383,26 @@ static void load_script(const char *path)
 
 static int joy1_state = 0, joy0_state = 0;
 
+static void stage_push(uint8_t b)
+{
+    if (stage_n < (int)sizeof stage_q) stage_q[stage_n++] = b;
+}
+
 static void apply_events(long frame)
 {
     int i;
+    stage_n = 0;
     for (i = 0; i < nev; i++) {
         if (evs[i].frame != frame) continue;
         if (evs[i].kind == 'j') {
-            if (evs[i].a != joy1_state) { joy1_state = evs[i].a; ikbd_push(0xff); ikbd_push(joy1_state); }
-            if (evs[i].b != joy0_state) { joy0_state = evs[i].b; ikbd_push(0xfe); ikbd_push(joy0_state); }
+            if (evs[i].a != joy1_state) { joy1_state = evs[i].a; stage_push(0xff); stage_push(joy1_state); }
+            if (evs[i].b != joy0_state) { joy0_state = evs[i].b; stage_push(0xfe); stage_push(joy0_state); }
         } else if (evs[i].kind == 'k') {
-            ikbd_push(evs[i].b ? (evs[i].a & 0x7f) : (evs[i].a | 0x80));
+            stage_push(evs[i].b ? (evs[i].a & 0x7f) : (evs[i].a | 0x80));
         }
     }
+    stage_at = stage_n ? cycles_now + (ikbd_delay >= 0 ? ikbd_delay
+                                       : frame_cycles / 2) : -1;
 }
 
 /* ---- state emission ---------------------------------------------------- */
@@ -431,6 +470,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atol(argv[++i]);
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) tracef = argv[++i];
         else if (!strcmp(argv[i], "--frame-cycles") && i + 1 < argc) frame_cycles = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--ikbd-delay") && i + 1 < argc) ikbd_delay = atol(argv[++i]);
         else if (!strcmp(argv[i], "--permissive")) permissive = 1;
         else if (!strcmp(argv[i], "--debug-regs")) debug_regs = 1;
         else if (!strcmp(argv[i], "--dump-pcs") && i + 1 < argc) dump_pcs = atol(argv[++i]);

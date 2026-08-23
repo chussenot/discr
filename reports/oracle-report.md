@@ -8,17 +8,55 @@ Reproduce with `make oracle-check`.
 
 ## Result
 
+| | idle | scripted joystick |
+|---|---|---|
+| Exact agreement | **275 frames** | **363 frames** |
+
+3256 bytes compared per frame ($6a00-$76bf, video pointers excluded).
+
 | | |
 |---|---|
-| Exact agreement | **275 consecutive frames**, 3256 bytes/frame ($6a00-$76bf) |
 | Region compared | every address the oracle reports: `$6ab4` counter, `$6c58`/`$6c59` joysticks, both player records, all 8 disc records, the 17-cell tile grid |
-| First divergence | frame 274, the two video double-buffer pointers only |
+| First divergence | video double-buffer pointers only (frame 274 idle / 362 with input) |
 | Determinism | two runs of the same seed+script are byte-identical |
 | Speed | **~2500 frames/s vs Hatari's ~40** (60x) |
 
 The start of the run is verified, not assumed: the first comparable frame must
 match across all 3264 bytes before any comparison proceeds, and both sides are
 aligned on `$6ab4`, a counter each emulator computes for itself.
+
+## The input run
+
+The idle run proves nothing about input, so the differ also drives a joystick
+programme: Right, Left, Up, Fire, each held and released. The stimulus goes
+into Hatari as real XTEST key events, so *which* frame it lands on is not ours
+to pick -- the differ reads back the frames on which the game itself decoded a
+new `$6c58`/`$6c59`, and builds the oracle's script from those. The oracle is
+given IKBD **packets**, never the decoded byte, so the whole path is under
+test: Hatari's IKBD emits packets, the oracle's synthetic ACIA emits packets,
+and both copies of the game decode them through the self-modifying vector
+state machine at `$8370`.
+
+Hatari decoded exactly the programme: `$08` (right), `$00`, `$04` (left),
+`$00`, `$01` (up), `$00`, `$80` (fire), `$00`. The oracle reproduces all of it,
+and everything downstream, for 363 frames.
+
+Two real bugs surfaced here that the idle script could not have found:
+
+* **The ACIA deasserted on interrupt acknowledge.** It must stay asserted while
+  a byte is waiting and be cleared by the handler reading `$FFFC02`. Because
+  the decoder is a two-interrupt state machine (`$FF`, then the state byte),
+  clearing it on acknowledge meant the second byte was never fetched and
+  `$6c58` never changed at all.
+* **Packets were delivered on the frame boundary.** The real IKBD runs at
+  7812.5 baud and is not synchronised to the VBL, so a byte lands *inside* the
+  frame -- after the VBL handler's movement code has already sampled `$6c58`.
+  Delivering at the boundary made the player start walking one frame early
+  (`$6cae` = `$14` while Hatari still had `0`) even though `$6c58` itself
+  matched. Staged bytes are now released partway into the frame
+  (`--ikbd-delay`, default half a frame). That offset is a modelling choice,
+  not a measurement, and it is the thing to re-examine first if an input-timing
+  divergence ever shows up again.
 
 ## Where it stops, and why that is not a bug to fix
 
@@ -65,8 +103,9 @@ TACR/TADR the oracle starts with the timer stopped and the latch never clears.
 
 ## Honest limits
 
-* **275 frames from this seed.** A different seed will have a different drop
-  pattern and therefore a different boundary.
+* **275/363 frames from this one seed.** The boundary is a property of the
+  seed and the input, not a constant: the same build agrees for 275 frames
+  idle and 363 with input, because the frame-drop pattern differs.
 * **Video is out of scope and demonstrably so.** The double-buffer pointers are
   excluded by default; `--strict` includes them and fails one frame earlier.
 * **Timer B is not emulated.** Its two handlers provably write only palette and
@@ -75,6 +114,9 @@ TACR/TADR the oracle starts with the timer stopped and the latch never clears.
 * **Frames 0-4 are not compared.** Capturing the seed costs a 1 MB `savebin`,
   so Hatari's trace begins about five frames later. The differ says so and
   aligns on `$6ab4` rather than pretending otherwise.
-* **One input script exercised end to end** (idle). The IKBD path is
-  implemented and packet-accurate by construction, but the differential suite
-  does not yet drive a scripted joystick run.
+* **The IKBD delivery offset is a guess**, not a measurement: half a frame.
+  It is enough to put packet arrival after the movement code, which is what
+  matters here, but a game that samples input twice per frame would expose it.
+* **Two input programmes exercised** (idle, and one joystick sequence). Fire
+  is pressed but the player never has the disc, so the throw path is still
+  unexercised on both sides.
