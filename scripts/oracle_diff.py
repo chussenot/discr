@@ -29,6 +29,14 @@ WIN_LO, WIN_HI = 0x6a00, 0x76c0
 # They are video state, outside the oracle's contract; --strict includes them.
 VIDEO_PTRS = range(0x6aac, 0x6ab4)
 
+# Per-frame counters, and the rate each advances at.  Under a one-frame
+# realignment these MUST be off by exactly the shift -- that is what makes a
+# dropped frame identifiable rather than merely plausible.
+#   $6ab4  addq.w #1  at $8198      $6ab6  subq.w #1 at $819c
+#   $6c81  subq.b #1  at $81e2
+FRAME_COUNTERS = [(0x6ab4, 2, +1), (0x6ab6, 2, -1), (0x6c81, 1, -1)]
+COUNTER_BYTES = {a + k for a, w, _ in FRAME_COUNTERS for k in range(w)}
+
 LABELS = [
     (0x6aac, 4, "screen buffer ptr A (video)"),
     (0x6ab0, 4, "screen buffer ptr B (video)"),
@@ -170,6 +178,11 @@ def main(argv=None):
                     help="re-run Hatari even if the cache exists")
     ap.add_argument("--strict", action="store_true",
                     help="also compare the video double-buffer pointers")
+    ap.add_argument("--tier2", action="store_true",
+                    help="continue past a dropped-frame desync with an "
+                         "alignment offset, as a labelled evidence tier")
+    ap.add_argument("--tier2-confirm", type=int, default=6,
+                    help="frames a realignment must hold clean to be accepted")
     ap.add_argument("--min-agree", type=int, default=275,
                     help="frames of exact agreement required to pass; the "
                          "default is the measured cycle-accuracy boundary")
@@ -260,51 +273,135 @@ def main(argv=None):
     if skip:
         print("   excluding $%04x-$%04x (video double-buffer pointers; "
               "--strict to include)" % (min(skip), max(skip)))
+
+    def cmp_at(oi, hi_):
+        """Bytes differing between oracle record oi and Hatari trace index hi_."""
+        if not (0 <= oi < len(recs) and 0 <= hi_ < len(snaps)):
+            return None
+        hm = snaps[hi_][1]
+        om = bytes.fromhex(recs[oi]["mem"])
+        return [x for x in range(WIN_LO, WIN_HI)
+                if x in hm and hm[x] != om[x - WIN_LO]]
+
     n = min(len(recs) - ostart, len(snaps) - start)
     first_any = None
-    for i in range(n):
+    tier1 = None            # frames of frame-exact agreement
+    shift = 0               # accumulated dropped-frame realignment
+    drops = []
+    i = 0
+    while i < n:
         cnt, hm = snaps[start + i]
-        rec = recs[ostart + i]
-        if rec["vbl_6ab4"] != cnt:
-            print("\nALIGNMENT LOST at frame %d: Hatari $6ab4=%d, oracle=%d"
-                  % (i, cnt, rec["vbl_6ab4"]))
-            return 1
-        om = bytes.fromhex(rec["mem"])
+        oi = ostart + i + shift
+        if oi >= len(recs):
+            break
+        rec = recs[oi]
         alldiff = [x for x in range(WIN_LO, WIN_HI)
-                   if x in hm and hm[x] != om[x - WIN_LO]]
+                   if x in hm and hm[x] != bytes.fromhex(rec["mem"])[x - WIN_LO]]
         if alldiff and first_any is None:
             first_any = (i, alldiff)
         diffs = [x for x in alldiff if x not in skip]
-        if diffs:
+        if not diffs:
+            i += 1
+            continue
+
+        if tier1 is None:
+            tier1 = i
             print("\nFIRST DIVERGENCE at frame %d (%d byte(s))" % (i, len(diffs)))
             print("   oracle PC=$%04x SR=$%04x $6ab4=%d"
                   % (rec["pc"], rec["sr"], rec["vbl_6ab4"]))
             print("\n   %-8s %-26s %-8s %-8s" % ("addr", "what", "Hatari", "oracle"))
-            for x in diffs[:24]:
+            for x in diffs[:20]:
                 print("   $%04x   %-26s %-8s %-8s"
-                      % (x, label_for(x), "%02x" % hm[x], "%02x" % om[x - WIN_LO]))
-            if len(diffs) > 24:
-                print("   ... %d more" % (len(diffs) - 24))
+                      % (x, label_for(x), "%02x" % hm[x],
+                         "%02x" % bytes.fromhex(rec["mem"])[x - WIN_LO]))
+            if len(diffs) > 20:
+                print("   ... %d more" % (len(diffs) - 20))
             print("\n   %d frames agreed before this." % i)
             if first_any and first_any[0] < i:
                 print("   (including the video pointers, the first difference "
                       "was at frame %d)" % first_any[0])
-            if i >= a.min_agree:
-                print("\nPASS: %d >= --min-agree %d. This is the known "
-                      "cycle-accuracy boundary, not a new fault." % (i, a.min_agree))
-                print("speed: oracle %.0f fps, Hatari %.0f fps (%.0fx)"
-                      % (len(recs) / orc_secs, len(snaps) / hat_secs,
-                         (len(recs) / orc_secs) / max(1e-9, len(snaps) / hat_secs)))
-                return 0
-            print("\nFAIL: only %d frames agreed, below --min-agree %d."
-                  % (i, a.min_agree))
-            return 1
-    print("\nZERO DIVERGENCES over %d frames x %d bytes%s."
-          % (n, WIN_HI - WIN_LO - len(skip),
-             "" if a.strict else " (video pointers excluded)"))
-    if first_any:
-        print("   including the video pointers, the first difference was at "
-              "frame %d ($%04x)" % (first_any[0], first_any[1][0]))
+
+        if not a.tier2:
+            break
+
+        # ---- tier 2: is this the stereotyped one-dropped-frame desync? ------
+        # Accept a realignment only if, after shifting, the ONLY bytes still
+        # differing are the per-frame counters AND each is off by exactly the
+        # amount the shift predicts.  That is a falsifiable test for "one side
+        # dropped a frame", not a licence to slide until something matches.
+        def counters_confirm(oi, hi_, delta):
+            d2 = cmp_at(oi, hi_)
+            if d2 is None:
+                return False
+            stray = [x for x in d2 if x not in skip and x not in COUNTER_BYTES]
+            if stray:
+                return False
+            hm2, om2 = snaps[hi_][1], bytes.fromhex(recs[oi]["mem"])
+            for addr, width, rate in FRAME_COUNTERS:
+                if addr not in hm2:
+                    continue
+                hv = ov = 0
+                for k in range(width):
+                    hv = (hv << 8) | hm2[addr + k]
+                    ov = (ov << 8) | om2[addr + k - WIN_LO]
+                if hv != (ov + rate * -delta) % (1 << (8 * width)):
+                    return False
+            return True
+
+        realigned = False
+        for delta in (-1, +1):
+            if all(counters_confirm(ostart + i + shift + delta + k,
+                                    start + i + k, delta)
+                   for k in range(min(a.tier2_confirm, n - i))):
+                shift += delta
+                drops.append((i, delta))
+                realigned = True
+                break
+        if not realigned:
+            print("\n   tier 2: no counter-confirmed realignment at frame %d."
+                  % i)
+            for delta in (-1, +1):
+                row = []
+                for k in range(min(8, n - i)):
+                    d2 = cmp_at(ostart + i + shift + delta + k, start + i + k)
+                    row.append("-" if d2 is None else
+                               str(len([x for x in d2 if x not in skip
+                                        and x not in COUNTER_BYTES])))
+                print("      shift %+d: stray bytes for the next frames: %s"
+                      % (delta, " ".join(row)))
+            print("      A clean column means the shift holds for that frame. "
+                  "A single clean frame followed by stray bytes is NOT a "
+                  "dropped frame -- the runs have genuinely parted, and the "
+                  "counters being off by one is a consequence, not the cause.")
+            break
+        print("   tier 2: dropped frame at %d (shift %+d, counters confirm); "
+              "continuing" % (i, drops[-1][1]))
+        i += 1
+
+    if tier1 is None:
+        tier1 = n
+    if tier1 >= n:
+        print("\nZERO DIVERGENCES over %d frames x %d bytes%s."
+              % (n, WIN_HI - WIN_LO - len(skip),
+                 "" if a.strict else " (video pointers excluded)"))
+        if first_any:
+            print("   including the video pointers, the first difference was "
+                  "at frame %d ($%04x)" % (first_any[0], first_any[1][0]))
+    if a.tier2:
+        print("\n   TIER 2 (drop-realigned): agreement to frame %d with %d "
+              "realignment(s) %s"
+              % (i, len(drops), [d for d in drops] or ""))
+        print("   Tier-2 reach is for OBSERVATION ONLY -- every claim drawn "
+              "from beyond frame %d must be labelled tier 2." % tier1)
+    print("\nTIER 1 (frame-exact): %d frames." % tier1)
+    if tier1 >= a.min_agree:
+        print("PASS: %d >= --min-agree %d." % (tier1, a.min_agree))
+        print("speed: oracle %.0f fps, Hatari %.0f fps (%.0fx)"
+              % (len(recs) / orc_secs, len(snaps) / hat_secs,
+                 (len(recs) / orc_secs) / max(1e-9, len(snaps) / hat_secs)))
+        return 0
+    print("FAIL: only %d frames agreed, below --min-agree %d." % (tier1, a.min_agree))
+    return 1
     print("speed: oracle %.0f fps, Hatari %.0f fps (%.0fx)"
           % (len(recs) / orc_secs, len(snaps) / hat_secs,
              (len(recs) / orc_secs) / max(1e-9, len(snaps) / hat_secs)))
