@@ -17,7 +17,7 @@ $6ab4  vbl_frame_counter  (word, wraps)  increments by exactly 1 per PAL VBL acr
 $6c58  joystick_decoded  (byte)  $01 up $02 down $04 left $08 right $80 fire, ORed; read as (a0) by the movement code; fire bit cleared on use by bclr #7 at $f606/$f81a/$fb90
 $6cae  player_state  (byte)  index into the 32-entry jump table at $10e2c; 1 = walk left ($f5e2), 2 = walk right ($f7f6)
 $10e2c  player_state_table  (32 longs)  state handler addresses
-$6ca9  player_facing  (byte)  1 = left, 2 = right; set at $f5e2/$f7f6
+$6ca9  player_prev_state  (byte)  the PREVIOUS frame's state_index -- NOT facing
 $6cda  anim_cursor  (long)  steps by 6 through the table at $2988
 $6ce2  anim_countdown  (word)  frames left on the current anim cell
 $f658/$f86c  player_walk  (code)  subq/addq #3 on $6ca2; walkable X is 8..152, probed +/-24 ahead and range-checked against 8 and $98
@@ -195,6 +195,44 @@ $6ca6  player_y           (word)  the walkable row; > 14 = far row
 
 So: player movement and the grid cell use `+$06`; disc vertical homing uses
 `+$04`. A core that steers the disc at `+$06` will diverge from the trace.
+
+## Two corrections from trace comparison (Part 9)
+
+Both were found by replaying an oracle trace through the Rust core and asking
+where it disagreed. Neither was visible from the disassembly alone.
+
+### `$6ca9` is the previous state, not facing
+
+The earlier note read "1 = left, 2 = right; set at `$f5e2`/`$f7f6`". That was an
+over-reading: those two handlers are states 1 and 2, so "facing" and "the state
+we were just in" take the same values and cannot be told apart from them alone.
+
+In `tests/fixtures/golden.ndjson`, `+$09` takes **exactly the same value set as
+`state_index`** -- player 1 {0,1,11,20,23}, player 2 {0,1,2,15,16,18,20} -- and
+equals the previous frame's state on **96 of 99** frame pairs:
+
+```
+frame  11(0,20)  12(20,20)  13(20,20)  14(20,1)  15(1,1)      (+$09, state_index)
+```
+
+At frame 11 the state becomes 20 while `+$09` is still 0; at frame 12 `+$09`
+becomes 20. It lags by one frame. Read it as `player_prev_state`.
+
+### `world_z` advances by `dir_kind`, not by a constant +1
+
+The earlier note said "+1 per frame while in flight". That is the `dir_kind = +1`
+case. Over the fixture:
+
+| `dir_kind` | `world_z` step | frames |
+|---|---|---|
+| +1 | +1 | 68 |
+| +1 | 0 | 19 (a full-record freeze) |
+| -3 | -3 | 11 |
+| -3 | -1 | 1 |
+
+So the step is the **`dir_kind` value itself**, which sharpens what that field
+is: its sign is the travel direction *and* its magnitude is the per-frame z
+step. The freeze frames and the single -1 are not explained -- see bd discr-0fm.
 
 ## The steering rule, literally (Part 9)
 
