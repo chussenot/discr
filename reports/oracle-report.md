@@ -58,6 +58,71 @@ Two real bugs surfaced here that the idle script could not have found:
   not a measurement, and it is the thing to re-examine first if an input-timing
   divergence ever shows up again.
 
+## Using the oracle as a search engine (Part 7)
+
+Every earlier phase stalled on the same thing: the player never gets a disc,
+so the throw path stayed unexercised -- it blocked `tile_hit` in Part 4, the
+throw handler in Part 5, and fire validation here. Blind input fuzzing is the
+wrong tool for it, because catching is a positioning problem. A deterministic
+emulator at 2500 fps is the right one: it can read the game's own state each
+frame and steer.
+
+`scripts/explore.py` drives `disc-oracle --autopilot`, whose control law needs
+no knowledge of the disc's coordinate space -- `$6cb0` is the player's grid
+cell, so "walk to cell N" is *cell too high -> Left, too low -> Right*. Only
+the policy parameters are searched (8 target cells x 4 fire patterns). Whatever
+it finds is emitted as a plain script, because Hatari cannot run an autopilot
+and the finding has to be replayable.
+
+The most productive policy by a wide margin was **cell 16 (far right) plus
+pulsed fire**, which reached player states 2, 11, 16, 17, 19, 23 and 31 and
+moved four counters. It also degenerates to "hold Right" once the player is
+against the edge, which is the only reason a closed-loop result could be
+replayed open-loop into Hatari at all -- that was luck, not design.
+
+### What Hatari confirmed
+
+Replayed as the `rightfire` programme, the two sides agree byte-for-byte for
+**116 frames**, and that window already contains the interesting behaviour:
+
+* `$6c58` = `$88` (Right + Fire) decoded by the game;
+* player state **14** entered, which idle play never reaches;
+* disc 0's owner field cycling `+1 -> -3 -> +1`;
+* **disc 1 becoming live** (`-3`, then `+1`) -- a second disc served.
+
+The writer PCs for the owner field were then measured directly in Hatari:
+`$a606` (`neg.w`, the turn-around), `$a618` (set to `+1`) and `$a9b4`/`$a9b8`
+in the spawn routine at `$a9a0`. Those are in `docs/disc-notes.md`.
+
+### What is still oracle-only
+
+Player states 11, 16, 17, 19, 23 and 31, the third simultaneous live disc, and
+the counter movements after frame ~185 all occur **beyond** the validated
+window. They are plausible and self-consistent, but until a programme is found
+that reaches them inside a validated prefix they describe the oracle, not
+provably the game. They are not in `disc-notes.md` for that reason.
+
+### The boundary shortens as input gets busier
+
+| programme | frames of exact agreement |
+|---|---|
+| idle | 275 |
+| sweep (one press per direction) | 363 |
+| rightfire (24 fire pulses) | **116** |
+
+The input rows carry about +/-1 frame of jitter run to run: the stimulus goes
+into Hatari as wall-clock XTEST, so a press occasionally lands on the
+neighbouring frame and the reference itself differs slightly. `oracle_check.sh`
+therefore asserts 360 and 112 rather than the exact figures, so the gate
+catches a real regression without going red on jitter.
+
+Same mechanism every time -- the video double-buffer pointers desync first, one
+frame ahead of the general divergence. More input means more work per frame,
+more frames overrun their budget, and the drop patterns part company sooner.
+This is the clearest evidence yet that the limit is cycle accuracy and not a
+modelling gap: the oracle does not get *wronger* with input, it gets less time
+before an unmodellable timing coin-flip goes the other way.
+
 ## Where it stops, and why that is not a bug to fix
 
 At frame 274 the only disagreement is `$6aac` and `$6ab0` — the screen

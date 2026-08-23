@@ -94,6 +94,28 @@ $6ab0  screen_buf_b      (long)  the other half of the pair
 $6ab6  vbl_down_counter  (word)  decremented at $819c every frame
 ```
 
+## Disc owner/direction field (Part 7)
+
+`record+$0a` is not a boolean "live" flag. Observed values are `+1`, `-1` and
+`-3`, and the code says why:
+
+```
+$a606  neg.w  ($000a,a5)      ; negated when the disc turns around
+$a618  move.w #$0001,($000a,a5)
+$a9b4  move.l d2,($0008,a1)   ; written as part of the spawn record store;
+$a9aa  addq.w #$01,$6d8a      ; the same routine bumps this counter
+```
+
+So the **sign is the travel direction** (flipped by `neg.w`, not by a
+comparison) and the magnitude distinguishes at least two kinds of disc. A
+parked disc reads `-3` at world `(140, 53)`; when it launches it becomes `+1`
+at world `(135, 0)` and `world_z` starts climbing. Up to 3 discs were seen
+live at once, out of the 8 records.
+
+Disc `world_x` spans **0..153**, i.e. the same range as the player's walkable
+X (8..152) -- an earlier trace that only showed 0..48 had simply caught one
+leg of a flight.
+
 ## Ghidra bookmark set
 
 ```
@@ -109,4 +131,6 @@ $8198   VBL handler (the game's per-frame entry point)
 $8370   IKBD ACIA handler / joystick decode
 $83d2   Timer A PSG streamer; $83fe is its end-of-stream path
 $a6c2   disc engine sound trigger (sets $6c5b/$6c5c, arms Timer A)
+$a606   disc turn-around: neg.w on the owner/direction field
+$a9a0   disc spawn/serve (stores the record, bumps $6d8a)
 ```

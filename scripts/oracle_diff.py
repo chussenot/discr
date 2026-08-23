@@ -64,12 +64,24 @@ def label_for(addr):
 # builds the oracle's script from those.  What is being validated is the whole
 # IKBD path: Hatari's real IKBD emits packets, the oracle's synthetic ACIA
 # emits packets, and both games decode them into $6c58 themselves.
-INPUT_PROGRAMME = [
-    (1.2, "Right", True), (2.0, "Right", False),
-    (2.6, "Left", True),  (3.4, "Left", False),
-    (4.0, "Up", True),    (4.5, "Up", False),
-    (5.0, "Fire", True),  (5.2, "Fire", False),
-]
+INPUT_PROGRAMMES = {
+    # exercise each direction and fire once
+    "sweep": [
+        (1.2, "Right", True), (2.0, "Right", False),
+        (2.6, "Left", True),  (3.4, "Left", False),
+        (4.0, "Up", True),    (4.5, "Up", False),
+        (5.0, "Fire", True),  (5.2, "Fire", False),
+    ],
+    # The policy scripts/explore.py found most productive: pin the player at
+    # the far-right cell and pulse fire.  "Walk to cell 16" degenerates to
+    # "hold Right" once he is against the edge, which is the only reason this
+    # closed-loop result can be replayed open-loop into Hatari at all.
+    "rightfire": ([(0.4, "Right", True)] +
+                  [t for i in range(24)
+                   for t in ((0.9 + i * 0.16, "Fire", True),
+                             (0.9 + i * 0.16 + 0.05, "Fire", False))] +
+                  [(6.4, "Right", False)]),
+}
 
 
 def hatari_side(scn, seed_path, frames, keep_window=False, programme=None):
@@ -148,7 +160,8 @@ def main(argv=None):
     ap.add_argument("--seed", default="seeds/diff.seed")
     ap.add_argument("--script", default=None,
                     help="oracle input script; default: idle")
-    ap.add_argument("--input", action="store_true",
+    ap.add_argument("--input", nargs="?", const="sweep", default=None,
+                    choices=sorted(INPUT_PROGRAMMES),
                     help="drive a joystick programme through both sides")
     ap.add_argument("--keep-window", action="store_true")
     ap.add_argument("--cache", default="tmp/hatari_ref.json",
@@ -164,7 +177,7 @@ def main(argv=None):
 
     scn = load_scenario(a.scenario)
     if a.input and a.cache == ap.get_default("cache"):
-        a.cache = "tmp/hatari_ref_input.json"
+        a.cache = "tmp/hatari_ref_%s.json" % a.input
     script = a.script
     if not script:
         script = "tmp/idle.script"
@@ -184,7 +197,7 @@ def main(argv=None):
         print("== Hatari side (seed + trace) ...", flush=True)
         t0 = time.time()
         meta, snaps = hatari_side(scn, a.seed, a.frames, a.keep_window,
-                                  INPUT_PROGRAMME if a.input else None)
+                                  INPUT_PROGRAMMES.get(a.input))
         hat_secs = time.time() - t0
         if a.cache:
             with open(a.cache, "w") as f:

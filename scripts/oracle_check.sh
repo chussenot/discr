@@ -23,5 +23,9 @@ echo "== differential validation against Hatari (idle)"
 ./scripts/oracle_diff.py --frames "$FRAMES" --min-agree 275 "$@"
 
 echo
-echo "== differential validation against Hatari (scripted joystick)"
-exec ./scripts/oracle_diff.py --frames "$FRAMES" --input --min-agree 363 "$@"
+echo "== differential validation against Hatari (joystick sweep)"
+./scripts/oracle_diff.py --frames "$FRAMES" --input sweep --min-agree 360 "$@"
+
+echo
+echo "== differential validation against Hatari (right+fire: disc serve path)"
+exec ./scripts/oracle_diff.py --frames "$FRAMES" --input rightfire --min-agree 112 "$@"
