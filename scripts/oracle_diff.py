@@ -84,6 +84,17 @@ INPUT_PROGRAMMES = {
     # the far-right cell and pulse fire.  "Walk to cell 16" degenerates to
     # "hold Right" once he is against the edge, which is the only reason this
     # closed-loop result can be replayed open-loop into Hatari at all.
+    # Two LIGHT programmes, transcribed from autopilot scripts that reached
+    # otherwise-unreachable player states.  Light matters: input density is
+    # what shortens the validated window, and these are 4 joystick changes
+    # each, so the window should stay near the idle 275 rather than collapsing
+    # to rightfire's 116.  Frame f in the autopilot script -> t = f * 0.02 s.
+    #   leftright  (autopilot cell 14, no fire): state 11 at f64, state 23 at f97
+    "leftright": [(0.10, "Left", True), (0.46, "Left", False),
+                  (1.96, "Right", True), (7.50, "Right", False)],
+    #   rightpause (autopilot cell 16, no fire): state 19 at f236, state 31 at f318
+    "rightpause": [(0.10, "Right", True), (0.22, "Right", False),
+                   (5.82, "Right", True), (9.00, "Right", False)],
     "rightfire": ([(0.4, "Right", True)] +
                   [t for i in range(24)
                    for t in ((0.9 + i * 0.16, "Fire", True),

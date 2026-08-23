@@ -40,13 +40,18 @@ def relay(parent, programme, at_frame, out, mode="challenge", settle=15,
             raise SystemExit("already past frame %d (at %s); the parent seed's "
                              "situation is not reproducible from this savestate"
                              % (target, here))
-        # drive the programme on wall-clock, exactly as the differ does
+        # Drive the programme on wall-clock, exactly as the differ does, but
+        # poll the counter WHILE waiting: a programme with a long gap between
+        # presses would otherwise sleep straight past the mint frame.
         t0 = time.time()
         for when, key, down in programme:
-            time.sleep(max(0.0, t0 + when - time.time()))
-            (h.pad.keydown if down else h.pad.keyup)(key)
+            while time.time() < t0 + when:
+                if h.peek_word(0x6ab4) >= target:
+                    break
+                time.sleep(min(0.05, max(0.0, t0 + when - time.time())))
             if h.peek_word(0x6ab4) >= target:
                 break
+            (h.pad.keydown if down else h.pad.keyup)(key)
         h.release()
         # Let the release packets be DECODED before freezing the machine.
         # Seeding mid-press bakes $6c58 = $80 into the image; the Hatari

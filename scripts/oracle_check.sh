@@ -30,6 +30,12 @@ echo
 echo "== differential validation against Hatari (right+fire: disc serve path)"
 ./scripts/oracle_diff.py --frames "$FRAMES" --input rightfire --min-agree 112 "$@"
 
+echo
+echo "== differential validation against Hatari (leftright: reaches states 11, 23)"
+# 260 frames, not more: past the end of the round the game touches the FDC and
+# the oracle aborts by design (see KNOWN_ISSUES).
+FRAMES=260 ./scripts/oracle_diff.py --frames 260 --input leftright --min-agree 250 "$@"
+
 if [ -f seeds/rally_f100.seed ] && [ -f tmp/hatari_ref_rally_f100.json ]; then
   echo
   echo "== relayed seed (rally_f100)"

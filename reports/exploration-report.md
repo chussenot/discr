@@ -147,17 +147,64 @@ validated windows). Handler addresses from the `$10e2c` table:
 | 24 | `$10ac4` | sweep |
 | 27 | `$10c8a` | sweep |
 
-**Not promoted, with the blocker.** States **11, 16, 17, 19, 23, 31** were
-seen only in autopilot runs, at frames 125-322, and no validated prefix
-reaches them:
+### The remaining six: four promoted, and a corrected rule
 
-* the programmes that reach them are input-dense, and input density is exactly
-  what shortens the window (116 frames for rightfire);
-* seed relay would fix that, except the relayed seed lands in an active
-  three-disc rally where drops come fast -- `rally_f100` verified at only 30
-  frames;
-* tier 2, which was supposed to bridge the gap, does not work (section 2).
+**The rule was wrong.** "Notes-grade requires a differ-validated window"
+conflated two questions. A differ window tests whether *the oracle* is
+faithful. It adds nothing to a fact read out of **Hatari**, which is the
+reference: a state appearing in a Hatari memdump trace is the game doing it.
+The corrected rule is: observed in Hatari -> notes-grade; observed only in the
+oracle -> needs a validated window first.
 
-The honest position is that these six need a *quieter* proximal seed: one
-minted at a moment when few discs are live, close to the input that triggers
-the state. That is a seed-selection problem, not a tooling gap.
+Under it, four of the six promote, all from Hatari references:
+
+| state | handler | first seen in Hatari | also inside a validated window? |
+|---|---|---|---|
+| 11 | `$10554` | `leftright` f60, `quiet_f100` f16 | yes -- leftright validated to 256 |
+| 23 | `$10a72` | `leftright` f93 | yes -- leftright validated to 256 |
+| 19 | `$108f4` | `quiet_f100` f127, `rightpause` f231 | no |
+| 31 | `$10dda` | `rightpause` f321, also the idle reference | no |
+
+**Still not promoted: 16 and 17.** They have never appeared in a Hatari trace
+at all -- only in the oracle autopilot run `c16_p8_s20`, at frames 254 and 267.
+The blocker is specific: that policy is an 83-change closed-loop fire pattern,
+and the nearest open-loop equivalent (`rightfire`, 24 pulses) reaches only
+states 0, 2, 14 and 20 in Hatari across 446 frames. So the closed-loop
+*corrections* are what produce 16/17, and reproducing them in Hatari needs
+frame-accurate input dictation, which XTEST cannot give. That is a real gap in
+the tooling, not a search problem.
+
+### What "quiet" actually turned out to mean
+
+The plan called for a quiet proximal seed, on the theory that few live discs
+would buy a longer window. Measuring live-disc counts inside every validated
+prefix showed the quietest stretch is always the **beginning** -- discs
+accumulate -- so "quiet and late" does not exist to be mined.
+
+What actually governs window length is **input density, not scene activity**:
+
+| programme | joystick changes | tier-1 frames |
+|---|---|---|
+| idle | 0 | 275 |
+| `leftright` | 4 | **256, zero divergences** (run ended, did not desync) |
+| `rightpause` | 4 | 109 |
+| `sweep` | 8 | ~364 |
+| `rightfire` | 83 | 116 |
+
+`leftright` is the useful result: four joystick changes bought a window as long
+as idle's, and states 11 and 23 both land inside it.
+
+### Seed relay hit a floor
+
+`quiet_f100` (rightpause f100) did **not** verify, and the reason is
+structural. Minting costs a 1 MB `savebin`, which takes about five frames, and
+Hatari dropped a frame inside that gap: oracle frame 4 matches Hatari trace 0
+to within 5 bytes (the per-frame counters) while frame 5 differs in 70. Once
+the two are off by one they part, per section 2. The gap is not under our
+control, so relay has a per-hop failure probability roughly equal to the chance
+of a dropped frame in five frames.
+
+Its Hatari reference is still ground truth and was used as such -- states 11
+and 19 were read from it. What is unusable is the seed as an *oracle* starting
+point. Recorded in `seeds/MANIFEST.md` as rejected rather than quietly
+dropped.

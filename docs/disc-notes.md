@@ -172,8 +172,20 @@ $6cae = 20  $1094a   transient entered when walking starts
 $6cae = 21  $109aa   $6cae = 24  $10ac4   $6cae = 27  $10c8a
 ```
 
-States 11, 16, 17, 19, 23 and 31 were observed only outside validated windows
-and are deliberately NOT recorded here; see reports/exploration-report.md.
+```
+$6cae = 11  $10554   $6cae = 19  $108f4
+$6cae = 23  $10a72   $6cae = 31  $10dda
+```
+
+States 16 and 17 are still NOT recorded: they have only ever been seen in an
+oracle autopilot run, never in Hatari. See reports/exploration-report.md.
+
+**Grading rule (corrected).** Earlier notes said notes-grade required a
+differ-validated window. That conflated two questions. A differ window tests
+whether *the oracle* is faithful; it says nothing extra about the game. A state
+seen in a **Hatari** memdump trace is the game doing it, and Hatari is the
+reference. So: observed in Hatari -> notes-grade. Observed only in the oracle
+-> needs a validated window before it can be promoted.
 
 ## Ghidra bookmark set
 

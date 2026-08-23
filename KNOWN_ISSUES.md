@@ -271,17 +271,21 @@ Agreement length between disc-oracle and Hatari falls as input density rises,
 and always ends the same way: the video double-buffer pointers desync one
 frame before everything else.
 
-| programme | frames of tier-1 agreement |
-|---|---|
-| idle, from the original CHALLENGE seed | 275 |
-| sweep (one press per direction) | ~364 |
-| rightfire (24 fire pulses) | 116 |
-| idle, from the relayed `rally_f100` seed | 30 |
+| programme | joystick changes | frames of tier-1 agreement |
+|---|---|---|
+| idle, from the original CHALLENGE seed | 0 | 275 |
+| `leftright` | 4 | 256 (zero divergences; the run ended) |
+| `rightpause` | 4 | 109 |
+| `sweep` | 8 | ~364 |
+| `rightfire` | 83 | 116 |
+| idle, from the relayed `rally_f100` seed | 0 | 30 |
 
-The last row is the one to plan around: a seed minted inside an active
-three-disc rally verifies at only 30 frames, because a busy frame is a frame
-that can overrun its budget. **Proximal seeds bought by relay are cheap; quiet
-proximal seeds are what is actually scarce.**
+**It is input density that costs window, not scene activity.** The "quiet
+seed" theory -- fewer live discs buys a longer window -- did not survive
+measurement: live-disc counts inside every validated prefix show the quietest
+stretch is always the *beginning*, because discs accumulate, so "quiet and
+late" does not exist. Meanwhile `leftright` with four joystick changes held
+256 frames while `rightfire` with 83 collapsed to 116. Keep programmes sparse.
 
 ## Realigning after a dropped frame does not work
 
@@ -310,3 +314,28 @@ A relayed seed records its parent's hash, so its JSON contains two `"sha256"`
 keys. disc-oracle matched the first one it found -- the parent's -- and
 rejected a perfectly good seed. The nested key is now `parent_sha256`, and the
 check scans every occurrence rather than the first.
+
+
+## Seed relay has a structural failure rate
+
+Minting costs a 1 MB `savebin`, which takes about five emulated frames, and the
+reference trace can only start afterwards. If Hatari drops a frame inside that
+gap -- which it does, being the busier emulator -- the seed and the reference
+start one frame apart and the oracle can never match from it. `quiet_f100`
+failed exactly this way: oracle frame 4 matches the reference's frame 0 to
+within the per-frame counters, frame 5 differs in 70 bytes.
+
+There is no fix with the current capture path, so relay is best-effort: mint,
+verify, and expect to discard some. `seeds/MANIFEST.md` records rejected seeds
+rather than dropping them silently, because a rejected seed's **Hatari
+reference is still ground truth** even though the seed is useless to the
+oracle.
+
+## Phase 0's "no FDC during a match" needs a qualifier
+
+It was measured over 30 frames early in a round and is true there. Run long
+enough for the round to *end* and the game does touch the FDC: disc-oracle
+aborted on an unstubbed `write.w $ff8606` (DMA mode/status) at PC `$000162`
+during a 400-frame `leftright` run. The abort-by-default rule caught it instead
+of returning 0 and producing a plausible-but-wrong trace. Keep oracle runs
+inside the round, or stub the FDC before extending them past it.
