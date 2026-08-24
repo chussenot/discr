@@ -267,6 +267,22 @@ pub struct Player {
     /// throw when it equals `player+$6c` -- a cap that reads 4 for player 2 and
     /// is never written at all. `// UNKNOWN: see bd discr-b6x`.
     pub discs_out: i16,
+    /// ST `player+$1a` (`$6cba` / `$6d3a`): a per-frame X delta, **authored in
+    /// the animation data**.
+    ///
+    /// `$f1ca` copies it out of the current animation cell like the hit box, and
+    /// the idle path consumes it: `$f110 move.w $6cba,d0; $f114 clr.w $6cba;
+    /// $f118 add.w d0,$6ca2`, mirrored at `$abbe`-`$abc6`. So some movement
+    /// lives in the sprite tables rather than in code, and it is the only reason
+    /// a standing player's `world_x` moves at all. A fed input, in the same
+    /// category as the hit box. `// UNKNOWN: see bd discr-75o`.
+    pub x_delta: i16,
+    /// ST `player+$08` (`$6ca8` / `$6d28`): which way this player last threw.
+    ///
+    /// `$ae88 st` on a left throw, `$ae26 clr.b` on a right one, and `$cc3a
+    /// clr.b` when an intercept commits. `$adc2 tst.b $6d28; bne` uses it to
+    /// pick which side to probe when the stick is not pushed either way.
+    pub threw_left: bool,
     /// ST `player+$6c` (`$6d0c` / `$6d8c`): the cap on [`Player::discs_out`].
     ///
     /// `$c1c4 cmp.w $6d8c,d0; beq` -- state 18's handler refuses to throw when

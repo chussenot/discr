@@ -59,7 +59,7 @@ use serde::Deserialize;
 /// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
 const SCHEMA_COMPARED: usize = 18;
 /// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
-const SCHEMA_WAIVED: usize = 16;
+const SCHEMA_WAIVED: usize = 17;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
 /// Compared rows a trace may carry no column for; see [`Frame`].
@@ -206,6 +206,9 @@ struct TracePlayer {
     /// `player+$6c`, the cap on that count. Part 10g.
     #[serde(default)]
     disc_cap: i16,
+    /// `player+$1a`, the animation-authored X delta. Part 10j.
+    #[serde(default)]
+    x_delta: i16,
 }
 
 #[derive(Deserialize)]
@@ -345,6 +348,10 @@ impl Frame {
                 reach: t.reach,
                 discs_out: t.discs_out,
                 disc_cap: t.disc_cap,
+                x_delta: t.x_delta,
+                // `player+$08` records which way the last throw stepped; both
+                // fixtures start before either player has thrown.
+                threw_left: false,
                 round_over: false,
                 down: false,
             };
@@ -553,6 +560,8 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
         s.reach = w.reach;
         // `player+$6c` is never written anywhere in the analysed image either.
         s.disc_cap = w.disc_cap;
+        // `player+$1a` is copied out of the animation cell, like the hit box.
+        s.x_delta = w.x_delta;
     }
 }
 
@@ -933,16 +942,15 @@ mod tests {
         assert_eq!(f.len() - 1, 99, "the fixture is 100 frames");
     }
 
-    /// Resyncing is opt-in, and it buys much less than it used to: the default
-    /// run -- nothing waived, nothing resynced, every compared row of both
-    /// players -- reaches **59** ticks. It stops where player 2's state-16 entry
-    /// shifts its `world_x` by eight, one more `$c6ec` handler this crate has
-    /// not transcribed (discr-b6x).
+    /// **Resyncing buys nothing on this fixture any more.** The default run --
+    /// nothing waived, nothing resynced, every compared row of *both* players --
+    /// reproduces the whole golden fixture.
     ///
     /// It stopped on frame 1 before Part 10c, 22 before 10f, 40 before state
-    /// 18's handler, and 59 once the animation tables landed.
+    /// 18's handler, 59 once the animation tables landed, and 99 once player 2's
+    /// idle-path throw decision did.
     #[test]
-    fn without_skip_waived_the_run_still_stops_on_player_two() {
+    fn nothing_waived_reproduces_the_whole_golden_fixture() {
         let f = golden();
         let mut state = f[0].seed();
         let mut prev_joy = f[0].joy_6c58;
@@ -951,14 +959,13 @@ mod tests {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
             state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
-            if let Some(d) = first_divergence(expected, &state) {
-                assert_eq!(matched, 59, "matched ticks with nothing waived");
-                assert!(is_player_two(&d.field), "{}", d.field);
-                return;
-            }
+            assert!(
+                first_divergence(expected, &state).is_none(),
+                "diverged after {matched} tick(s): {:?}",
+                first_divergence(expected, &state).map(|d| d.field)
+            );
             prev_joy = prev.joy_6c58;
         }
-        panic!("expected a divergence within the fixture");
     }
 
     #[test]

@@ -1849,10 +1849,13 @@ if d0 == own grid_cell    -> standable
 if own bank[d0] type != 0 -> standable
 ```
 
-The **polarity differs by site**, which is the part that will bite: `$cc1c`
-takes "standable" to the intercept, while `$ae0a` takes "**not** standable" to
-state 16. Reading one and assuming the other would be exactly the class of
-mistake this project has retracted three times.
+**CORRECTED in Part 10j.** The two probes are two arms of one rule, not two
+rules with opposite polarity: `$adb2`-`$adc6` picks which side to probe from the
+joystick (or from `player+$08`, the side of the last throw), and both arms then
+ask *should I go left?* -- probing right and finding nowhere to go means yes
+(`$ae0a beq $ae70`), and probing left and finding somewhere to go also means yes
+(`$ae6e beq $ae0e` falls through to `$ae70`). State 16 steps left and throws;
+`$ae0e` is state 15, which steps right and throws.
 
 State 16's entry itself is four instructions:
 
@@ -1869,3 +1872,70 @@ writer, transcribe the probe and the offset, measure. The fully-compared run
 moves a handful of ticks per handler. What is *not* yet located is what states 3
 and 4 do during their wind-up, and player 2's strike and racket halves -- which
 mirror `$10fd8`'s and are already modelled for player 1.
+
+## Player 2's throw decision, and golden reproduced with nothing waived (Part 10j)
+
+Three small reads finished the golden fixture off completely.
+
+### `$ad82`-`$ae2a`: how player 2 decides to throw
+
+```
+$ad82  cmpi.b #$80,(a0) ; beq out      ; fire ALONE does nothing
+$ad8a  btst #$1,(a0) ; bne $af50       ; fire+down goes elsewhere
+$ad92  if $6d8a >= $6d8c -> out        ; already at the disc cap
+$ad9e  if $6d29 == 1 -> $ae90          ; walking left  -> the smash chooser
+$ada8  if $6d29 == 2 -> $aef0          ; walking right -> the other one
+$adb2  btst #$2,(a0) ; bne $adca       ; LEFT held  -> probe RIGHT
+$adba  btst #$3,(a0) ; bne $ae2e       ; RIGHT held -> probe LEFT
+$adc2  tst.b $6d28 ; bne $ae2e         ; neither: the last throw's side picks
+$ae70  state 16: sequence $45c2, x -= 4, st  $6d28     ; step LEFT and throw
+$ae0e  state 15: sequence $45ea, x += 4, clr $6d28     ; step RIGHT and throw
+```
+
+So **states 15 and 16 are the same throw stepping opposite ways**, which is also
+why their serves offset differently -- `p2.x - 9` for 15 and `p2.x + 3` for 16,
+measured after the sidestep. `player+$08` records which way the last one went,
+and it is what breaks the tie when the stick is not pushed either way.
+
+The probe is [`can_stand`]'s, the same one the anticipation cascade uses, and its
+row threshold matters: **`$3a` = 58 while a player's own `world_y` is 54**, so
+the probe lands in the near row where `grid_cell` puts the player in the far one.
+The cells therefore differ, the bank lookup decides, and reading that threshold
+as the movement code's 14 makes the whole decision come out backwards.
+
+`$6d29` -- which is `player+$09`, the same byte as the state stamp -- routes a
+*walking* player somewhere else entirely: `$b1e0`-`$b1f8` in the walk handlers
+send a fire press to `$ad82`, which sees the walk's own stamp (1 or 2) and goes
+to `$ae90` or `$aef0`, the **running smash** choosers for states 3 and 4.
+`tile_damage.ndjson` frame 162 is one: player 2 walking right with fire enters
+state 4 and starts sliding a unit a frame. Not modelled.
+
+### `tst.b (a0)` is a whole-byte test, and `$80` is not empty
+
+`$f1ba tst.b (a0); beq $f1c0` is what clears `player+$09` in the idle path, and
+it tests the **whole** input byte. A byte of `$80` -- fire held with no direction
+-- is non-zero, so it does *not* reach the clear, and the stamp from whatever the
+player was doing stays put. `tile_damage.ndjson` frame 60 is exactly that: the
+AI holds `$80`, the byte keeps the 15 the throw left there, and a model that
+treats "no direction bits" as "no input" drops it to 0 on a frame the ST leaves
+alone.
+
+### `player+$1a` is an X delta the idle path consumes
+
+```
+$abbe  move.w $6d3a,d0      ; p1: $f110 move.w $6cba,d0
+$abc2  clr.w  $6d3a         ;     $f114 clr.w  $6cba
+$abc6  add.w  d0,$6d22      ;     $f118 add.w  d0,$6ca2
+```
+
+One of the words `$f1ca` copies out of the animation cell, read and cleared once
+per frame. It is the only reason a standing player's `world_x` moves, and nothing
+recomputes `grid_cell` after it -- so a probe on the same frame compares against
+the cell from the frame before.
+
+### What that adds up to
+
+`tests/fixtures/golden.ndjson` reproduces **99 of 99 ticks with nothing waived
+and nothing resynced** -- every compared row of *both* players, including all
+five of player 2's. The idle fixture reaches 161 of 214 on the same terms and
+stops at the running smash.

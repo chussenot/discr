@@ -956,3 +956,83 @@ What is genuinely finished is more interesting than what is left:
 5. **`discr-st8`** — round init, scoring and win. `$aa50` and `$6c83` are
    untouched, and Part 10g found the round's *end* (`player+$0d` clearing the
    board) without its beginning.
+
+---
+
+# Part 10j — golden reproduced with nothing waived at all
+
+`tests/fixtures/golden.ndjson` now runs **99 of 99 ticks with nothing waived and
+nothing resynced** — every compared row of *both* players, including all five of
+player 2's, which had never matched a single frame before Part 10c.
+
+## The scoreboard, four gates
+
+| run | what it measures | 10i | **10j** |
+|---|---|---|---|
+| `golden --skip-waived` | everything but player 2 | 99 clean | **99 clean** |
+| `tile_damage --skip-waived` | the same, idle fixture | 214 clean | **214 clean** |
+| `golden` (no flags) | **nothing waived at all** | 59 | **99 clean** |
+| `tile_damage` (no flags) | the same, idle fixture | 59 | **161** |
+
+Resyncing buys nothing on the golden fixture any more.
+
+## Three small reads, and one bug of mine
+
+**`$ad82`-`$ae2a` is how player 2 decides to throw.** Fire alone does nothing;
+fire with a direction probes one side and commits: state 16 steps *left* and
+throws, `$ae0e`'s state 15 steps *right*. The two probe arms reach state 16 from
+opposite outcomes, which is one rule and not two — probing right and finding
+nowhere to go means go left, probing left and finding somewhere to go also means
+go left. `player+$08` records which way the last throw went and breaks the tie
+when the stick is neutral. It also explains why the two serves offset
+differently, `p2.x - 9` against `p2.x + 3`: those are measured *after* the
+sidestep.
+
+That corrects Part 10i, which called this "the polarity differs by site" and
+filed it as a trap. It is not a trap; it is one decision read from two ends.
+
+**`tst.b (a0)` is a whole-byte test and `$80` is not empty.** The idle path
+clears `player+$09` only when the entire input byte is zero. A byte of `$80` —
+fire held, no direction — is non-zero, so the stamp from whatever the player was
+last doing stays put. `tile_damage.ndjson` frame 60 catches it exactly: the AI
+holds `$80`, the byte keeps the 15 the throw left there, and treating "no
+direction bits" as "no input" drops it to 0 on a frame the ST leaves alone. That
+one line took the idle fixture's strict run from 59 to 134.
+
+**`player+$1a` is an X delta the idle path consumes** — read, cleared and added
+to `world_x` once per frame, copied out of the animation cell like the hit box.
+It is the only reason a standing player's `world_x` moves, and nothing recomputes
+`grid_cell` after it, so a probe on the same frame compares against the previous
+frame's cell.
+
+**And a bug worth recording, because it cost more than the reads did.**
+`discs_out` and `disc_cap` were added to the oracle's *argument list* in Part 10g
+but never to its *format string*. `fprintf` ignores extra arguments, so the
+columns simply never appeared, both read 0, and `disc-core` could not tell "no
+discs in play" from "at the cap" — which silently gated every throw decision
+that consults it. It surfaced only when a decision that depends on the
+difference finally mattered. A missing conversion in a `printf` is not a
+compile error and not a runtime error; it is a column that quietly is not there.
+
+## What is left on player 2
+
+Both remaining walls are the same thing: the **running smash**. `$b1e0`-`$b1f8`
+in the walk handlers send a fire press to `$ad82`, which sees the walk's own
+stamp in `player+$09` (1 or 2) and routes to `$ae90` or `$aef0`, the choosers
+for states 3 and 4. `tile_damage.ndjson` frame 162 is one: player 2 walking right
+with fire enters state 4 and starts sliding a unit a frame toward the wall.
+
+Its *release* is already modelled — that is why frame 190's smash serves
+correctly with `vel_x` 4 — so what is missing is the entry and the wind-up slide.
+
+## Honest limits
+
+* **`player+$1a` is a seventeenth waived row**, fed like the hit box. The fed
+  list is now six player fields: one animation cursor, the hit box, the X delta,
+  and three per-player constants. Nothing on the disc side.
+* **The `$aef0`/`$ae90` smash choosers and `$af50` (fire+down) are unread.**
+* **Player 1's idle-path throw branch (`$f21e bmi $f306`) is unread**, and
+  cannot be exercised: `disc_cap` is 0 for player 1 with a count of 0, so it can
+  never throw.
+* **One fixture clean under the strictest terms is one fixture.** The idle one
+  reaches 161 of 214 the same way.

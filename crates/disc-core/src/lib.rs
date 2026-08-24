@@ -95,9 +95,17 @@ impl GameState {
         }
 
         // ST $f5d0: the player state dispatch, per player.
-        for (i, p) in self.players.iter_mut().enumerate() {
-            let who = if i == 0 { PlayerId::One } else { PlayerId::Two };
-            player::step(p, who, inputs[i], &self.tiles, &mut events);
+        // A player's "own bank" is the one their movement code indexes: $7616
+        // for player 1, $7596 for player 2. `tiles` is the walkability gate for
+        // both, because only player 1's movement reads it.
+        let (near, far) = (self.tiles, self.tiles_far);
+        for (i, (p, input)) in self.players.iter_mut().zip(inputs).enumerate() {
+            let (who, own) = if i == 0 {
+                (PlayerId::One, &near)
+            } else {
+                (PlayerId::Two, &far)
+            };
+            player::step(p, who, input, &near, own, &mut events);
         }
 
         // ST $f1b4: `st $6d2d` -- entering the death state sets the flag on the

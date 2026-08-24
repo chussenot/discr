@@ -153,6 +153,11 @@ anims! {
          frames between them -- which is what ends state 17.";
     ANIM_MISSED_CATCH = 0x462e, [6, 6],
         "ST `$462e`, loaded at `$cab8` when a catch misses.";
+    ANIM_P2_THROW_LEFT = 0x45c2, [4, 4, 4, 4, 4, 4],
+        "ST `$45c2`, loaded at `$ae70`: player 2's throw after stepping left.";
+    ANIM_P2_THROW_RIGHT = 0x45ea, [4, 4, 4, 4, 4, 4],
+        "ST `$45ea`, loaded at `$ae0e`: the same, stepping right. `$45f0` -- the \
+         sequence the intercept commits into -- is this table's second cell.";
 }
 
 /// The sequence a handler loaded, by its ST address.
@@ -355,7 +360,13 @@ fn enter_turn(player: &mut Player) {
 /// reach state 26 all lead into handlers whose behaviour is unrecovered, so
 /// this leaves `state_index` alone for them rather than entering a state it
 /// cannot then run. `// UNKNOWN: see bd discr-75o`.
-fn idle(player: &mut Player, input: Input) {
+fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE_CELLS]) {
+    // $f110-$f118 / $abbe-$abc6: consume the animation's X delta. Read, cleared,
+    // and added to world_x -- and nothing recomputes grid_cell here, so the cell
+    // a probe compares against is the one from the previous frame.
+    player.world_x += player.x_delta;
+    player.x_delta = 0;
+
     // $f11c: `tst.b $6cac; bne $f170` -- out of energy, so the idle path plays
     // the death sequence instead and never comes back. $f1b4 also sets $6d2d,
     // player 2's +$0d, which this crate does not model.
@@ -367,9 +378,21 @@ fn idle(player: &mut Player, input: Input) {
         return;
     }
 
-    // $f1ba: tst.b (a0); beq -> clr.b $6ca9 at $f1c0.
-    if input.dir == DirBits(0) && !input.fire_edge {
+    // $f1ba: `tst.b (a0); beq` -- a WHOLE-BYTE test, so $80 (fire held with no
+    // direction) does not reach the clear at $f1c0. Getting that wrong makes a
+    // player's +$09 drop to 0 on a frame the ST leaves it alone, which is what
+    // tile_damage.ndjson frame 60 catches: the AI holds $80 there, and the
+    // stamp from the throw it just finished stays put.
+    if input.dir == DirBits(0) && !input.fire_held {
         player.facing = 0;
+        return;
+    }
+
+    // $ad82 onward for player 2: fire with a direction chooses a throw. Player
+    // 1's idle path takes a different branch at `$f21e bmi $f306`, which is not
+    // decoded. // UNKNOWN: see bd discr-b6x.
+    if input.fire_held && who == PlayerId::Two {
+        p2_throw_choice(player, input, own_bank);
         return;
     }
 
@@ -453,12 +476,7 @@ fn dead(player: &mut Player) {
 /// preceded it: `golden.ndjson` spends twelve frames in state 15 and seven in
 /// state 17 and then falls back to state 0 on frame 59.
 fn stub(player: &mut Player, who: PlayerId) {
-    if anim_tick(player) == AnimStep::Ended {
-        // $f202-$f210 / $ac8c: the tail's own ending loads the idle sequence and
-        // writes state 0.
-        enter_anim(player, idle_anim(who));
-        player.state_index = STATE_IDLE;
-    }
+    run_out(player, who);
 }
 
 /// State 18, stepping across to intercept. ST `$c196`.
@@ -504,6 +522,18 @@ fn intercept(player: &mut Player, input: Input) {
 /// the wind-up and jump ten at one animation frame. `// UNKNOWN: see bd
 /// discr-b6x`.
 fn throwing(player: &mut Player, who: PlayerId) {
+    run_out(player, who);
+}
+
+/// The commonest handler shape in either table: stamp `player+$09` (done for
+/// every state in [`step`]), run the animation, and let the sequence running out
+/// drop the state back to 0 through the tail's own ending (`$f202`-`$f210`, or
+/// `$ac8c` for player 2).
+///
+/// States 17, 27 and the four throw states are all exactly this, which is why
+/// they share one function. What distinguishes the interesting states is what
+/// they do *besides* this -- sink a row, commit to a throw, damage a tile.
+fn run_out(player: &mut Player, who: PlayerId) {
     if anim_tick(player) == AnimStep::Ended {
         enter_anim(player, idle_anim(who));
         player.state_index = STATE_IDLE;
@@ -661,8 +691,11 @@ pub const INTERCEPT_RELEASE_B: u32 = 0x4634;
 /// How far the intercept steps, in one move. ST `$c1d0`: `subq.w #6,$6d22`.
 pub const INTERCEPT_STEP: i16 = 6;
 
-/// The standing throw state the intercept commits into. ST `$c1e2`.
+/// The throw state that steps RIGHT. ST `$c1e2` and `$ae1c`.
 pub const STATE_THROW_STANDING: u8 = 0x0f;
+
+/// The throw state that steps LEFT. ST `$ae7e`.
+pub const STATE_THROW_LEFT: u8 = 0x10;
 
 /// The catch window's half-width from `$6d22`, for state 18. ST `$ca9a`.
 pub const CATCH_WIDTH_INTERCEPT: i16 = 0x1a;
@@ -874,6 +907,10 @@ pub fn anticipate(
 /// True when it is the cell they are already on, or when its type word is
 /// non-zero in their own bank. `$cc16` (0) means reach, `$cc1a` (-1) step.
 fn can_stand(player: &Player, probe_x: i16, own_bank: &[Tile; TILE_CELLS]) -> bool {
+    // $add2 / $ae36: the probe is rejected outright outside the arena.
+    if !(8..=0x98).contains(&probe_x) {
+        return false;
+    }
     let mut cell = usize::from(column(probe_x)) + GRID_CELL_BASE as usize;
     // $cbf6 / $cc6e: cmpi.w #$3a,$6d26 -- 58, not the movement code's 14.
     if player.world_y > 0x3a {
@@ -883,6 +920,80 @@ fn can_stand(player: &Player, probe_x: i16, own_bank: &[Tile; TILE_CELLS]) -> bo
         || own_bank
             .get(cell)
             .is_some_and(|t| t.tile_type != TILE_TYPE_DESTROYED)
+}
+
+/// How far the idle-path throw steps before it throws. ST `$ae84` / `$ae22`.
+pub const THROW_SIDESTEP: i16 = 4;
+
+/// How far to either side it probes. ST `$adce` / `$ae32`.
+pub const THROW_PROBE: i16 = 0x0d;
+
+/// Player 2's idle-path throw decision. ST `$ad82`-`$ae2a`.
+///
+/// ```text
+/// $ad82  cmpi.b #$80,(a0) ; beq out    ; fire ALONE does nothing
+/// $ad8a  btst #$1,(a0) ; bne $af50     ; down+fire goes elsewhere
+/// $ad92  if $6d8a >= $6d8c -> out      ; already at the disc cap
+/// $ad9e  if $6d29 is 1 or 2 -> $ae90 / $aef0
+/// $adb2  btst #$2,(a0) ; bne $adca     ; LEFT held  -> probe RIGHT
+/// $adba  btst #$3,(a0) ; bne $ae2e     ; RIGHT held -> probe LEFT
+/// $adc2  tst.b $6d28 ; bne $ae2e       ; neither: the last throw's side picks
+/// $ae70  state 16: sequence $45c2, x -= 4, st  $6d28      ; step LEFT
+/// $ae0e  state 15: sequence $45ea, x += 4, clr $6d28      ; step RIGHT
+/// ```
+///
+/// The two probe arms reach state 16 from **opposite** outcomes, which reads as
+/// one rule rather than two: probing right and finding nowhere to go means go
+/// left, and probing left and finding somewhere to go also means go left.
+///
+/// The row threshold inside [`can_stand`] is `$3a` = 58 while a player's own
+/// `world_y` is 54, so the probe lands in the near row where `grid_cell` puts
+/// them in the far one -- which is what makes the cells differ and the bank
+/// lookup decide. Reading that threshold as the movement code's 14 made an
+/// earlier attempt at this disagree with the trace.
+///
+/// Not modelled: `$af50` (down+fire) and the `$6d29` 1-and-2 variants at
+/// `$ae90`/`$aef0`. `// UNKNOWN: see bd discr-b6x`.
+fn p2_throw_choice(player: &mut Player, input: Input, own_bank: &[Tile; TILE_CELLS]) {
+    // $ad82: exactly $80 -- fire with no direction -- does nothing at all.
+    if input.dir == DirBits(0)
+        || input.dir.has(DirBits::DOWN)
+        || player.discs_out >= player.disc_cap
+        || player.facing == 1
+        || player.facing == 2
+    {
+        return;
+    }
+
+    let probe_right = if input.dir.has(DirBits::LEFT) {
+        true
+    } else if input.dir.has(DirBits::RIGHT) {
+        false
+    } else {
+        !player.threw_left
+    };
+    let offset = if probe_right {
+        THROW_PROBE
+    } else {
+        -THROW_PROBE
+    };
+    let standable = can_stand(player, player.world_x + offset, own_bank);
+
+    if standable != probe_right {
+        // $ae70: step left and throw.
+        player.world_x -= THROW_SIDESTEP;
+        player.state_index = STATE_THROW_LEFT;
+        player.threw_left = true;
+        enter_anim(player, ANIM_P2_THROW_LEFT);
+    } else {
+        // $ae0e: step right and throw.
+        player.world_x += THROW_SIDESTEP;
+        player.state_index = STATE_THROW_STANDING;
+        player.threw_left = false;
+        enter_anim(player, ANIM_P2_THROW_RIGHT);
+    }
+    // $ae2a / $ae8c: bra $ac40 -- the tail runs on the entering tick.
+    anim_tick(player);
 }
 
 /// Advance one player by one frame.
@@ -902,6 +1013,7 @@ pub fn step(
     who: PlayerId,
     input: Input,
     tiles: &[Tile; TILE_CELLS],
+    own_bank: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
     // Almost every handler opens by stamping its own index into player+$09 --
@@ -926,7 +1038,7 @@ pub fn step(
     // ST $f108: `tst.b $6cae; bne $f5d0` -- state 0 is the inline idle path and
     // everything else dispatches through the 32-entry table at $10e2c.
     match player.state_index {
-        STATE_IDLE => idle(player, input),
+        STATE_IDLE => idle(player, who, input, own_bank),
         STATE_TURN => turn(player),
         STATE_STRUCK_DOWN => struck_down(player),
         STATE_STRUCK_UP => struck_up(player),
@@ -934,6 +1046,11 @@ pub fn step(
         STATE_INTERCEPT => intercept(player, input),
         STATE_STUB => stub(player, who),
         3 | 4 | 15 | 16 => throwing(player, who),
+        // $c6ec entry 27, the reach: run the $466a sequence out and fall back.
+        // Whether its handler does anything else is not decoded, but the
+        // fixture's twenty-three frames in it match the sequence exactly.
+        // // UNKNOWN: see bd discr-b6x.
+        STATE_REACH => run_out(player, who),
         1 => walk(player, input, tiles, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
         2 => walk(
             player,
@@ -951,7 +1068,6 @@ pub fn step(
         19 => {} // $108f4. UNKNOWN: see bd discr-75o
         21 => {} // $109aa. UNKNOWN: see bd discr-75o
         24 => {} // $10ac4. UNKNOWN: see bd discr-75o
-        27 => {} // $10c8a. UNKNOWN: see bd discr-75o
         31 => {} // $10dda. UNKNOWN: see bd discr-75o
         // States 16 and 17 used to sit here under bd discr-rf9, "never observed
         // in Hatari"; player 2 spends much of both fixtures in them and they
@@ -988,7 +1104,7 @@ mod tests {
     }
 
     fn run(player: &mut Player, input: Input, tiles: &[Tile; TILE_CELLS]) {
-        step(player, PlayerId::One, input, tiles, &mut Vec::new());
+        step(player, PlayerId::One, input, tiles, tiles, &mut Vec::new());
     }
 
     /// The four `$6cb0` observations of the Part-4 `player_x_hunt` and
@@ -1091,6 +1207,7 @@ mod tests {
                 fire_held: true,
             },
             &FLOOR,
+            &FLOOR,
             &mut Vec::new(),
         );
         assert_eq!(p.world_x, 114);
@@ -1186,6 +1303,7 @@ mod tests {
             &mut p,
             PlayerId::One,
             press(DirBits::RIGHT),
+            &FLOOR,
             &FLOOR,
             &mut events,
         );

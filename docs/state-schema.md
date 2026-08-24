@@ -131,6 +131,7 @@ Notes on individual rows:
 | -- (the animation engine) | `pending_state`, `anim_hold`, `anim_cell`, `anim_shown` | `$6caa`, `$6cda`, `$6ce2`, `$6ce4` | waived:discr-75o |
 | `players[n].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` | waived:discr-75o |
 | `players[n].reach` | `i16` | `player+$12` | waived:discr-b6x |
+| `players[n].x_delta` | `i16` | `player+$1a` | waived:discr-75o |
 | `players[n].disc_cap` | `i16` | `player+$6c` | waived:discr-b6x |
 | -- (the far bank `$7596`) | -- | 16 cells of stride 8 | waived:discr-ovl.3 |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
@@ -139,7 +140,7 @@ Notes on individual rows:
 | -- (tile trailing long) | -- | `tile+$04` | excluded:always-zero |
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
-21 waived or excluded rows: 16 waived against a filed unknown, 5 excluded by
+22 waived or excluded rows: 17 waived against a filed unknown, 5 excluded by
 scope. **The count is unchanged from before Part 10 and that is close to the
 honest number**: five waivers were resolved and five new ones filed from what
 the answers exposed -- a second tile grid, the bonus placer, the hook installer,
@@ -188,9 +189,12 @@ Why each waiver or exclusion:
   they could not match a single frame.
   What stays waived is two things. The **policy** -- the 20-entry rule table at
   `$efa8`, its 11 test and 7 action routines, and the sensor pass `$cea6` -- and
-  the **28 states of player 2's own table at `$c6ec`** that `disc-core` has no
-  handler for. The second is what stops the fully-compared run: player 2 enters
-  state 18 on frame 22.
+  the **remaining states of player 2's own table at `$c6ec`**. As of Part 10j
+  player 2's rows reproduce **the whole of `tests/fixtures/golden.ndjson` with
+  nothing waived at all** -- so the waiver now records that the *policy* is
+  unmodelled and that some of its states are, not that the rows cannot match.
+  On the idle fixture the same run reaches 161 of 214 and stops at the running
+  smash (`$aef0`).
   Note the timing, because a replay gets it wrong by default: `$6da1` is written
   and consumed inside one VBL (`$10ec6` then `$10ece`), so the byte a tick uses
   is the one visible at the *next* sampling point, not the current one.

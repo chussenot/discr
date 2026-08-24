@@ -503,7 +503,8 @@ static void emit_frame(FILE *out, long frame)
          * copied into disc+$16 at $a9cc. */
         fprintf(out, "%s{\"x\":%u,\"y\":%u,\"facing\":%u,\"state\":%u,\"cell\":%u"
                      ",\"anim\":%u,\"throw_dk\":%d,\"throw_mag\":%d"
-                     ",\"box\":[%d,%d,%d,%d],\"energy\":%d,\"reach\":%d}",
+                     ",\"box\":[%d,%d,%d,%d],\"energy\":%d,\"reach\":%d"
+                     ",\"discs_out\":%d,\"disc_cap\":%d,\"x_delta\":%d}",
                 i ? "," : "", rd16(b + 2), rd16(b + 6), ram[b + 9], ram[b + 0x0e], rd16(b + 0x10),
                 (rd16(b + 0x3a) << 16) | rd16(b + 0x3c),
                 (int16_t)rd16(b + 0x6e), (int16_t)rd16(b + 0x70),
@@ -518,7 +519,10 @@ static void emit_frame(FILE *out, long frame)
                  * both hit tests ($11 is p1's $6cb2 = 12, p2's $6d32 = 26).
                  * Nothing in the analysed image writes it. */
                 (int16_t)rd16(b + 0x12), (int16_t)rd16(b + 0x6a),
-                (int16_t)rd16(b + 0x6c));
+                (int16_t)rd16(b + 0x6c),
+                /* +$1a is a per-frame X delta copied out of the animation cell
+                 * by $f1ca and consumed by the idle path at $f118 / $abc6. */
+                (int16_t)rd16(b + 0x1a));
     }
     fprintf(out, "],\"disc\":[");
     for (i = 0; i < 8; i++) {

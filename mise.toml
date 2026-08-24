@@ -35,14 +35,17 @@ GOLDEN = "tests/fixtures/golden.ndjson"
 TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
-# NOTHING resynced, every compared row of BOTH players.  59 ticks, stopping where
-# player 2's state-16 entry shifts its world_x by eight -- one more $c6ec handler
-# nobody has transcribed.  From here on this number moves one handler at a time,
-# and the method is settled: --watch the field, --disasm the writer, transcribe.
+# NOTHING resynced, every compared row of BOTH players -- and on golden it now
+# reproduces THE WHOLE FIXTURE.  Resyncing buys nothing there any more.
 # Before Part 10c this run stopped on frame 1, because player 2 was driven with
 # no input at all; 22 before 10f, 40 before state 18's handler, 58 before the
-# animation tables.
-FULL_MIN_AGREE = "59"
+# animation tables, 59 before player 2's idle-path throw decision.
+FULL_MIN_AGREE = "99"
+
+# The fourth gate: the idle fixture with nothing waived either.  161 ticks,
+# stopping where player 2's walk handler sends a fire press to the smash chooser
+# at $aef0 -- one more $c6ec variant nobody has transcribed.  59 before Part 10j.
+TILE_FULL_MIN_AGREE = "161"
 TILE_MIN_AGREE = "214"
 
 # The repository's first three commits predate conventional commits (`bd init`
@@ -70,6 +73,7 @@ run = [
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived --min-agree $TRACE_MIN_AGREE",
   "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived --min-agree $TILE_MIN_AGREE",
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --min-agree $FULL_MIN_AGREE",
+  "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --min-agree $TILE_FULL_MIN_AGREE",
 ]
 
 [tasks.tracecheck]

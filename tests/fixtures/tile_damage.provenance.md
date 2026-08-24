@@ -75,3 +75,11 @@ fixtures still load) and per-player `reach` (`player+$12`).
 Three more additive per-player columns, old ones verified identical again:
 `discs_out` (`player+$6a`, how many discs that player has in play) and
 `disc_cap` (`player+$6c`, the cap state 18 refuses to throw past).
+
+## Regenerated for Part 10j
+
+`discs_out` (`player+$6a`) and `disc_cap` (`player+$6c`) were declared in the
+emitter's argument list in Part 10g but missing from its format string, so
+neither reached the JSON until now -- which is why they read as 0 and 0 and
+`disc-core` could not tell "no discs out" from "at the cap". Fixed, and
+`x_delta` (`player+$1a`) added alongside.
