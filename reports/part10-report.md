@@ -288,3 +288,102 @@ machine and the AI that drives it. **discr-b6x is now the single thing standing
 between `disc-core` and the rest of both fixtures**, and the machinery to do it
 exists: `$c6ec` is the table, `$abb2` the dispatcher, `$d2cc` the policy, and
 `ai_6da1` is already a trace column.
+
+---
+
+# Part 10c — the serve, and player 2 stops being unmatchable
+
+The wall Part 10b left is gone. The serve is implemented from its two decoded
+throw states, and player 2 — whose five rows had never matched a single frame in
+the project's history — now matches for 21 ticks with nothing waived at all.
+
+## The scoreboard, three gates now
+
+| run | what it measures | before Part 10 | after 10 | after 10b | **after 10c** |
+|---|---|---|---|---|---|
+| `golden --skip-waived` | everything but player 2 | 10 | 10 | 51 | **63** |
+| `tile_damage --skip-waived` | the same, on the idle fixture | 10 | 51 | 51 | **118** |
+| `golden` (no flags) | **nothing waived, nothing resynced** | 0 | 0 | 0 | **21** |
+
+The walls, in the same order:
+
+* **63** — `players[0].world_y` at frame 64, where player 1's hit test `$10fd8`
+  puts it into state 11 and moves it. discr-ovl.1's other half.
+* **118** — `tiles[14]` at frame 119, the anomaly discr-b4q owns: a cell's type
+  cleared with its hp intact. This run now goes *past* the frame-70 tile impact
+  with **no `--resync` at all**, where Part 10 needed `--resync discs[0]` to
+  reach the same number.
+* **21** — player 2 enters state 18 at frame 22, one of the 28 handlers of its
+  own table at `$c6ec` that `disc-core` has no code for.
+
+The third row is the one worth keeping an eye on. It is the strictest thing this
+repo measures: all 15 compared rows of *both* players, nothing supplied but the
+two joystick bytes and the four fed ST inputs. It used to stop on frame 1 by
+construction.
+
+## What made the serve implementable
+
+Three things, in the order they mattered.
+
+**The gate is `player+$3a`, and it is the animation cursor Part 10b already
+modelled.** `$c06e cmpi.l #$4602,$6d5a` is not a timer and not a disc test: it
+fires on the single frame of the throw animation where the sequence cursor
+reaches one exact value. `$6d5a` is player 2's `+$3a`, the same field as player
+1's `$6cda`. The oracle emits it now, and the fixtures show the release frame
+plainly — `$45fc, $45fc, $4602` and then state 17.
+
+**There are two throw states, not one.** `$c6ec` entry 16 is `$c0fe`, which is
+`$c068` with two constants swapped: the gate is `$45da` and `world_x` is
+`p2.x + 3` rather than `p2.x - 9`. Golden's second serve, at frame 76, is that
+one — player 2 at x 49 puts the disc at 52, and the state-15 offset would have
+given 40. Six more `bsr $a972` sites exist inside `$abb2`, so there are further
+throw states nobody has read.
+
+**The slot fill did not stop at `$a9b4`.** The four instructions after it are
+`st ($10,a1)`, `clr.b ($11,a1)`, `move.l a2,($12,a1)` and — the one that
+mattered — `move.w $6d90,($16,a1)`. **A disc's damage is the thrower's
+`player+$70`**, 3 for player 2 and 1 for player 1, the same magnitudes as their
+`+$6e` dir_kinds. So a player's throw carries one number that is at once its
+depth speed and its damage. Where `$a9a0` got the damage from had been open
+since Part 8.
+
+## A retraction, and a timing measurement
+
+**Retracted:** Part 10 recorded that `$c0d0`/`$c0e8` "double the `vel_x`
+adjustment" when `d2` is -1. The branch is a `beq` *skip*: a `dir_kind` of -1
+gets the single sideways step and everything else gets two. Golden frame 52
+settles it — a -3 disc served with right held reads `vel_x` +2, which the
+old reading cannot produce. Third retraction of the project, and the same shape
+as the other two: a correct reading of an instruction, paired with a guess about
+which way the branch fell.
+
+**Measured:** `$6da1` is written and consumed inside one VBL — `$10ec6 bsr
+$d2cc` writes it, `$10ece bsr $abb2` consumes it two instructions later — so the
+byte a frame's work uses only becomes visible at the *next* sampling point.
+`$6c58` is different: the IKBD handler writes it asynchronously, so the sample
+at frame N is already the byte frame N will consume. `tracecheck` therefore
+drives player 2 from the frame it is predicting and player 1 from the frame it
+starts at, which looks wrong until you see why.
+
+It was found the hard way: feeding player 2 the current frame's byte took the
+idle fixture *backwards*, 118 → 51, on a `vel_y` of -5 the ST never served. At
+`tile_damage` frame 51 the sampled byte is `$81` (fire + up) and the disc served
+on frame 52 has `vel_y` 0; frame 52's byte is `$80`, which serves 0.
+
+## Honest limits on the new numbers
+
+* **Four ST fields are fed every tick**, and the header line says so on every
+  run: `disc+$12` (the steering hook), `disc+$10` bit 7 (whether the ST
+  simulates a record), and `player+$3a`/`+$6e`/`+$70` (the animation cursor the
+  serve gates on, and the two throw parameters). Every one of them is written by
+  code outside the loops `disc-core` models. **The serve trigger itself is not
+  synthesised** — it is the ST's own comparison against a fed cursor value — but
+  a number produced with a fed input is not a number `disc-core` produced alone.
+* **`player+$6e` and `+$70` have no writer anywhere in the analysed image**, so
+  they are fed rather than derived (discr-qqt). They are constant in every trace.
+* **The `$6d9a == 2` serve variant is not modelled.** No trace has carried a
+  non-zero bonus code, so there is nothing to test it against.
+* **`players[1].*` is still waived**, and the reason changed rather than went
+  away: it is no longer "the trace carries no input for player 2" but "player 2
+  reaches 28 states this crate has no handler for". The waiver list grew 13 → 15
+  for the two new fed-input rows.

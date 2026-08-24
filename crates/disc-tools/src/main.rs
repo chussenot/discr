@@ -44,7 +44,7 @@
 //! `$fb90` clears it on use, so `fire_edge` is true only on the frame the bit
 //! goes 0 -> 1, never while it is held.
 //!
-//! Player 2's input is waived (`discr-b6x`): `disc-core` takes it from its
+//! Player 2 is waived (`discr-b6x`): `disc-core` takes both players' input from its
 //! caller and the trace carries no `$6c59`, so p2 is driven with no input and
 //! a p2-only divergence is expected rather than a bug.
 
@@ -59,7 +59,7 @@ use serde::Deserialize;
 /// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
 const SCHEMA_COMPARED: usize = 15;
 /// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
-const SCHEMA_WAIVED: usize = 13;
+const SCHEMA_WAIVED: usize = 15;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
 /// Compared rows a trace may carry no column for; see [`Frame`].
@@ -149,6 +149,15 @@ struct Frame {
     vbl_6ab4: u16,
     /// ST `$6c58`, player 1's decoded joystick byte.
     joy_6c58: u8,
+    /// ST `$6da1`, the byte the one-player AI at `$d2cc` synthesises in place
+    /// of player 2's joystick, consumed by `$abb2` at exactly the position
+    /// `$6c59` occupies for a human. Part 10.
+    ///
+    /// Player 2's *policy* is waived (discr-b6x) and always will be until the
+    /// 20-rule table at `$efa8` is decoded. Feeding the byte it produces is the
+    /// same thing as feeding `$6c58` for player 1: an input, not state.
+    #[serde(default)]
+    ai_6da1: u8,
     player: [TracePlayer; 2],
     disc: [TraceDisc; DISC_SLOTS],
     /// 17 cells of `[tile_type, hp]`.
@@ -167,6 +176,15 @@ struct TracePlayer {
     state: u8,
     /// `player+$10`.
     cell: u16,
+    /// `player+$3a`, the animation sequence cursor. Part 10b.
+    #[serde(default)]
+    anim: u32,
+    /// `player+$6e`, the dir_kind this player's throws carry. Part 10b.
+    #[serde(default)]
+    throw_dk: i16,
+    /// `player+$70`, the damage they do. Part 10b.
+    #[serde(default)]
+    throw_mag: i16,
 }
 
 #[derive(Deserialize)]
@@ -233,6 +251,27 @@ impl Frame {
         }
     }
 
+    /// Player 2's input for a tick, from the AI's byte at `$6da1`.
+    ///
+    /// **This is read from the frame the tick is predicting, not from the one
+    /// it starts at**, and the asymmetry with [`Frame::input`] is real. `$6c58`
+    /// is written by the IKBD interrupt handler asynchronously, so it is
+    /// already settled when the VBL is entered and the sample at frame N is the
+    /// byte frame N's work will consume. `$6da1` is written *inside* the VBL,
+    /// by `$d2cc` at `$10ec6`, immediately before `$abb2` at `$10ece` consumes
+    /// it -- so the byte a tick uses only becomes visible at the *next*
+    /// sampling point.
+    ///
+    /// Measured, not assumed: at `tile_damage.ndjson` frame 51 the sampled byte
+    /// is `$81` (fire + up) and the disc served on frame 52 has `vel_y` 0, which
+    /// the up bit would have made -5; frame 52's byte is `$80`, which serves 0.
+    fn ai_input(&self, prev: u8) -> Input {
+        Input {
+            dir: DirBits(self.ai_6da1 & JOY_DIR_MASK),
+            fire_edge: self.ai_6da1 & JOY_FIRE_BIT != 0 && prev & JOY_FIRE_BIT == 0,
+        }
+    }
+
     /// Build the `GameState` this record describes.
     fn seed(&self) -> GameState {
         let mut st = GameState {
@@ -253,6 +292,9 @@ impl Frame {
                 // A trace seeded mid-turn would need the columns.
                 pending_state: 0,
                 anim_hold: 0,
+                anim_cursor: t.anim,
+                throw_dir_kind: t.throw_dk,
+                throw_damage: t.throw_mag,
             };
         }
         for (d, t) in st.discs.iter_mut().zip(&self.disc) {
@@ -401,9 +443,10 @@ fn is_player_two(field: &str) -> bool {
 ///
 /// One arm per row of the schema's "Compared fields" table, in that order.
 /// `want` is `expected.seed()`: the trace record as a `GameState`.
-/// Feed the two `disc` fields that are ST **inputs** to the update loop rather
-/// than state it produces: `disc+$12` (the steering hook) and `disc+$10` bit 7
-/// (whether the ST simulates the record at all).
+/// Feed the ST fields that are **inputs** to the loops disc-core models rather
+/// than state they produce: `disc+$12` (the steering hook), `disc+$10` bit 7
+/// (whether the ST simulates the record at all), and the three player fields
+/// the serve reads -- `player+$3a`, `+$6e` and `+$70`.
 ///
 /// Both are written by code outside `$a4ea` -- the two hit tests install and
 /// clear hooks, and something not yet found retires a disc -- so `disc-core`
@@ -414,6 +457,17 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
     for (s, w) in state.discs.iter_mut().zip(&want.discs) {
         s.hook = w.hook;
         s.active = w.active;
+    }
+    // `player+$3a` is driven by the animation engine ($f1c4), which this crate
+    // does not model, and the serve gates on its exact value ($c06e). Feeding
+    // it means the SERVE ITSELF is not fed: the trigger is the ST's own, and
+    // what disc-core has to get right is the eight fields of the disc record it
+    // then builds. `player+$6e` and `+$70` have no writer in the analysed image
+    // at all (discr-qqt), so they come from the trace too.
+    for (s, w) in state.players.iter_mut().zip(&want.players) {
+        s.anim_cursor = w.anim_cursor;
+        s.throw_dir_kind = w.throw_dir_kind;
+        s.throw_damage = w.throw_damage;
     }
 }
 
@@ -524,9 +578,10 @@ fn report(prev: &Frame, expected: &Frame, input: Input, cs: &[Check]) -> Option<
     if is_player_two(&d.field) {
         let _ = writeln!(
             s,
-            "  note      player-2 input is waived (discr-b6x): disc-core takes p2's Input from\n\
-             \x20           its caller and this trace carries no $6c59, so tracecheck drives p2\n\
-             \x20           with nothing. A players[1] row cannot match and is not a bug."
+            "  note      player 2 is waived (discr-b6x). Its INPUT is fed from the AI's own\n\
+             \x20           byte at $6da1, so its rows do match for a while; what is not\n\
+             \x20           modelled is the 28 states of its own table at $c6ec that this\n\
+             \x20           crate has no handler for."
         );
         match cs
             .iter()
@@ -627,12 +682,13 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let skip = |field: &str| cli.waiver(field).is_some();
     let mut state = first.seed();
     let mut prev_joy = first.joy_6c58;
+    let mut prev_ai = first.ai_6da1;
     let mut prev = first;
 
     for expected in &rest[..ticks] {
         let input = prev.input(prev_joy);
         feed_disc_inputs(&mut state, &prev.seed());
-        state.tick([input, Input::default()]);
+        state.tick([input, expected.ai_input(prev_ai)]);
         resync(&mut state, &expected.seed(), &skip);
 
         let cs = checks(expected, &state);
@@ -644,6 +700,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         }
 
         prev_joy = prev.joy_6c58;
+        prev_ai = expected.ai_6da1;
         prev = expected;
     }
 
@@ -756,13 +813,14 @@ mod tests {
 
     /// The number `mise run core-check` gates on and `reports/part10-report.md`
     /// cites: with the schema's waived rows resynced from the trace, the golden
-    /// fixture matches for 51 ticks and then stops where the ST re-serves disc
-    /// 0 from inside player 2's control routine, which this crate does not
-    /// model (discr-b6x). Mirrors the loop in `run`.
+    /// fixture matches for 63 ticks and then stops where player 1's hit test
+    /// `$10fd8` puts it into state 11 and moves its `world_y` -- a handler this
+    /// crate does not model (discr-75o, discr-ovl.1). Mirrors the loop in `run`.
     ///
-    /// It was 10 until Part 10b modelled the player state machine.
+    /// It was 10 before Part 10, 51 after Part 10b's state machine, and 63 once
+    /// the serve landed.
     #[test]
-    fn skip_waived_matches_fifty_one_ticks_then_stops_on_the_reserve() {
+    fn skip_waived_matches_sixty_three_ticks_then_stops_on_the_hit_test() {
         let f = golden();
         let skip = |field: &str| WAIVED.iter().any(|(p, _)| field.starts_with(p));
         let mut state = f[0].seed();
@@ -771,12 +829,12 @@ mod tests {
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
-            state.tick([prev.input(prev_joy), Input::default()]);
+            state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
             resync(&mut state, &expected.seed(), &skip);
             if let Some(d) = first_divergence(expected, &state) {
-                assert_eq!(matched, 51, "matched ticks before the divergence");
-                assert_eq!(d.field, "discs[0].world_x");
-                assert_eq!((d.expected, d.got), (48, 45));
+                assert_eq!(matched, 63, "matched ticks before the divergence");
+                assert_eq!(d.field, "players[0].world_y");
+                assert_eq!((d.expected, d.got), (17, 18));
                 return;
             }
             prev_joy = prev.joy_6c58;
@@ -784,15 +842,29 @@ mod tests {
         panic!("expected a divergence within the fixture");
     }
 
-    /// Resyncing is opt-in: the default still stops on the waived row.
+    /// Resyncing is opt-in, and since Part 10b it buys much less: with player
+    /// 2's own input byte fed from `$6da1`, the default run -- nothing waived,
+    /// nothing resynced, all 15 rows of both players compared -- reaches 21
+    /// ticks before player 2 enters state 18, a handler this crate does not
+    /// model. It used to stop on frame 1.
     #[test]
-    fn without_skip_waived_the_run_stops_on_player_two() {
+    fn without_skip_waived_the_run_still_stops_on_player_two() {
         let f = golden();
         let mut state = f[0].seed();
-        feed_disc_inputs(&mut state, &f[0].seed());
-        state.tick([f[0].input(f[0].joy_6c58), Input::default()]);
-        let d = first_divergence(&f[1], &state).expect("p2 cannot match");
-        assert!(is_player_two(&d.field), "{}", d.field);
+        let mut prev_joy = f[0].joy_6c58;
+
+        for (matched, w) in f.windows(2).enumerate() {
+            let (prev, expected) = (&w[0], &w[1]);
+            feed_disc_inputs(&mut state, &prev.seed());
+            state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
+            if let Some(d) = first_divergence(expected, &state) {
+                assert_eq!(matched, 21, "matched ticks with nothing waived");
+                assert!(is_player_two(&d.field), "{}", d.field);
+                return;
+            }
+            prev_joy = prev.joy_6c58;
+        }
+        panic!("expected a divergence within the fixture");
     }
 
     #[test]

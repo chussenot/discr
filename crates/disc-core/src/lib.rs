@@ -83,6 +83,25 @@ impl GameState {
             );
         }
 
+        // ST $c068 / $c0fe, player 2's throw states 15 and 16. The release is
+        // gated on the animation cursor reaching one exact value, which is why
+        // Player::anim_cursor is carried as a raw ST pointer: it is a fed input
+        // (the animation engine is not modelled), and it is the ST's own gate
+        // rather than a synthesised trigger.
+        //
+        // Only PLAYER 2 throws here. Player 1's control routine $f104 has its
+        // own $a972 call sites and its own parameter builds, none decoded.
+        // // UNKNOWN: see bd discr-b6x.
+        if let Some(&(_, _, x_offset)) = disc::THROW_STATES.iter().find(|&&(state, gate, _)| {
+            self.players[1].state_index == state && self.players[1].anim_cursor == gate
+        }) {
+            let thrower = self.players[1];
+            if disc::serve(&mut self.discs, &thrower, inputs[1], x_offset, &mut events).is_some() {
+                // $c0c4 / $c158: the thrower goes to state 17 on this frame.
+                self.players[1].state_index = disc::STATE_AFTER_THROW;
+            }
+        }
+
         events
     }
 }

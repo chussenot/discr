@@ -473,8 +473,15 @@ static void emit_frame(FILE *out, long frame)
     fprintf(out, ",\"player\":[");
     for (i = 0; i < 2; i++) {
         unsigned b = 0x6ca0 + i * 0x80;
-        fprintf(out, "%s{\"x\":%u,\"y\":%u,\"facing\":%u,\"state\":%u,\"cell\":%u}",
-                i ? "," : "", rd16(b + 2), rd16(b + 6), ram[b + 9], ram[b + 0x0e], rd16(b + 0x10));
+        /* Part 10b: +$3a is the animation sequence cursor ($6cda / $6d5a),
+         * which the serve gates on ($c06e compares it with $4602); +$6e is the
+         * player's throw dir_kind, copied into disc+$0a; +$70 its magnitude,
+         * copied into disc+$16 at $a9cc. */
+        fprintf(out, "%s{\"x\":%u,\"y\":%u,\"facing\":%u,\"state\":%u,\"cell\":%u"
+                     ",\"anim\":%u,\"throw_dk\":%d,\"throw_mag\":%d}",
+                i ? "," : "", rd16(b + 2), rd16(b + 6), ram[b + 9], ram[b + 0x0e], rd16(b + 0x10),
+                (rd16(b + 0x3a) << 16) | rd16(b + 0x3c),
+                (int16_t)rd16(b + 0x6e), (int16_t)rd16(b + 0x70));
     }
     fprintf(out, "],\"disc\":[");
     for (i = 0; i < 8; i++) {

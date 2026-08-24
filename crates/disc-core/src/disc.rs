@@ -65,8 +65,8 @@
 use core::cmp::Ordering;
 
 use crate::{
-    COLUMN_TABLE_LEN, COLUMN_WIDTH, DiscSlot, Event, Player, PlayerId, SteerHook, TILE_CELLS, Tile,
-    VEL_CLAMP, tile,
+    COLUMN_TABLE_LEN, COLUMN_WIDTH, DirBits, DiscSlot, Event, Input, Player, PlayerId, SteerHook,
+    TILE_CELLS, Tile, VEL_CLAMP, tile,
 };
 
 /// Subtracted from the aimed player's world X to get the disc's X aim point.
@@ -157,12 +157,34 @@ pub const DISC_FAR_ROW_Y: i16 = 0x46;
 /// so unlike [`Z_FAR`] this one is confirmed by trace as well as by code.
 pub const X_MAX: i16 = 0x9b;
 
-/// Disc `world_y` at round init.
+/// The `world_y` every served disc carries. ST `$c084` / `$c118`:
+/// `move.w #$0051,d0`, i.e. **81**, literal in both throw states.
 ///
-/// ST record layout: `disc+$02` is `$52` after `$aa50`. Offered as a default
-/// for [`serve`]'s `world_y`; the rest of the `$a9a0` field table is not
-/// recovered (`// UNKNOWN: see bd discr-st8`).
-pub const SERVE_WORLD_Y: i16 = 0x52;
+/// Not to be confused with the `$52` a disc record holds after `$aa50`'s round
+/// init, which is a different value in a different place.
+pub const SERVE_WORLD_Y: i16 = 0x51;
+
+/// Player 2's throw states and what each one serves.
+///
+/// ST `$c6ec`, player 2's own 32-entry state table (player 1's is `$10e2c`).
+/// Entry 15 is `$c068` and entry 16 is `$c0fe`, and the two blocks are the same
+/// code with two constants swapped: the animation cursor value the release
+/// happens on, and the X offset from the thrower.
+///
+/// | state | gate `player+$3a` | `world_x` | ST |
+/// |---|---|---|---|
+/// | 15 | `$4602` | `p2.x - 9` | `$c06e`, `$c07e` |
+/// | 16 | `$45da` | `p2.x + 3` | `$c104`, `$c114` |
+///
+/// Six more `bsr $a972` sites exist inside `$abb2` (`$b462`, `$b47a`, `$b492`,
+/// `$b512`, `$b52a`, `$b542`), so there are other throw states with other
+/// parameter builds. These are the two the fixtures exercise.
+/// `// UNKNOWN: see bd discr-b6x`.
+pub const THROW_STATES: [(u8, u32, i16); 2] = [(15, 0x4602, -9), (16, 0x45da, 3)];
+
+/// The state a thrower enters on the frame the disc leaves.
+/// ST `$c0c4` / `$c158`: `move.b #$11,$6d2e`.
+pub const STATE_AFTER_THROW: u8 = 0x11;
 
 /// The disc's X aim point for the player it is homing on.
 ///
@@ -430,37 +452,84 @@ pub fn step(
     disc.vel_y -= disc.vel_y.signum();
 }
 
-/// Spawn a disc into a slot. ST `$a9a0`, with `$a618` writing `dir_kind = +1`.
+/// Serve a disc from `thrower` into the first free slot. ST `$c07a`-`$c0fa`
+/// (player 2's state 15) or `$c110`-`$c18e` (state 16), then `$a972`'s slot
+/// fill at `$a9a2`-`$a9cc`.
 ///
-/// What triggers a serve is not decoded, so this is an explicit call with no
-/// trigger of its own. `// UNKNOWN: see bd discr-m4x`. The caller sets
-/// [`DiscSlot::damage`] (`+$16`): the observed tier-1 value is 3, but where
-/// `$a9a0` gets it from is not recovered.
+/// Returns the slot filled, or `None` when all eight are taken.
+///
+/// The parameter build, which is where every field of a served disc comes from:
+///
+/// ```text
+/// $c07a  d0.high = $6d22 + x_offset      -> +$00 world_x
+/// $c084  d0.low  = $0051                 -> +$02 world_y
+/// $c088  d1.high = $6d26 - 1             -> +$04 world_z
+/// $c0ae  d1.low  = 0, then +/-1 or +/-2  -> +$06 vel_x
+/// $c090  d2.high = 0, or -5 if input bit 0  -> +$08 vel_y
+/// $c090  d2.low  = $6d8e, or -5 if $6d9a == 2  -> +$0a dir_kind
+/// $a9b8  st  ($10,a1)                    -> active
+/// $a9bc  clr.b ($11,a1)                  -> owner 0
+/// $a9c8  move.l a2,($12,a1)              -> the hook, from $6d4a
+/// $a9cc  move.w $6d90,($16,a1)           -> +$16 damage
+/// ```
+///
+/// Two details are easy to get backwards and both are transcribed from the
+/// branch, not from intuition:
+///
+/// * **the sideways step doubles unless `dir_kind` is exactly -1.** `$c0e8
+///   cmp.w #-1,d2; beq $c0f0` *skips* the second `addq`, so the -1 disc gets
+///   the single step and every other kind gets two. An earlier note in
+///   `docs/disc-notes.md` had this the wrong way round.
+/// * `vel_y` and `dir_kind` come out of one register through **two** swaps.
+///   Stopping at the first inverts them.
+///
+/// Not reproduced: the `$6d9a == 2` bonus, which serves `dir_kind` -5 instead
+/// of the thrower's own. No trace has ever carried a non-zero bonus code, so
+/// there is nothing to test it against. `// UNKNOWN: see bd discr-z8m`.
+///
+/// The free-slot search is `$a9a2 tst.b ($10,a1); bne next` -- `+$10 == 0`,
+/// which is *not* the same test as [`DiscSlot::active`] (bit 7). A retired disc
+/// counting down through 3, 2, 1 is neither active nor free, and this crate
+/// cannot express that; in both fixtures the count reaches 0 before the slot is
+/// reused. `// UNKNOWN: see bd discr-0fm`.
 pub fn serve(
-    disc: &mut DiscSlot,
-    slot: usize,
-    aim: PlayerId,
-    world_x: i16,
-    world_y: i16,
+    discs: &mut [DiscSlot],
+    thrower: &Player,
+    input: Input,
+    x_offset: i16,
     events: &mut Vec<Event>,
-) {
-    *disc = DiscSlot {
+) -> Option<usize> {
+    // $a9a2: the first record whose +$10 is zero.
+    let slot = discs.iter().position(|d| !d.active)?;
+
+    let dir_kind = thrower.throw_dir_kind;
+
+    // $c0ae-$c0f0: nothing, left or right, and the step doubles unless the
+    // kind is exactly -1.
+    let step = if dir_kind == -1 { 1 } else { 2 };
+    let vel_x = if input.dir.has(DirBits::LEFT) {
+        -step
+    } else if input.dir.has(DirBits::RIGHT) {
+        step
+    } else {
+        0
+    };
+
+    discs[slot] = DiscSlot {
         active: true,
-        aim,
-        world_x,
-        world_y,
-        world_z: 0,
-        vel_x: 0,
-        vel_y: 0,
-        // $a9a2's slot fill writes +$00..+$0a and nothing else, so a freshly
-        // served disc carries no hook: the first steering it gets comes from a
-        // hit test.
+        aim: PlayerId::One,
         hook: SteerHook::None,
-        // $a618: move.w #$0001,($000a,a5)
-        dir_kind: SERVE_DIR_KIND,
-        damage: 0,
+        world_x: thrower.world_x + x_offset,
+        world_y: SERVE_WORLD_Y,
+        world_z: thrower.world_y - 1,
+        vel_x,
+        // $c0a4/$c0aa: joystick bit 0 is UP.
+        vel_y: if input.dir.has(DirBits::UP) { -5 } else { 0 },
+        dir_kind,
+        damage: thrower.throw_damage,
     };
     events.push(Event::DiscServed { slot });
+    Some(slot)
 }
 
 /// Turn a disc around. ST `$a606`: `neg.w ($000a,a5)`.
@@ -901,17 +970,109 @@ mod tests {
         );
     }
 
-    /// $a9a0 + $a618: the spawn store writes dir_kind = +1.
+    /// golden.ndjson f51 -> f52, the re-serve of disc 0 from player 2's state
+    /// 15. Player 2 at (57, 54) throwing right with dir_kind -3 puts the disc
+    /// at world (57 - 9, 81, 54 - 1) with vel_x +2 -- doubled, because the
+    /// doubling is skipped only for dir_kind -1.
     #[test]
-    fn serve_activates_the_slot_with_dir_kind_plus_one() {
-        let mut disc = DiscSlot::default();
+    fn serve_reproduces_the_state_15_throw() {
+        let thrower = Player {
+            world_x: 57,
+            world_y: 54,
+            throw_dir_kind: -3,
+            throw_damage: 3,
+            ..Player::default()
+        };
+        let mut discs = [DiscSlot::default(); 8];
         let mut events = Vec::new();
-        serve(&mut disc, 3, PlayerId::Two, 135, 0, &mut events);
-        assert!(disc.active);
-        assert_eq!(disc.dir_kind, 1);
-        assert_eq!((disc.world_x, disc.world_y, disc.world_z), (135, 0, 0));
-        assert_eq!(disc.aim, PlayerId::Two);
-        assert_eq!(events, vec![Event::DiscServed { slot: 3 }]);
+        let input = Input {
+            dir: DirBits::RIGHT,
+            fire_edge: false,
+        };
+
+        assert_eq!(serve(&mut discs, &thrower, input, -9, &mut events), Some(0));
+        let d = discs[0];
+        assert!(d.active);
+        assert_eq!((d.world_x, d.world_y, d.world_z), (48, 81, 53));
+        assert_eq!((d.vel_x, d.vel_y, d.dir_kind), (2, 0, -3));
+        assert_eq!(d.damage, 3, "$a9cc copies the thrower's +$70");
+        assert_eq!(events, vec![Event::DiscServed { slot: 0 }]);
+    }
+
+    /// golden.ndjson f75 -> f76: state 16 is the same code with +3 instead of
+    /// -9, and it fills slot 1 because slot 0 is still live.
+    #[test]
+    fn serve_takes_the_first_free_slot_and_state_16_offsets_the_other_way() {
+        let thrower = Player {
+            world_x: 49,
+            world_y: 54,
+            throw_dir_kind: -3,
+            throw_damage: 3,
+            ..Player::default()
+        };
+        let mut discs = [DiscSlot::default(); 8];
+        discs[0].active = true;
+        let mut events = Vec::new();
+        let input = Input {
+            dir: DirBits::RIGHT,
+            fire_edge: false,
+        };
+
+        assert_eq!(serve(&mut discs, &thrower, input, 3, &mut events), Some(1));
+        assert_eq!(
+            (discs[1].world_x, discs[1].world_z, discs[1].vel_x),
+            (52, 53, 2)
+        );
+    }
+
+    /// $c0e8: the second addq is skipped only when dir_kind is exactly -1, so
+    /// the -1 disc is the one served with the SINGLE sideways step.
+    #[test]
+    fn only_dir_kind_minus_one_gets_the_single_sideways_step() {
+        let mut events = Vec::new();
+        for (dk, expect) in [(-1, 1), (-3, 2), (1, 2), (-5, 2)] {
+            let thrower = Player {
+                throw_dir_kind: dk,
+                ..Player::default()
+            };
+            let mut discs = [DiscSlot::default(); 8];
+            serve(
+                &mut discs,
+                &thrower,
+                Input {
+                    dir: DirBits::LEFT,
+                    fire_edge: false,
+                },
+                0,
+                &mut events,
+            );
+            assert_eq!(discs[0].vel_x, -expect, "dir_kind {dk}");
+        }
+    }
+
+    /// $c0a4/$c0aa: joystick bit 0 (up) serves vel_y -5 instead of 0.
+    #[test]
+    fn up_serves_a_negative_vel_y() {
+        let thrower = Player {
+            throw_dir_kind: -3,
+            ..Player::default()
+        };
+        let mut discs = [DiscSlot::default(); 8];
+        serve(
+            &mut discs,
+            &thrower,
+            Input {
+                dir: DirBits::UP,
+                fire_edge: false,
+            },
+            0,
+            &mut events_vec(),
+        );
+        assert_eq!(discs[0].vel_y, -5);
+    }
+
+    fn events_vec() -> Vec<Event> {
+        Vec::new()
     }
 
     /// $a2ec/$a2f0: a hit on a destroyed cell (type 0) never reaches the

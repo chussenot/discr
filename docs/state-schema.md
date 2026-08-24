@@ -109,10 +109,12 @@ Notes on individual rows:
 | field path | Rust type | ST address | status |
 | --- | --- | --- | --- |
 | `players[1].*` (all 5 fields) | as `players[0]` | `$6d20` + `$02`/`$06`/`$09`/`$0e`/`$10` | waived:discr-b6x |
-| -- (the opponent's input channel) | -- | `$6da1`, written by `$d2cc` | waived:discr-b6x |
+| -- (the opponent's policy) | -- | `$d2cc`, the rule table at `$efa8` | waived:discr-b6x |
 | `discs[n].active` | `bool` | `disc+$10` bit 7 | waived:discr-0fm |
 | `discs[n].aim` | `PlayerId` | `disc+$11` | waived:discr-ovl.2 |
 | `discs[n].hook` | `SteerHook` | `disc+$12` | waived:discr-ovl.1 |
+| `players[n].anim_cursor` | `u32` | `player+$3a` | waived:discr-75o |
+| `players[n].throw_dir_kind` / `throw_damage` | `i16` | `player+$6e` / `+$70` | waived:discr-qqt |
 | -- (round init, score, win) | -- | `$aa50`, `$6d8a` | waived:discr-st8 |
 | -- (player state semantics) | -- | `$10e2c` entries 5,11,14,19,20,21,23,24,27,31 | waived:discr-75o |
 | -- (player states 16, 17) | -- | `$10e2c` entries 16, 17 | waived:discr-rf9 |
@@ -127,7 +129,7 @@ Notes on individual rows:
 | -- (tile trailing long) | -- | `tile+$04` | excluded:always-zero |
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
-18 waived or excluded rows: 13 waived against a filed unknown, 5 excluded by
+20 waived or excluded rows: 15 waived against a filed unknown, 5 excluded by
 scope. **The count is unchanged from before Part 10 and that is close to the
 honest number**: five waivers were resolved and five new ones filed from what
 the answers exposed -- a second tile grid, the bonus placer, the hook installer,
@@ -157,13 +159,21 @@ Why each waiver or exclusion:
   every live slot -- no trace has ever seen a disc change hands. `tracecheck`
   feeds `active` and `hook` in every tick, the way it feeds `$6c58`, and says so
   in its header.
-* Opponent AI (**discr-b6x**): the architecture is now known -- `$10eac` selects
-  one-player mode on `$6da0`, `$d2cc` writes a synthetic joystick byte to
-  `$6da1`, and player 2's control routine `$abb2` consumes it exactly where a
-  human's `$6c59` would go. **So the waived input row is `$6da1`, not `$6c59`**:
-  `$6c59` is 0 on every frame of every trace we have. What is still waived is
-  the *policy* -- the 20-entry priority rule table at `$efa8`, its 11 test and
-  7 action routines, and the sensor pass `$cea6`.
+* Opponent AI (**discr-b6x**): **the input channel is no longer waived.**
+  `$10eac` selects one-player mode on `$6da0`, `$d2cc` writes a synthetic
+  joystick byte to `$6da1`, and `$abb2` consumes it exactly where a human's
+  `$6c59` would go -- so `tracecheck` feeds `$6da1` to player 2 the way it feeds
+  `$6c58` to player 1, and player 2's rows now *do* match: 21 ticks of the
+  golden fixture with nothing waived and nothing resynced, where before Part 10c
+  they could not match a single frame.
+  What stays waived is two things. The **policy** -- the 20-entry rule table at
+  `$efa8`, its 11 test and 7 action routines, and the sensor pass `$cea6` -- and
+  the **28 states of player 2's own table at `$c6ec`** that `disc-core` has no
+  handler for. The second is what stops the fully-compared run: player 2 enters
+  state 18 on frame 22.
+  Note the timing, because a replay gets it wrong by default: `$6da1` is written
+  and consumed inside one VBL (`$10ec6` then `$10ece`), so the byte a tick uses
+  is the one visible at the *next* sampling point, not the current one.
 * Round, scoring and win (**discr-st8**): unchanged. `GameState::default()` is
   all zeroes, deliberately not `$aa50`'s round-init state.
 * Player state semantics (**discr-75o**, **discr-rf9**): **narrowed in Part

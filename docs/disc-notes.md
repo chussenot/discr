@@ -314,9 +314,20 @@ served disc.
 (bd discr-qqt). Given the magnitude is the per-frame `world_z` step, `$6d8e` plausibly
 sets how fast a served disc travels -- a rank or difficulty knob.
 
-One more detail from the direction branches: `$c0d0`/`$c0e8` compare `d2` with
-`#$ffff` and double the `vel_x` adjustment when it matches, so a `dir_kind` of
--1 is served with twice the sideways speed of a -3.
+**RETRACTED by Part 10c -- this had the branch backwards.** The full sequence is
+
+```
+$c0e6  addq.w #1,d1
+$c0e8  cmp.w  #-1,d2
+$c0ec  beq.b  $c0f0        ; d2 == -1 SKIPS the second addq
+$c0ee  addq.w #1,d1
+$c0f0  bsr    $a972
+```
+
+so the `beq` is a skip, not a doubling: **a `dir_kind` of -1 gets the single
+sideways step and every other kind gets two.** The traces settle it -- golden
+frame 52 serves a `dir_kind` -3 disc with the joystick's right bit set and
+`vel_x` reads +2, which the "doubled only when -1" reading cannot produce.
 
 Note `$6d9a` appears here too, tested against 2, having already appeared in the
 tile-damage path tested against 1 and 3 (bd discr-z8m). Whatever it is, it
@@ -1234,3 +1245,79 @@ table with the same shape as player 1's at `$10e2c` -- entry 0 null, 31 handler
 addresses in `$afc2`..`$c69a`. Entry 15 is `$c068`, which is the block that
 contains the serve at `$c06e`. So **the serve is player 2's state 15**, and
 `$c0c4 move.b #$11,$6d2e` moves it to state 17 on the frame the disc leaves.
+
+## The serve, completed: two throw states and where every field comes from (Part 10c)
+
+Part 10 decoded `$c068`, player 2's state 15. There is a second one, and the
+fields it builds are now checked against both fixtures rather than read only.
+**[code+trace]**
+
+### `$c0fe` is state 16, the same code with two constants swapped
+
+`$c6ec` entry 16 is `$c0fe`, and it is `$c068` line for line with exactly two
+differences:
+
+| | state 15 (`$c068`) | state 16 (`$c0fe`) |
+|---|---|---|
+| animation-cursor gate | `$c06e cmpi.l #$4602,$6d5a` | `$c104 cmpi.l #$45da,$6d5a` |
+| `world_x` | `$c07e subi.w #$09,d0` | `$c114 addq.w #$03,d0` |
+| the `$6d29` id it stamps | `$0f` | `$10` |
+
+Everything else -- `world_y` 81, `world_z` = `$6d26 - 1`, the `$6d8e` dir_kind,
+the `$6d9a == 2` override, the up-bit `vel_y`, the left/right `vel_x`, and
+`move.b #$11,$6d2e` afterwards -- is identical. Six more `bsr $a972` sites exist
+inside `$abb2` (`$b462`, `$b47a`, `$b492`, `$b512`, `$b52a`, `$b542`), so there
+are further throw states with further parameter builds; these are the two the
+fixtures exercise.
+
+Golden frame 76 is the state-16 serve and it fits exactly: player 2 at `x` 49
+puts the disc at 49 + 3 = **52**, which is what the trace reads, where the
+state-15 offset of -9 would have given 40.
+
+### The rest of the slot fill: `$a9b8`-`$a9cc`
+
+The Part 9 transcription stopped at `$a9b4`. The four instructions after it are
+where three long-standing unknowns were hiding:
+
+```
+$a9b8  st     ($10,a1)          ; active := $ff
+$a9bc  clr.b  ($11,a1)          ; owner  := 0
+$a9c8  move.l a2,($12,a1)       ; the steering hook, from $6d4a (player+$2a)
+$a9cc  move.w $6d90,($16,a1)    ; damage := the thrower's +$70
+```
+
+**`disc+$16` comes from `player+$70`** -- `$6d90` reads 3 for player 2 and
+`$6d10` reads 1 for player 1, the same magnitudes as their `+$6e` dir_kinds. So
+a player's throw carries one number that is at once its depth speed and its
+damage. `docs/state-schema.md` used to say where `$a9a0` got the damage from was
+not recovered; it is `$6d90`.
+
+### The animation cursor is the gate, and it is `player+$3a`
+
+`$6d5a` is player 2's `+$3a` -- the same animation sequence cursor as player 1's
+`$6cda`, the one the Part 10b state machine runs. So the serve is not gated on a
+timer or on the disc: **it fires on the single frame of the throw animation
+where the cursor reaches one exact value.** The oracle emits `+$3a` now, and the
+fixtures show it plainly:
+
+```
+golden  f49 state 15 anim $45fc     f73 state 16 anim $45d4
+        f50 state 15 anim $45fc     f74 state 16 anim $45d4
+        f51 state 15 anim $4602 <-  f75 state 16 anim $45da <-
+        f52 state 17 anim $4602     f76 state 17 anim $45da
+```
+
+### `$6da1` is written and consumed inside one VBL
+
+A measurement that matters for any replay. `$6c58` is written by the IKBD
+interrupt handler asynchronously, so the byte sampled at the VBL entry of frame
+N is the byte frame N's work will consume. **`$6da1` is not**: `$10ec6 bsr
+$d2cc` writes it and `$10ece bsr $abb2` consumes it two instructions later, both
+inside the same VBL, so the byte a frame's work uses only becomes visible at the
+*next* sampling point.
+
+Measured rather than assumed: at `tile_damage.ndjson` frame 51 the sampled
+`$6da1` is `$81` (fire + up), and the disc served on frame 52 has `vel_y` 0 --
+which the up bit would have made -5. Frame 52's byte is `$80`, which serves 0.
+`tracecheck` therefore drives player 2 from the frame it is predicting, and
+player 1 from the frame it starts at, and says so.

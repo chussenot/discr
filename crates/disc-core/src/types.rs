@@ -160,6 +160,32 @@ pub struct Player {
     pub state_index: u8,
     /// ST `player+$10` (`$6cb0`): grid cell index, observed 9..16.
     pub grid_cell: u16,
+    /// ST `player+$3a` (`$6cda` / `$6d5a`): the animation sequence cursor.
+    ///
+    /// Carried as the raw ST pointer because **the serve gates on its exact
+    /// value**: `$c06e cmpi.l #$4602,$6d5a` for player 2's state 15 and
+    /// `$c104 cmpi.l #$45da,$6d5a` for state 16. It is the one frame of the
+    /// throw animation on which the disc leaves the hand.
+    ///
+    /// Driven by the animation engine (`$f1c4`), which this crate does not
+    /// model, so it is a fed input. `// UNKNOWN: see bd discr-75o`.
+    pub anim_cursor: u32,
+    /// ST `player+$6e` (`$6d0e` / `$6d8e`): the `dir_kind` this player's throws
+    /// carry, copied into `disc+$0a` at `$a9b4`.
+    ///
+    /// Reads `+1` for player 1 and `-3` for player 2 and never moves in any
+    /// trace. Its sign is the direction of travel and its magnitude the
+    /// per-frame `world_z` step, so player 2's disc comes back three times
+    /// faster than player 1's goes out. `// UNKNOWN (its writer): see bd
+    /// discr-qqt`.
+    pub throw_dir_kind: i16,
+    /// ST `player+$70` (`$6d10` / `$6d90`): the damage this player's throws do,
+    /// copied into `disc+$16` at `$a9cc  move.w $6d90,($16,a1)`.
+    ///
+    /// Reads 1 for player 1 and 3 for player 2 -- the same magnitudes as
+    /// [`Player::throw_dir_kind`]. Part 10b; before it, where `$a9a0` got the
+    /// disc's damage from was unrecovered.
+    pub throw_damage: i16,
     /// ST `player+$0a` (`$6caa`): the state to enter when the current
     /// animation sequence ends. Part 10.
     ///
