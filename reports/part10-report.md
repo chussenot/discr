@@ -591,3 +591,99 @@ disc at `world_x` 151, which the `$9b` ceiling allows, reads index 155, and the
   count is read from the `$5be4` list rather than fitted, which is stronger than
   n=1 usually is, but a second destruction has never been traced — and the
   single-slot behaviour above means a second one behaves differently anyway.
+
+---
+
+# Part 10f — the steering hook stops being fed
+
+No number went up much this time. What changed is what the numbers *mean*:
+`disc+$12` came off the fed-input list, so `disc-core` installs the steering
+hooks itself, and the two clean fixtures stayed clean with the row **compared**
+rather than supplied.
+
+## The scoreboard
+
+| run | 10d | 10e | **10f** |
+|---|---|---|---|
+| `golden --skip-waived` | 99 clean | 99 clean | **99 clean, with `hook` compared** |
+| `tile_damage --skip-waived` | 118 | 214 clean | **214 clean, with `hook` compared** |
+| `golden` (no flags) | 21 | 21 | **39** |
+
+`discs[n].hook` is the 17th compared row. Both fixtures reproduce all 30 hook
+installs and every clear, frame for frame, which is a much stronger statement
+than 214 clean ticks with the hook handed over.
+
+## What `$c826`'s tail turned out to be
+
+Player 2's hit test is `$10fd8` mirrored — same crossing test, same owner check,
+same racket path, same body box. What player 1's does not have is a **tail**, and
+that tail is the hook installer discr-ovl.1 was asking about:
+
+```
+$cb52  d5 = own depth - own reach ($6d32; or $32 flat under bonus code 5)
+$cb6a  the disc must be at least that deep -> otherwise nothing at all
+$cb70  INSTALL $a7d8 -- start tracking it
+$cb78  a two-unit-deep window inside that; outside it, stop here
+$cb9e  a ladder on the disc's X either side of $6d22 - 3, mirrored
+$cbae  REACH:     keep $a7d8, state 27
+$cc1e  INTERCEPT: install $a816, state 18
+```
+
+**Tracking a disc and committing to a response are separate decisions** —
+`--watch` counts 28 `$cb70` installs against one each of `$cbae` and `$cc1e`
+across 215 frames.
+
+The choice between them is a genuine little piece of judgement: `$cc02`/`$cc10`
+**step across only if the cell twelve units over is somewhere you could stand**
+— either the one you're on, or one whose type is non-zero in your own bank.
+Both fixtures make the decision once, in opposite directions: `tile_damage`
+frame 21 steps across, frame 111 reaches.
+
+Also read: `$c196`, state 18's handler. Play the reach animation, and on the one
+frame the cursor reaches `$4624`, if fire is still held and the two disc counters
+differ, **step six units left in one go and go straight into a throw**.
+`golden.ndjson` frames 39→40 are exactly that: cursor `$4624`, then x 63 → 57 and
+state 15.
+
+## One small change with a large effect
+
+Every entry in either state table opens by stamping its own index into
+`player+$09`. So `disc-core` stamps it once, up front, for **all 32 entries —
+including the 25 whose behaviour is not modelled**. `players[n].facing` is now
+correct for every state either player reaches, which is most of what took the
+fully-compared run from 21 ticks to 39.
+
+## The fed-input ledger, which is the point of this part
+
+| | before 10f | after |
+|---|---|---|
+| `disc+$12` (the steering hook) | fed, changing 30 times | **produced and compared** |
+| `disc+$10` bit 7 | fed | fed (discr-0fm) |
+| `player+$3a` (animation cursor) | fed | fed (discr-75o) |
+| `player+$1c..$22` (hit box) | fed | fed — sprite data (discr-75o) |
+| `player+$6e`/`+$70` | fed | fed — per-player constants (discr-qqt) |
+| `player+$12` (reach) | — | fed — a per-player constant (discr-b6x) |
+
+Six fed fields either way, but the composition changed: the one that carried a
+**decision** was replaced by one that carries a **constant**. `player+$12` reads
+12 for player 1 and 26 for player 2 and is never written anywhere in the
+analysed image.
+
+## Honest limits
+
+* **The right-hand half of the X ladder (`$cc40`-`$cc9a`) is transcribed but
+  untested.** Neither fixture ever has a disc to player 2's right at the moment
+  it starts tracking, so that branch has never run. It mirrors the left half
+  instruction for instruction, which is why it is transcribed at all.
+* **`$cb34`'s `$6d29 != 7` guard is not modelled.** That byte is stamped by the
+  throw states and is never 7 in either fixture; inventing a value for it would
+  be worse than recording that it is missing.
+* **State 18's handler is not modelled**, which is where the fully-compared run
+  now stops. It needs `$6d8a`/`$6d8c`, the possession counters the disc loop
+  moves at four sites.
+* **`tiles_far` (`$7596`) is seeded and read but never compared.** The
+  anticipation cascade tests it for walkability, so `disc-core` now carries the
+  bank — but no trace has ever changed a cell in it, so comparing it would prove
+  nothing yet. discr-ovl.3.
+* **Player 1's racket path is still unreachable** in both fixtures. `$113e2`
+  fires zero times in 215 frames.

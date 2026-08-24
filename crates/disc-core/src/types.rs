@@ -237,6 +237,15 @@ pub struct Player {
     /// `$111ca st $6cac` marks the player down. Player 1 reads 5 at the start of
     /// the golden fixture, 2 after the first strike and 0 after the second.
     pub energy: i16,
+    /// ST `player+$12` (`$6cb2` / `$6d32`): how far ahead of itself this player
+    /// can reach a disc. 12 for player 1, 26 for player 2.
+    ///
+    /// Read by both hit tests -- `$cb56`-`$cb66` subtracts it from the player's
+    /// own depth to get the near edge of the window it starts tracking a disc
+    /// in, and bonus code 5 replaces it with a flat `$32` = 50. Nothing in the
+    /// analysed image writes it and it never moves in any trace.
+    /// `// UNKNOWN (its writer): see bd discr-b6x`.
+    pub reach: i16,
     /// ST `player+$0c` (`$6cac`): set by `$111ca` when the energy reaches 0.
     ///
     /// Gates the whole hit test (`$10fd8 tst.b $6cac; bne`) and the idle path

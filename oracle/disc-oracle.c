@@ -503,7 +503,7 @@ static void emit_frame(FILE *out, long frame)
          * copied into disc+$16 at $a9cc. */
         fprintf(out, "%s{\"x\":%u,\"y\":%u,\"facing\":%u,\"state\":%u,\"cell\":%u"
                      ",\"anim\":%u,\"throw_dk\":%d,\"throw_mag\":%d"
-                     ",\"box\":[%d,%d,%d,%d],\"energy\":%d}",
+                     ",\"box\":[%d,%d,%d,%d],\"energy\":%d,\"reach\":%d}",
                 i ? "," : "", rd16(b + 2), rd16(b + 6), ram[b + 9], ram[b + 0x0e], rd16(b + 0x10),
                 (rd16(b + 0x3a) << 16) | rd16(b + 0x3c),
                 (int16_t)rd16(b + 0x6e), (int16_t)rd16(b + 0x70),
@@ -513,7 +513,11 @@ static void emit_frame(FILE *out, long frame)
                  * strike subtracts from at $11178. */
                 (int16_t)rd16(b + 0x1c), (int16_t)rd16(b + 0x1e),
                 (int16_t)rd16(b + 0x20), (int16_t)rd16(b + 0x22),
-                (int16_t)rd16(b + 0x76));
+                (int16_t)rd16(b + 0x76),
+                /* +$12 is the depth this player can reach a disc from, read by
+                 * both hit tests ($11 is p1's $6cb2 = 12, p2's $6d32 = 26).
+                 * Nothing in the analysed image writes it. */
+                (int16_t)rd16(b + 0x12));
     }
     fprintf(out, "],\"disc\":[");
     for (i = 0; i < 8; i++) {

@@ -391,6 +391,7 @@ pub fn step(
     players: &mut [Player; 2],
     _tiles: &mut [Tile; TILE_CELLS],
     collapse: &mut Option<tile::Collapse>,
+    tiles_far: &mut [Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
     // $a4f0 tst.b ($10,a5) beq / $a534 tst.b bpl: a slot the ST is not
@@ -483,6 +484,12 @@ pub fn step(
         z_before,
         disc.world_z,
     );
+
+    // $a656: player 2's hit test $c826. Only its anticipation tail is modelled
+    // -- the part that installs the steering hooks and puts player 2 into state
+    // 18 or 27. Its strike and racket halves mirror $10fd8's and are not.
+    // // UNKNOWN: see bd discr-b6x.
+    crate::player::anticipate(&mut players[1], disc, disc_x_after, disc.world_z, tiles_far);
 }
 
 /// Serve a disc from `thrower` into the first free slot. ST `$c07a`-`$c0fa`
@@ -618,6 +625,11 @@ pub fn impact(
 mod tests {
     use super::*;
 
+    /// Player 2 is parked in a non-idle state on purpose: `$cb2c`'s first gate
+    /// is `tst.b $6d2e; bne`, so a player 2 that is doing something cannot
+    /// start tracking a disc, and these tests are about the disc loop rather
+    /// than about player 2's anticipation. Its real depth and reach are here
+    /// too so nothing depends on the defaults.
     fn players_at(x1: i16, x2: i16) -> [Player; 2] {
         [
             Player {
@@ -626,6 +638,9 @@ mod tests {
             },
             Player {
                 world_x: x2,
+                world_y: 54,
+                reach: 26,
+                state_index: crate::player::STATE_REACH,
                 ..Player::default()
             },
         ]
@@ -664,6 +679,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
             assert_eq!(disc.world_z, prev_z + 1, "z advances by dir_kind (+1)");
@@ -706,6 +722,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
             assert_eq!(disc, frozen, "an inactive record is not touched at all");
@@ -739,6 +756,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
             assert_eq!((disc.world_z, disc.dir_kind), (expected_z, RETURN_DIR_KIND));
@@ -753,6 +771,7 @@ mod tests {
             &mut players,
             &mut tiles,
             &mut None,
+            &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
         assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
@@ -785,6 +804,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
             assert_eq!((disc.world_x, disc.vel_x), (expected_x, -2), "{disc:?}");
@@ -797,6 +817,7 @@ mod tests {
             &mut players,
             &mut tiles,
             &mut None,
+            &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
         assert_eq!((disc.world_x, disc.vel_x), (0, 2));
@@ -853,6 +874,7 @@ mod tests {
             &mut players,
             &mut tiles,
             &mut None,
+            &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
         assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
@@ -899,6 +921,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
             assert_eq!((disc.world_x, disc.vel_x), (2 * n, 2), "{disc:?}");
@@ -914,6 +937,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
             assert_eq!(disc.world_y, expected_y, "{disc:?}");
@@ -942,6 +966,7 @@ mod tests {
             &mut players,
             &mut tiles,
             &mut None,
+            &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
         assert_eq!((disc.world_x, disc.vel_x), (45, 1));
@@ -969,6 +994,7 @@ mod tests {
             &mut players,
             &mut tiles,
             &mut None,
+            &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
         assert_eq!((disc.world_x, disc.vel_x), (0, 2), "clamped, then negated");
@@ -981,6 +1007,7 @@ mod tests {
             &mut players,
             &mut tiles,
             &mut None,
+            &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
         assert_eq!((disc.world_x, disc.vel_x), (2, 2), "and away it goes");
@@ -1008,6 +1035,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
         }
@@ -1032,6 +1060,7 @@ mod tests {
             &mut players,
             &mut tiles,
             &mut None,
+            &mut [Tile::default(); TILE_CELLS],
             &mut Vec::new(),
         );
         assert_eq!(disc, before);
@@ -1090,6 +1119,7 @@ mod tests {
                 &mut players,
                 &mut tiles,
                 &mut None,
+                &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
             assert_eq!((disc.world_y, disc.vel_y), (81, 0), "{disc:?}");

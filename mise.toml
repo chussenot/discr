@@ -35,11 +35,12 @@ GOLDEN = "tests/fixtures/golden.ndjson"
 TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
-# NOTHING resynced, all 15 compared rows of BOTH players.  21 ticks, stopping
-# where player 2 enters state 18 -- one of the 28 handlers of its own table at
-# $c6ec that disc-core has no code for.  Before Part 10b this run stopped on
-# frame 1, because player 2 was driven with no input at all.
-FULL_MIN_AGREE = "21"
+# NOTHING resynced, every compared row of BOTH players.  39 ticks, stopping where
+# state 18's handler steps player 2 six units left into a throw ($c1d0), which
+# needs the two disc counters $6d8a/$6d8c that disc-core does not model.
+# Before Part 10c this run stopped on frame 1, because player 2 was driven with
+# no input at all; before 10f it stopped on frame 22.
+FULL_MIN_AGREE = "39"
 TILE_MIN_AGREE = "214"
 
 # The repository's first three commits predate conventional commits (`bd init`

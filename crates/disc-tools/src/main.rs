@@ -57,7 +57,7 @@ use disc_core::{DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, TILE_CE
 use serde::Deserialize;
 
 /// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
-const SCHEMA_COMPARED: usize = 16;
+const SCHEMA_COMPARED: usize = 17;
 /// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
 const SCHEMA_WAIVED: usize = 16;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
@@ -160,8 +160,12 @@ struct Frame {
     ai_6da1: u8,
     player: [TracePlayer; 2],
     disc: [TraceDisc; DISC_SLOTS],
-    /// 17 cells of `[tile_type, hp]`.
+    /// 17 cells of `[tile_type, hp]` from `$7616`. Predates Part 10e's
+    /// discovery that a bank is 16; its 17th entry is the word past the end.
     grid: [(u16, i16); TILE_CELLS],
+    /// Both banks, 16 cells each: `$7596` then `$7616`. Part 10e.
+    #[serde(default)]
+    banks: Vec<(u16, i16)>,
 }
 
 #[derive(Deserialize)]
@@ -193,6 +197,9 @@ struct TracePlayer {
     /// `player+$76`, the energy a strike subtracts from. Part 10d.
     #[serde(default)]
     energy: i16,
+    /// `player+$12`, how far ahead this player reaches for a disc. Part 10f.
+    #[serde(default)]
+    reach: i16,
 }
 
 #[derive(Deserialize)]
@@ -233,6 +240,16 @@ struct TraceDisc {
 /// Only three routines are ever installed (`docs/disc-notes.md`, Part 10); an
 /// unrecognised pointer is a fact about the trace, not something to paper over,
 /// so it panics rather than silently steering at nothing.
+/// The inverse of [`steer_hook`], so the row can be compared as the ST word.
+fn hook_raw(h: disc_core::SteerHook) -> u32 {
+    match h {
+        disc_core::SteerHook::None => 0,
+        disc_core::SteerHook::AtP1 => 0xa71a,
+        disc_core::SteerHook::AtP2Wide => 0xa7d8,
+        disc_core::SteerHook::AtP2Deep => 0xa816,
+    }
+}
+
 fn steer_hook(raw: u32) -> disc_core::SteerHook {
     match raw {
         0 => disc_core::SteerHook::None,
@@ -309,6 +326,7 @@ impl Frame {
                 throw_damage: t.throw_mag,
                 hit_box: t.hit_box,
                 energy: t.energy,
+                reach: t.reach,
                 down: false,
             };
         }
@@ -339,6 +357,12 @@ impl Frame {
             };
         }
         for (tile, &(tile_type, hp)) in st.tiles.iter_mut().zip(&self.grid) {
+            *tile = Tile { tile_type, hp };
+        }
+        // The far bank, $7596's 16 cells, from the Part 10e column. A trace
+        // recorded before it has none, and the array stays all-zero, which
+        // makes every cell read as destroyed -- visible rather than silent.
+        for (tile, &(tile_type, hp)) in st.tiles_far.iter_mut().zip(self.banks.iter().take(16)) {
             *tile = Tile { tile_type, hp };
         }
         st
@@ -426,6 +450,14 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
         // also what disc-core starts it at, so comparing it there is a no-op
         // rather than a false failure.
         push(format!("discs[{n}].vel_y"), e.vy.into(), g.vel_y.into());
+        // Part 10f: disc+$12, which disc-core installs itself now.
+        if let Some(raw) = e.hook {
+            push(
+                format!("discs[{n}].hook"),
+                i64::from(raw),
+                i64::from(hook_raw(g.hook)),
+            );
+        }
         if let Some(dmg) = e.dmg {
             push(format!("discs[{n}].damage"), dmg.into(), g.damage.into());
         }
@@ -465,9 +497,10 @@ fn is_player_two(field: &str) -> bool {
 /// One arm per row of the schema's "Compared fields" table, in that order.
 /// `want` is `expected.seed()`: the trace record as a `GameState`.
 /// Feed the ST fields that are **inputs** to the loops disc-core models rather
-/// than state they produce: `disc+$12` (the steering hook), `disc+$10` bit 7
-/// (whether the ST simulates the record at all), and the three player fields
-/// the serve reads -- `player+$3a`, `+$6e` and `+$70`.
+/// than state they produce.
+///
+/// `disc+$12`, the steering hook, came off this list in Part 10f: `disc-core`
+/// installs it itself now, from `$c826`'s anticipation cascade.
 ///
 /// Both are written by code outside `$a4ea` -- the two hit tests install and
 /// clear hooks, and something not yet found retires a disc -- so `disc-core`
@@ -476,7 +509,6 @@ fn is_player_two(field: &str) -> bool {
 /// its header. `// UNKNOWN: see bd discr-ovl.1` and `bd discr-0fm`.
 fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
     for (s, w) in state.discs.iter_mut().zip(&want.discs) {
-        s.hook = w.hook;
         s.active = w.active;
     }
     // `player+$3a` is driven by the animation engine ($f1c4), which this crate
@@ -492,6 +524,11 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
         // `player+$1c`..`+$22` is copied out of the animation frame block every
         // frame by $f1ca, and this crate does not carry the frame blocks.
         s.hit_box = w.hit_box;
+        // `player+$12` has no writer anywhere in the analysed image and never
+        // moves; it is a parameter, not a decision. Part 10f traded a fed
+        // `disc+$12` -- which changed 30 times across the two fixtures -- for
+        // this constant.
+        s.reach = w.reach;
     }
 }
 
@@ -539,6 +576,9 @@ fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool)
         }
         if skip(&format!("discs[{n}].vel_y")) {
             s.vel_y = w.vel_y;
+        }
+        if skip(&format!("discs[{n}].hook")) {
+            s.hook = w.hook;
         }
         if skip(&format!("discs[{n}].damage")) {
             s.damage = w.damage;
@@ -833,7 +873,7 @@ mod tests {
         assert_eq!(
             names.len(),
             // Part 10 added discs[n].vel_y and discs[n].damage, so 7 per disc.
-            1 + 2 * 6 + DISC_SLOTS * 7 + TILE_CELLS * 2,
+            1 + 2 * 6 + DISC_SLOTS * 8 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
     }
@@ -866,11 +906,14 @@ mod tests {
         assert_eq!(f.len() - 1, 99, "the fixture is 100 frames");
     }
 
-    /// Resyncing is opt-in, and since Part 10b it buys much less: with player
-    /// 2's own input byte fed from `$6da1`, the default run -- nothing waived,
-    /// nothing resynced, all 15 rows of both players compared -- reaches 21
-    /// ticks before player 2 enters state 18, a handler this crate does not
-    /// model. It used to stop on frame 1.
+    /// Resyncing is opt-in, and it buys much less than it used to: with player
+    /// 2's own input byte fed from `$6da1` and its states 0, 1, 2, 18 and 20
+    /// modelled, the default run -- nothing waived, nothing resynced, every
+    /// compared row of both players -- reaches **39** ticks. It stops where
+    /// state 18's handler steps player 2 six units left into a throw
+    /// (`$c1d0`), which needs the two disc counters this crate does not model.
+    ///
+    /// It stopped on frame 1 before Part 10c, and on frame 22 before 10f.
     #[test]
     fn without_skip_waived_the_run_still_stops_on_player_two() {
         let f = golden();
@@ -882,7 +925,7 @@ mod tests {
             feed_disc_inputs(&mut state, &prev.seed());
             state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
             if let Some(d) = first_divergence(expected, &state) {
-                assert_eq!(matched, 21, "matched ticks with nothing waived");
+                assert_eq!(matched, 39, "matched ticks with nothing waived");
                 assert!(is_player_two(&d.field), "{}", d.field);
                 return;
             }

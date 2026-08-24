@@ -53,6 +53,10 @@ pub struct GameState {
     /// damage path writes and 9..16 the copies the movement code reads -- the
     /// same eight tiles twice, see [`tile`].
     pub tiles: [Tile; TILE_CELLS],
+    /// ST `$7596`, the other 16-cell bank: player 2's floor, the one `$9f5e`
+    /// damages and `$cc0a` tests for walkability. Held separately because
+    /// `tiles` mirrors `$7616` and the two are independent boards.
+    pub tiles_far: [Tile; TILE_CELLS],
     /// ST `$779e`: the one tile collapse the game can have in flight.
     pub collapse: Option<tile::Collapse>,
     /// ST `$6ab4` `vbl_frame_counter`, which is a *word* and wraps. Held here
@@ -85,6 +89,7 @@ impl GameState {
                 &mut self.players,
                 &mut self.tiles,
                 &mut self.collapse,
+                &mut self.tiles_far,
                 &mut events,
             );
         }

@@ -1541,3 +1541,107 @@ which the `$9b` ceiling allows, reads index 155, and treating the table as 152
 long made `disc_cell` give up on exactly the frame `tile_damage.ndjson` destroys
 a cell (208). Outside the table the byte is 0, the same "not in the arena" value
 the player's own lookup produces.
+
+## `$c826`'s anticipation cascade: what installs the steering hooks (Part 10f)
+
+Player 2's hit test is `$10fd8` mirrored -- same crossing test, same owner
+check, same states 7..10 racket path, same body box, with `$6d2c`/`$6d26`/
+`$6d2e`/`$6d22`/`$6d46` for player 1's `$6cac`/`$6ca6`/`$6cae`/`$6ca2`/`$6cc6`.
+What player 1's does **not** have is the tail. **[code+trace]**
+
+`--watch` over the disc-0 hook word counts the writers across 215 frames:
+
+```
+$ ./oracle/disc-oracle --seed seeds/diff.seed --frames 215 \
+      --trace /dev/null --watch 0x6e50 0x6e54
+     28 $00cb70      install $a7d8 -- start tracking
+      1 $00cbae      state 27: reach
+      1 $00cc1e      install $a816, state 18: step across
+      2 $00a276      cleared by the tile-damage path
+      1 $00a5aa      cleared by the world_x clamp
+      2 $00a602      cleared by the world_z clamp
+      2 $00a9c8      set by the serve, from $6d4a
+```
+
+**`$113e2`, player 1's racket install, never fires** -- neither player ever
+swings at a disc in either fixture.
+
+The cascade, `$cb2c`-`$cc9a`:
+
+```
+$cb2c  tst.b $6d2e ; bne out            ; only from state 0
+$cb34  cmpi.b #$7,$6d29 ; beq out
+$cb3e  tst.w ($0a,a5) ; bmi/beq out     ; only a disc travelling AWAY
+$cb4a  tst.b ($11,a5) ; bne out         ; only one owner value
+$cb52  d5 = $6d26 - $6d32               ; own depth minus own reach...
+$cb56  ...or minus $32 under bonus code 5
+$cb6a  if d2 < d5 -> out                ; not deep enough yet: nothing at all
+$cb70  move.l #$a7d8,($12,a5)           ; START TRACKING
+$cb78  d5 += reach ; d5 -= $c ; if d2 < d5 -> out
+$cb96  d5 += 2      ; if d2 > d5 -> out ; a two-unit deep window
+$cb9e  d5 = $6d22 - 3
+       a ladder on the disc's X either side of d5, mirrored:
+         within $c of it        -> $cbae  REACH
+         $f past it             -> $cbae  REACH
+         further, but not $22   -> probe the cell $c over
+         further still          -> out
+$cbae  keep $a7d8, animation $466a, state $1b = 27
+$cc1e  install $a816, animation $4612, state $12 = 18
+```
+
+Note that **`$cb70` fires whether or not either state is entered** -- 28 times
+against one each of `$cbae` and `$cc1e`. Tracking a disc and committing to a
+response are separate decisions.
+
+### The choice between reaching and stepping across
+
+`$cc02`-`$cc1c` is a small piece of real judgement:
+
+```
+$cbdc  d6 = $6d22 - $c            ; twelve units over
+$cbe4  if d6 < 8 -> $cc16         ; off the arena -> reach
+$cbea  d6 = colTable[d6] + 8 ; if $6d26 > $3a: d6 += 4
+$cc02  cmp.w $6d30,d6 ; beq $cc1a ; already standing there -> step
+$cc0a  lea $7596,a0 ; tst.w (a0,d6) ; bne $cc1a  ; walkable -> step
+$cc16  d6 = 0  -> reach
+$cc1a  d6 = -1 -> step across
+```
+
+**Step across only if the cell twelve units over is somewhere you could stand**,
+otherwise just reach. The row threshold is `$3a` = 58, not the movement code's
+14, because a player's own `world_y` is 54. Both fixtures exercise the decision
+once each and in opposite directions: `tile_damage.ndjson` frame 21 steps across
+(state 18) and frame 111 reaches (state 27).
+
+### State 18's handler, `$c196`
+
+```
+$c196  move.b #$12,$6d29
+$c19c  if $6d5a is $4624 or $4634 -> $c1b4, else just advance the animation
+$c1b4  btst #7,(a0) ; beq out          ; fire must be HELD
+$c1bc  btst #1,(a0) ; bne out          ; down must not be
+$c1c4  if $6d8a == $6d8c -> out        ; the two disc counters must differ
+$c1d0  subq.w #6,$6d22                 ; step six units left
+$c1d4  animation $45f0
+$c1e2  move.b #$f,$6d2e                ; and into state 15, the standing throw
+```
+
+So the intercept is: play the reach animation, and on the one frame it reaches
+`$4624`, if fire is still held, commit -- **six units left in a single step**,
+straight into a throw. `golden.ndjson` frame 39 has the cursor at `$4624` and
+frame 40 has player 2 at `x` 57 from 63, in state 15.
+
+`disc-core` stops there, because `$6d8a` and `$6d8c` are the possession counters
+the disc loop moves at four sites and this crate does not model.
+`// UNKNOWN: see bd discr-b6x`.
+
+### Every handler stamps `$6ca9`, so that much is universal
+
+A small thing with a large effect. Every entry in either table opens by writing
+its own index to `player+$09` -- `$f5e2` writes 1, `$f7f6` 2, `$10554` `$0b`,
+`$1057c` `$0c`, `$1094a` `$14`, `$109aa` `$15`, `$10a72` `$17`, `$10ac4` `$18`,
+`$c196` stamps `$6d29` and its own state via the same shape. So `disc-core`
+stamps it once for all 32 entries, **including the 25 whose behaviour is not
+modelled**, and `players[n].facing` is then correct for every state either
+player reaches. Only state 0 differs: its inline path *clears* the byte, and
+only when the joystick reads zero (`$f1c0`).

@@ -63,8 +63,8 @@
 
 use crate::{
     DirBits, DiscSlot, Event, FACING_LEFT, FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE,
-    GRID_CELL_FAR_ROW, Input, Player, PlayerId, TILE_CELLS, Tile, WALK_STEP, WALK_X_MAX,
-    WALK_X_MIN,
+    GRID_CELL_FAR_ROW, Input, Player, PlayerId, SteerHook, TILE_CELLS, TILE_TYPE_DESTROYED, Tile,
+    WALK_STEP, WALK_X_MAX, WALK_X_MIN,
 };
 
 /// The transient state a player passes through when starting or stopping a
@@ -121,6 +121,13 @@ pub const ANIM_STRUCK_UP: AnimSeq = &[4, 4];
 /// ST `$2d70`: the death sequence. Sixteen cells, hold 4 each. Loaded at
 /// `$f1a0`, and state 23 never leaves it -- see [`dead`].
 pub const ANIM_DEAD: AnimSeq = &[4; 16];
+
+/// ST `$466a`: player 2 reaching for a disc, loaded at `$cbb6`. Its holds are
+/// not transcribed -- state 27's handler is not modelled, so nothing runs it.
+pub const ANIM_REACH: AnimSeq = &[4];
+
+/// ST `$4612`: player 2 stepping across, loaded at `$cc26`. Same caveat.
+pub const ANIM_INTERCEPT: AnimSeq = &[4];
 
 /// What one run of the animation tail did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -521,6 +528,134 @@ pub fn hit_test(
     z
 }
 
+/// ST state 18: stepping across to intercept (`$c6ec` entry 18, `$c196`).
+pub const STATE_INTERCEPT: u8 = 0x12;
+
+/// ST state 27: reaching for a disc without moving (`$c6ec` entry 27).
+pub const STATE_REACH: u8 = 0x1b;
+
+/// The reach the bonus code 5 substitutes for [`Player::reach`]. ST `$cb5e`.
+pub const BONUS_REACH: i16 = 0x32;
+
+/// Player 2's anticipation cascade: `$cb2c`-`$cc9a`, the tail of its hit test
+/// `$c826`.
+///
+/// This is what **installs the two player-2 steering hooks**, and therefore what
+/// bd discr-ovl.1 was asking about from the player-2 side. Three outcomes, and
+/// `--watch` over `tests/fixtures/tile_damage.ndjson` counts them: `$cb70`
+/// installs [`SteerHook::AtP2Wide`] 28 times, `$cbae` reaches (state 27) once,
+/// and `$cc1e` steps across (state 18) once.
+///
+/// ```text
+/// $cb2c  only from state 0, only a disc travelling AWAY (dir_kind > 0) and
+///        owned by the other value, and only if $6d29 != 7
+/// $cb52  d5 = own depth - reach   (or - $32 under bonus code 5)
+/// $cb6a  the disc must be at least that deep -> otherwise nothing at all
+/// $cb70  INSTALL $a7d8: start tracking it
+/// $cb78  a narrow depth window, [d5 + reach - $c, +2]; outside it, stop here
+/// $cb9e  then a ladder on the disc's X relative to $6d22 - 3, mirrored left
+///        and right, ending in one of two responses
+/// $cbae  REACH: keep $a7d8, animation $466a, state $1b
+/// $cc1e  INTERCEPT: install $a816, animation $4612, state $12
+/// ```
+///
+/// The choice between the two is a genuine little decision: **step across only
+/// if the cell twelve units over is somewhere you could stand** -- either it is
+/// the cell you are already on, or its type is non-zero in your own bank
+/// (`$cc02`, `$cc10`). Otherwise just reach.
+///
+/// Not modelled: the `$6d29 != 7` guard at `$cb34` (that byte is stamped by the
+/// throw states and is never 7 in either fixture, so inventing a value for it
+/// would be worse than saying so), and `$cc3a clr.b $6d28`.
+/// `// UNKNOWN: see bd discr-b6x`.
+pub fn anticipate(
+    player: &mut Player,
+    disc: &mut DiscSlot,
+    x_cand: i16,
+    z_cand: i16,
+    own_bank: &[Tile; TILE_CELLS],
+) {
+    // $cb2c-$cb4e: four gates, all of them exits.
+    if player.state_index != STATE_IDLE || disc.dir_kind <= 0 || disc.aim != PlayerId::One {
+        return;
+    }
+
+    // $cb52-$cb6a: the tracking window's near edge.
+    let reach = player.reach;
+    let mut d5 = player.world_y - reach;
+    if z_cand < d5 {
+        return;
+    }
+
+    // $cb70: from here on the disc is tracked, whatever else happens.
+    disc.hook = SteerHook::AtP2Wide;
+
+    // $cb78-$cb9a: and a narrow window inside that, two units deep.
+    d5 = d5 + reach - 0x0c;
+    if z_cand < d5 {
+        return;
+    }
+    d5 += 2;
+    if z_cand > d5 {
+        return;
+    }
+
+    // $cb9e-$cc9a: the X ladder, mirrored either side of $6d22 - 3.
+    let pivot = player.world_x - 3;
+    let step_across = if x_cand > pivot {
+        // $cc40: the right-hand half. Untested -- neither fixture puts a disc
+        // to player 2's right at the moment it starts tracking.
+        if x_cand <= pivot + 0x0c {
+            false
+        } else if x_cand > pivot + 0x0c + 0x18 {
+            return;
+        } else {
+            let probe = player.world_x + 0x0c;
+            probe <= 0x98 && can_stand(player, probe, own_bank)
+        }
+    } else if x_cand == pivot {
+        // $cbaa: dead on the pivot -- reach, do not step.
+        false
+    } else {
+        // $cbcc: the left-hand half, which is the one both fixtures take.
+        if x_cand >= pivot - 0x0f {
+            false
+        } else if x_cand < pivot - 0x0f - 0x22 {
+            return;
+        } else {
+            let probe = player.world_x - 0x0c;
+            probe >= 8 && can_stand(player, probe, own_bank)
+        }
+    };
+
+    if step_across {
+        // $cc1e-$cc34.
+        disc.hook = SteerHook::AtP2Deep;
+        player.state_index = STATE_INTERCEPT;
+        enter_anim(player, ANIM_INTERCEPT);
+    } else {
+        // $cbae-$cbc4: the hook stays $a7d8.
+        player.state_index = STATE_REACH;
+        enter_anim(player, ANIM_REACH);
+    }
+}
+
+/// `$cc02`/`$cc10`: is the cell over there one this player could stand on?
+///
+/// True when it is the cell they are already on, or when its type word is
+/// non-zero in their own bank. `$cc16` (0) means reach, `$cc1a` (-1) step.
+fn can_stand(player: &Player, probe_x: i16, own_bank: &[Tile; TILE_CELLS]) -> bool {
+    let mut cell = usize::from(column(probe_x)) + GRID_CELL_BASE as usize;
+    // $cbf6 / $cc6e: cmpi.w #$3a,$6d26 -- 58, not the movement code's 14.
+    if player.world_y > 0x3a {
+        cell += GRID_CELL_FAR_ROW as usize;
+    }
+    cell == player.grid_cell as usize
+        || own_bank
+            .get(cell)
+            .is_some_and(|t| t.tile_type != TILE_TYPE_DESTROYED)
+}
+
 /// Advance one player by one frame.
 ///
 /// `tiles` is read-only here: the movement code only `tst.w`s `tile+$00` as a
@@ -539,6 +674,17 @@ pub fn step(
     tiles: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
+    // Every handler in the table opens by stamping its own index into $6ca9 --
+    // $f5e2 writes 1, $f7f6 writes 2, $10554 writes $0b, $1057c writes $0c,
+    // $1094a writes $14, $109aa writes $15, $10a72 writes $17, $10ac4 writes
+    // $18. So the stamp is universal and can be done here, once, for all 32
+    // entries including the ones whose behaviour is not modelled. Only state 0
+    // is different: its inline path clears $6ca9 rather than stamping it, and
+    // only when the joystick reads zero ($f1c0).
+    if player.state_index != STATE_IDLE {
+        player.facing = player.state_index;
+    }
+
     // ST $f108: `tst.b $6cae; bne $f5d0` -- state 0 is the inline idle path and
     // everything else dispatches through the 32-entry table at $10e2c.
     match player.state_index {
@@ -707,12 +853,19 @@ mod tests {
 
     #[test]
     fn opaque_states_move_nothing() {
-        // 0, 11, 12, 20 and 23 left the list as Part 10 modelled them.
-        for state in [5, 14, 16, 17, 19, 21, 24, 27, 31] {
+        // 0, 11, 12, 20 and 23 left the list as Part 10 modelled them. What is
+        // left changes exactly one field: every handler stamps $6ca9 with its
+        // own index as its first instruction, modelled or not.
+        for state in [5, 14, 16, 17, 19, 21, 24, 31] {
             let before = walking(state, 117);
             let mut p = before;
             run(&mut p, press(DirBits::LEFT), &FLOOR);
-            assert_eq!(p, before, "state {state} must be a pass-through");
+            assert_eq!(p.facing, state, "every handler stamps $6ca9");
+            assert_eq!(
+                Player { facing: 0, ..p },
+                before,
+                "state {state} must otherwise be a pass-through"
+            );
         }
     }
 

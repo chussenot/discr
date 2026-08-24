@@ -62,3 +62,10 @@ byte-identical again. Added per player: `anim` (`player+$3a`, the animation
 sequence cursor the serve gates on), `throw_dk` / `throw_mag` (`+$6e` / `+$70`,
 the dir_kind and damage that player's throws carry), `box` (`+$1c`..`+$22`, the
 hit box, copied out of the current animation cell) and `energy` (`+$76`).
+
+## Regenerated for Part 10e-f
+
+Two more additive columns, old ones verified byte-identical again: `banks`
+(**both** 16-cell tile banks, `$7596` then `$7616`, 32 entries -- the 17-cell
+`grid` above predates the discovery that a bank is 16 and is kept so earlier
+fixtures still load) and per-player `reach` (`player+$12`).
