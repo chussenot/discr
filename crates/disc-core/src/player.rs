@@ -155,6 +155,10 @@ anims! {
         "ST `$462e`, loaded at `$cab8` when a catch misses.";
     ANIM_P2_THROW_LEFT = 0x45c2, [4, 4, 4, 4, 4, 4],
         "ST `$45c2`, loaded at `$ae70`: player 2's throw after stepping left.";
+    ANIM_P2_SMASH_LEFT = 0x472a, [4, 4, 4, 4, 4, 4, 4, 4, 4],
+        "ST `$472a`, loaded at `$aed4`: player 2's running smash to the left.";
+    ANIM_P2_SMASH_RIGHT = 0x46f0, [4, 4, 4, 4, 4, 4, 4, 4, 4],
+        "ST `$46f0`, loaded at `$af34`: the same, to the right.";
     ANIM_P2_THROW_RIGHT = 0x45ea, [4, 4, 4, 4, 4, 4],
         "ST `$45ea`, loaded at `$ae0e`: the same, stepping right. `$45f0` -- the \
          sequence the intercept commits into -- is this table's second cell.";
@@ -309,12 +313,23 @@ fn walk(
     player: &mut Player,
     input: Input,
     tiles: &[Tile; TILE_CELLS],
+    own_bank: &[Tile; TILE_CELLS],
     facing: u8,
     held: DirBits,
     step_x: i16,
 ) {
     // ST $f5e2 / $f7f6: the handler sets $6ca9 on entry.
     player.facing = facing;
+
+    // $b1e0-$b1f8 (and $f5ea-$f606 for player 1): a fire press inside a walk
+    // goes to the throw decision at $ad82, which sees this walk's own stamp in
+    // player+$09 and routes to the running-smash chooser for that direction.
+    // Player 1 reaches the equivalent only when its two disc counters differ,
+    // and both are 0, so it never does.
+    if input.fire_held && !input.dir.has(DirBits::DOWN) && player.discs_out != player.disc_cap {
+        smash_choice(player, facing, own_bank);
+        return;
+    }
 
     // ST $f654 / $f868: `cmpi.b #$04,(a0); bne $f7b8` -- a WHOLE-BYTE compare,
     // so anything other than exactly this direction leaves the walk. The exit
@@ -678,10 +693,58 @@ pub fn hit_test(
     z
 }
 
-/// ST state 17: a four-byte stub, `$1089a bra $f1c4` / `$c192 bra $ac40`. It is
-/// the only entry in either 32-state table that does not stamp `player+$09`,
-/// and the only one whose handler has no body at all.
+/// ST state 17: a four-byte stub, `$1089a bra $f1c4` / `$c192 bra $ac40`. Its
+/// handler has no body at all.
 pub const STATE_STUB: u8 = 0x11;
+
+/// ST state 3: the running smash to the left (`$fa0c` / `$b3ee`).
+pub const STATE_SMASH_LEFT: u8 = 3;
+
+/// ST state 4: the running smash to the right (`$fabe` / `$b4a0`).
+pub const STATE_SMASH_RIGHT: u8 = 4;
+
+/// Does this state's handler stamp its own index into `player+$09`?
+///
+/// **Derived, not assumed.** Reading the first instruction of all 64 handlers --
+/// 32 per player -- gives the same answer for both tables: 28 open with
+/// `move.b #<their own index>,player+$09`, and exactly three do not.
+///
+/// | state | first instruction | why |
+/// |---|---|---|
+/// | 3 | `$fa0c` / `$b3ee` `cmpi.b #$3,player+$09` | it **reads** the byte as a latch: "have I already committed this smash?" |
+/// | 4 | `$fabe` / `$b4a0` `cmpi.b #$4,player+$09` | the same, mirrored |
+/// | 17 | `$1089a` / `$c192` `bra` | the stub, no body |
+///
+/// State 0 is not in either table at all -- its inline path *clears* the byte,
+/// and only when the whole input byte is zero.
+///
+/// This was got wrong twice before it was measured: first as "every handler
+/// stamps" (Part 10f), then as "every handler except 17" (Part 10g). Both were
+/// right about most states and wrong about the ones the fixtures spend time in.
+#[must_use]
+pub const fn stamps_facing(state: u8) -> bool {
+    !matches!(
+        state,
+        STATE_IDLE | STATE_SMASH_LEFT | STATE_SMASH_RIGHT | STATE_STUB
+    )
+}
+
+/// The wind-up slide's per-frame step. ST `$b3f6 subq.w #1` / `$b4a8 addq.w #1`.
+pub const SMASH_SLIDE: i16 = 1;
+
+/// The jump it makes at one animation frame. ST `$b404 subi.w #$a` /
+/// `$b4b6 addi.w #$a`.
+pub const SMASH_LUNGE: i16 = 0x0a;
+
+/// The animation cursor a left smash lunges on. ST `$b3fa cmpi.l #$4742`.
+pub const SMASH_LUNGE_LEFT_AT: u32 = 0x4742;
+
+/// And a right one. ST `$b4ac cmpi.l #$4708`.
+pub const SMASH_LUNGE_RIGHT_AT: u32 = 0x4708;
+
+/// How much room a running smash needs in the direction it is already walking.
+/// ST `$ae94 subi.w #$26` / `$aef4 addi.w #$26`.
+pub const SMASH_PROBE: i16 = 0x26;
 
 /// The two animation cursor values state 18 commits on. ST `$c19c` / `$c1a8`.
 pub const INTERCEPT_RELEASE_A: u32 = 0x4624;
@@ -996,6 +1059,67 @@ fn p2_throw_choice(player: &mut Player, input: Input, own_bank: &[Tile; TILE_CEL
     anim_tick(player);
 }
 
+/// `$ae90` and `$aef0`: which running smash a walking player commits to.
+///
+/// One probe, `$26` = 38 units in the direction already being walked -- far
+/// enough that it is asking whether there is room for the whole run. If there
+/// is, commit (state 3 left, state 4 right); if there is not, fall back to the
+/// standing throw's own probe, `$adca` or `$ae2e`.
+fn smash_choice(player: &mut Player, walking: u8, own_bank: &[Tile; TILE_CELLS]) {
+    let left = walking == FACING_LEFT;
+    let probe = if left { -SMASH_PROBE } else { SMASH_PROBE };
+    if can_stand(player, player.world_x + probe, own_bank) {
+        if left {
+            // $aed4-$aee8.
+            player.state_index = STATE_SMASH_LEFT;
+            player.threw_left = false;
+            enter_anim(player, ANIM_P2_SMASH_LEFT);
+        } else {
+            // $af34-$af48.
+            player.state_index = STATE_SMASH_RIGHT;
+            player.threw_left = true;
+            enter_anim(player, ANIM_P2_SMASH_RIGHT);
+        }
+        anim_tick(player);
+    }
+    // $af30 / $aece: no room for the run falls through to the standing throw's
+    // probe, which needs the input byte this function does not carry. Not
+    // modelled. // UNKNOWN: see bd discr-b6x.
+}
+
+/// The running smash, states 3 and 4. ST `$b3ee` and `$b4a0`, which are the
+/// same code mirrored.
+///
+/// ```text
+/// $b4a0  cmpi.b #$4,$6d29 ; beq $b4c2   ; already committed -> skip the slide
+/// $b4a8  addq.w #1,$6d22                ; otherwise slide one unit a frame
+/// $b4ac  cmpi.l #$4708,$6d5a ; bne      ; at one animation frame:
+/// $b4b6  addi.w #$a,$6d22               ;   lunge ten more
+/// $b4bc  move.b #$4,$6d29               ;   and latch, which stops the slide
+/// $b4c2  cmpi.l #$471a,$6d5a            ; the release frame -- see
+///                                       ; crate::disc::THROW_STATES
+/// ```
+///
+/// So `player+$09` is doing double duty here: for 28 of the 31 handlers it is a
+/// stamp, and for these two it is the latch that says the lunge has happened.
+/// That is why they are the exceptions in [`stamps_facing`].
+///
+/// The release itself lives in [`crate::GameState::tick`], because it builds a
+/// disc record.
+fn smashing(player: &mut Player, who: PlayerId, step: i16, lunge_at: u32) {
+    if player.facing != player.state_index {
+        // $b4a8 / $b3f6: the wind-up slide.
+        player.world_x += step;
+        if player.anim_cursor == lunge_at {
+            // $b4b6 / $b404, then $b4bc / $b40a's latch.
+            player.world_x += SMASH_LUNGE * step;
+            player.facing = player.state_index;
+        }
+        player.grid_cell = grid_cell(player.world_x, player.world_y);
+    }
+    run_out(player, who);
+}
+
 /// Advance one player by one frame.
 ///
 /// `tiles` is read-only here: the movement code only `tst.w`s `tile+$00` as a
@@ -1016,7 +1140,9 @@ pub fn step(
     own_bank: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
-    // Almost every handler opens by stamping its own index into player+$09 --
+    // See stamps_facing: 28 of the 31 handlers in either table open by stamping
+    // their own index into player+$09, and the three that do not are 3, 4 and
+    // 17. Historical note kept because it was got wrong twice:
     // $f5e2 writes 1, $f7f6 writes 2, $10554 writes $0b, $1057c writes $0c,
     // $1094a writes $14, $109aa writes $15, $10a72 writes $17, $10ac4 writes
     // $18, and player 2's $c196 writes $12 into $6d29. So the stamp is done
@@ -1031,7 +1157,7 @@ pub fn step(
     //   `$c192 bra $ac40` for player 2 -- so it never stamps. Comparing each
     //   table entry with the next handler in address order finds exactly one
     //   such stub per player, and it is state 17 in both.
-    if player.state_index != STATE_IDLE && player.state_index != STATE_STUB {
+    if stamps_facing(player.state_index) {
         player.facing = player.state_index;
     }
 
@@ -1045,17 +1171,28 @@ pub fn step(
         STATE_DEAD => dead(player),
         STATE_INTERCEPT => intercept(player, input),
         STATE_STUB => stub(player, who),
-        3 | 4 | 15 | 16 => throwing(player, who),
+        15 | 16 => throwing(player, who),
+        STATE_SMASH_LEFT => smashing(player, who, -SMASH_SLIDE, SMASH_LUNGE_LEFT_AT),
+        STATE_SMASH_RIGHT => smashing(player, who, SMASH_SLIDE, SMASH_LUNGE_RIGHT_AT),
         // $c6ec entry 27, the reach: run the $466a sequence out and fall back.
         // Whether its handler does anything else is not decoded, but the
         // fixture's twenty-three frames in it match the sequence exactly.
         // // UNKNOWN: see bd discr-b6x.
         STATE_REACH => run_out(player, who),
-        1 => walk(player, input, tiles, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
+        1 => walk(
+            player,
+            input,
+            tiles,
+            own_bank,
+            FACING_LEFT,
+            DirBits::LEFT,
+            -WALK_STEP,
+        ),
         2 => walk(
             player,
             input,
             tiles,
+            own_bank,
             FACING_RIGHT,
             DirBits::RIGHT,
             WALK_STEP,

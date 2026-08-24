@@ -21,23 +21,25 @@ the field-by-field contract between `disc-core` and a trace, and
     mise run core-check      # fmt + clippy + tests + four tracecheck runs
     cargo run --release      # a bare tracecheck over the golden fixture
 
-Both are green today, and `core-check`'s four runs are three clean and one
-prefix-gated:
+Both are green today, and **all four of `core-check`'s runs are clean**:
 
 | run | result |
 |---|---|
-| `golden --skip-waived` | **clean** — 99 of 99 ticks, no divergence |
-| `tile_damage --skip-waived` | **clean** — 214 of 214 |
-| `golden`, nothing waived at all | **clean** — 99 of 99, both players |
-| `tile_damage`, nothing waived | 161 of 214, stopping at player 2's running smash |
+| `golden --skip-waived` | 99 of 99 ticks, no divergence |
+| `tile_damage --skip-waived` | 214 of 214 |
+| `golden`, nothing waived at all | 99 of 99, both players |
+| `tile_damage`, nothing waived | 214 of 214, both players |
 
-The last one still gates on a **measured prefix** via `--min-agree` rather than
-on zero divergence, because its divergence is understood and owned by a bead,
-and a gate that is red by design gets ignored. The three clean runs are gated
-the same way, so the number can only ever go down — which is what catches a
-regression. `reports/part10-report.md` has the history of every one of those
-numbers; `reports/core-report.md` is the older account and says at the top what
-Part 10 superseded.
+They still gate on a **measured prefix** via `--min-agree` rather than on zero
+divergence, because that is what catches a regression: a clean run can only get
+shorter, and the number says by how much. `reports/part10-report.md` has the
+history of every one of those numbers; `reports/core-report.md` is the older
+account and says at the top what Part 10 superseded.
+
+Clean does not mean finished. `disc-core` reproduces everything these two traces
+do — 313 ticks of it — and six ST fields are still fed each tick, all of them
+animation-derived data or per-player constants; the run's own header names them.
+`docs/state-schema.md` has the seventeen waived rows and the beads that own them.
 
 `oracle-check` is prefix-gated for a different and permanent reason: the oracle
 and Hatari agree byte-for-byte for a bounded window, and

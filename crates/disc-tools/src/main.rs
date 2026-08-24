@@ -950,9 +950,9 @@ mod tests {
         assert_eq!(f.len() - 1, 99, "the fixture is 100 frames");
     }
 
-    /// **Resyncing buys nothing on this fixture any more.** The default run --
+    /// **Resyncing buys nothing on either fixture any more.** The default run --
     /// nothing waived, nothing resynced, every compared row of *both* players --
-    /// reproduces the whole golden fixture.
+    /// reproduces the whole of both committed traces.
     ///
     /// It stopped on frame 1 before Part 10c, 22 before 10f, 40 before state
     /// 18's handler, 59 once the animation tables landed, and 99 once player 2's

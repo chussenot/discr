@@ -1036,3 +1036,86 @@ correctly with `vel_x` 4 — so what is missing is the entry and the wind-up sli
   never throw.
 * **One fixture clean under the strictest terms is one fixture.** The idle one
   reaches 161 of 214 the same way.
+
+---
+
+# Part 10k — both fixtures reproduce completely
+
+`mise run core-check`'s four runs are **four clean runs**. Both committed traces,
+every tick, with nothing waived and nothing resynced.
+
+| run | 10j | **10k** |
+|---|---|---|
+| `golden --skip-waived` | 99 clean | 99 clean |
+| `tile_damage --skip-waived` | 214 clean | 214 clean |
+| `golden`, nothing waived | 99 clean | 99 clean |
+| `tile_damage`, nothing waived | 161 | **214 clean** |
+
+## The measurement that should have come first
+
+Which handlers stamp `player+$09`? This file got it wrong twice — Part 10f said
+"every handler", Part 10g said "every handler except 17" — and both times the
+answer was right about most states and wrong about ones the fixtures spend time
+in.
+
+Reading **the first instruction of all 64 handlers** answers it exactly, and both
+tables agree:
+
+| | |
+|---|---|
+| 28 states | open with `move.b #<their own index>,player+$09` |
+| states 3 and 4 | open with `cmpi.b #<n>,player+$09` — they **read** it as a latch |
+| state 17 | opens with `bra` — the stub has no body |
+
+One script over the seed, and it cannot be wrong the same way an assumption can.
+The lesson is not "measure more", it is that *a rule about 64 handlers is
+cheaper to measure than to infer from the three you happen to be looking at.*
+
+## The running smash
+
+`player+$09` does double duty, which is why 3 and 4 are the exceptions: for them
+it is the latch that says the lunge has happened.
+
+```
+$b4a0  cmpi.b #$4,$6d29 ; beq        ; latched -> skip the slide
+$b4a8  addq.w #1,$6d22               ; else slide one unit a frame
+$b4ac  cmpi.l #$4708,$6d5a ; bne
+$b4b6  addi.w #$a,$6d22              ; at that frame, lunge ten more
+$b4bc  move.b #$4,$6d29              ; and latch
+$b4c2  cmpi.l #$471a,$6d5a           ; release -- already modelled
+```
+
+Getting into one: a fire press inside a walk goes to `$ad82`, which reads the
+walk's stamp and routes to `$ae90` or `$aef0`. Each is one probe at **38 units**
+in the direction already being walked — "is there room for the whole run", not
+"is the next step safe".
+
+That makes three probes in the game, one predicate, three reaches: **13** for a
+standing throw, **38** for a running smash, **12** for the intercept's
+step-across.
+
+## What clean does and does not mean
+
+`disc-core` reproduces everything these two traces do — 313 ticks. It does not
+follow that it reproduces the game.
+
+* **Six ST fields are still fed each tick**, and the header names them: one
+  animation cursor, two blocks copied out of the animation cell (the hit box and
+  an X delta), and four per-player constants nothing in the image writes.
+  None of them is a decision.
+* **Seventeen waived rows remain** in `docs/state-schema.md`, each with a bead.
+* **Whole systems are untouched**: the bonus effects (five code reads, no trace
+  has ever carried a non-zero code), the far tile bank `$7596` (no trace has ever
+  changed a cell in it), round init and scoring (`discr-st8` — Part 10g found how
+  a round *ends* without finding how one begins), the racket path (`$113e2` fires
+  zero times in 215 frames), player 1's four throw states (it never throws
+  because its disc cap is 0), and 24 of the 32 states in either table.
+* **Two fixtures is two fixtures.** Both are 100–215 frames from one seed in one
+  round. `scripts/regen_golden.sh` and one oracle invocation make more, and the
+  most valuable next ones are a trace where a bonus is picked up and a trace
+  where a player swings — the two things that would exercise code already written
+  and never tested.
+
+The honest summary of Part 10 is that the *disc* is finished and the *players*
+are finished for everything two traces ask of them, and that the game around
+them — rounds, scores, bonuses, the second board — has barely been looked at.

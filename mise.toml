@@ -42,10 +42,13 @@ TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 # animation tables, 59 before player 2's idle-path throw decision.
 FULL_MIN_AGREE = "99"
 
-# The fourth gate: the idle fixture with nothing waived either.  161 ticks,
-# stopping where player 2's walk handler sends a fire press to the smash chooser
-# at $aef0 -- one more $c6ec variant nobody has transcribed.  59 before Part 10j.
-TILE_FULL_MIN_AGREE = "161"
+# The fourth gate: the idle fixture with nothing waived either -- CLEAN as of
+# Part 10k, all 214 ticks.  59 before Part 10j, 161 before the running smash.
+#
+# All four runs are clean now.  The gates stay on --min-agree rather than on zero
+# divergence anyway, because that is what catches a regression: a clean run can
+# only get shorter, and the number tells you by how much.
+TILE_FULL_MIN_AGREE = "214"
 TILE_MIN_AGREE = "214"
 
 # The repository's first three commits predate conventional commits (`bd init`

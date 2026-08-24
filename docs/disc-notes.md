@@ -1939,3 +1939,67 @@ the cell from the frame before.
 and nothing resynced** -- every compared row of *both* players, including all
 five of player 2's. The idle fixture reaches 161 of 214 on the same terms and
 stops at the running smash.
+
+## The running smash, and which handlers stamp `player+$09` (Part 10k)
+
+### 28 of 31 handlers stamp, and the three that do not are 3, 4 and 17
+
+Reading the **first instruction of all 64 handlers** -- 32 per player -- settles a
+question this file got wrong twice, and both tables give the same answer:
+
+| | |
+|---|---|
+| 28 states | open with `move.b #<their own index>,player+$09` |
+| state 3 | `$fa0c` / `$b3ee` open with `cmpi.b #$3,player+$09` -- they **read** it |
+| state 4 | `$fabe` / `$b4a0`, the same, mirrored |
+| state 17 | `$1089a` / `$c192` open with `bra` -- the stub has no body |
+
+State 0 is not in either table; its inline path *clears* the byte, and only when
+the whole input byte is zero.
+
+So `player+$09` does double duty: a stamp for 28 states, and for the two smashes
+**a latch** -- "have I already lunged?". Part 10f called the stamp universal and
+Part 10g called it universal-except-17; both were right about most states and
+wrong about ones the fixtures spend time in. Deriving it from 64 first
+instructions costs one script and cannot be wrong the same way.
+
+### The smash: run, lunge, latch, release
+
+```
+$b4a0  cmpi.b #$4,$6d29 ; beq $b4c2      ; latched -> skip the slide
+$b4a8  addq.w #1,$6d22                   ; else slide one unit a frame
+$b4ac  cmpi.l #$4708,$6d5a ; bne $b4c2
+$b4b6  addi.w #$a,$6d22                  ; at that frame, lunge ten more
+$b4bc  move.b #$4,$6d29                  ; and latch, which stops the slide
+$b4c2  cmpi.l #$471a,$6d5a               ; the release frame
+```
+
+State 3 mirrors it exactly: `subq.w #1`, `-$a`, lunge at `$4742`, release at
+`$4754`. `tile_damage.ndjson` frames 162-165 are the slide -- `world_x` 59, 60,
+61, 62 -- and frame 190 is the release, which was already modelled and is why
+that serve carries `vel_x` 4.
+
+### Getting into one: `$ae90` and `$aef0`
+
+A fire press inside a walk (`$b1e0`-`$b1f8`) goes to the throw decision at
+`$ad82`, which reads the walk's own stamp in `player+$09` -- 1 or 2 -- and routes
+to the chooser for that direction. Each chooser is one probe:
+
+```
+$aef0  d0 = $6d22 + $26 ; ... can_stand? ; yes -> state 4, sequence $46f0
+$ae90  d0 = $6d22 - $26 ; ... can_stand? ; yes -> state 3, sequence $472a
+```
+
+`$26` is **38 units** -- far enough that the question is "is there room for the
+whole run", not "is the next step safe". No room falls back to the standing
+throw's own 13-unit probe.
+
+Three probes in the game now, all the same predicate and all differing only in
+reach: **13** units for a standing throw (`$adce`/`$ae32`), **38** for a running
+smash (`$aef4`/`$ae94`), and **12** for the intercept's step-across (`$cbe0`).
+
+### Both fixtures now reproduce completely
+
+`tests/fixtures/golden.ndjson` 99 of 99 and `tests/fixtures/tile_damage.ndjson`
+214 of 214, **with nothing waived and nothing resynced** -- every compared row of
+both players, every tick. `mise run core-check`'s four runs are four clean runs.
