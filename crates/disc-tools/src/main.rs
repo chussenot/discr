@@ -57,9 +57,9 @@ use disc_core::{DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, TILE_CE
 use serde::Deserialize;
 
 /// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
-const SCHEMA_COMPARED: usize = 15;
+const SCHEMA_COMPARED: usize = 16;
 /// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
-const SCHEMA_WAIVED: usize = 15;
+const SCHEMA_WAIVED: usize = 16;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
 /// Compared rows a trace may carry no column for; see [`Frame`].
@@ -185,6 +185,14 @@ struct TracePlayer {
     /// `player+$70`, the damage they do. Part 10b.
     #[serde(default)]
     throw_mag: i16,
+    /// `player+$1c`..`+$22`, the hit box, copied out of the animation cell.
+    /// Part 10d.
+    #[serde(default)]
+    #[serde(rename = "box")]
+    hit_box: [i16; 4],
+    /// `player+$76`, the energy a strike subtracts from. Part 10d.
+    #[serde(default)]
+    energy: i16,
 }
 
 #[derive(Deserialize)]
@@ -292,9 +300,16 @@ impl Frame {
                 // A trace seeded mid-turn would need the columns.
                 pending_state: 0,
                 anim_hold: 0,
+                // `player+$3a`'s cell index has no trace column; both fixtures
+                // start with the player idle, so cell 0 is right at frame 0.
+                anim_cell: 0,
+                anim_shown: 0,
                 anim_cursor: t.anim,
                 throw_dir_kind: t.throw_dk,
                 throw_damage: t.throw_mag,
+                hit_box: t.hit_box,
+                energy: t.energy,
+                down: false,
             };
         }
         for (d, t) in st.discs.iter_mut().zip(&self.disc) {
@@ -388,6 +403,12 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
             e.cell.into(),
             g.grid_cell.into(),
         );
+        // Part 10d: player+$76, which the strike at $11178 subtracts from.
+        push(
+            format!("players[{n}].energy"),
+            e.energy.into(),
+            g.energy.into(),
+        );
     }
 
     for (n, (e, g)) in expected.disc.iter().zip(&got.discs).enumerate() {
@@ -468,6 +489,9 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
         s.anim_cursor = w.anim_cursor;
         s.throw_dir_kind = w.throw_dir_kind;
         s.throw_damage = w.throw_damage;
+        // `player+$1c`..`+$22` is copied out of the animation frame block every
+        // frame by $f1ca, and this crate does not carry the frame blocks.
+        s.hit_box = w.hit_box;
     }
 }
 
@@ -491,6 +515,9 @@ fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool)
         }
         if skip(&format!("players[{n}].grid_cell")) {
             s.grid_cell = w.grid_cell;
+        }
+        if skip(&format!("players[{n}].energy")) {
+            s.energy = w.energy;
         }
     }
     for n in 0..DISC_SLOTS {
@@ -806,21 +833,19 @@ mod tests {
         assert_eq!(
             names.len(),
             // Part 10 added discs[n].vel_y and discs[n].damage, so 7 per disc.
-            1 + 2 * 5 + DISC_SLOTS * 7 + TILE_CELLS * 2,
+            1 + 2 * 6 + DISC_SLOTS * 7 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
     }
 
-    /// The number `mise run core-check` gates on and `reports/part10-report.md`
-    /// cites: with the schema's waived rows resynced from the trace, the golden
-    /// fixture matches for 63 ticks and then stops where player 1's hit test
-    /// `$10fd8` puts it into state 11 and moves its `world_y` -- a handler this
-    /// crate does not model (discr-75o, discr-ovl.1). Mirrors the loop in `run`.
+    /// The number `mise run core-check` gates on: with only the schema's waived
+    /// rows resynced, `disc-core` reproduces **the whole golden fixture** --
+    /// all 99 ticks, no divergence. Mirrors the loop in `run`.
     ///
-    /// It was 10 before Part 10, 51 after Part 10b's state machine, and 63 once
-    /// the serve landed.
+    /// It was 10 before Part 10, 51 after Part 10b's state machine, 63 once the
+    /// serve landed, and 99 once the hit test did.
     #[test]
-    fn skip_waived_matches_sixty_three_ticks_then_stops_on_the_hit_test() {
+    fn skip_waived_reproduces_the_whole_golden_fixture() {
         let f = golden();
         let skip = |field: &str| WAIVED.iter().any(|(p, _)| field.starts_with(p));
         let mut state = f[0].seed();
@@ -831,15 +856,14 @@ mod tests {
             feed_disc_inputs(&mut state, &prev.seed());
             state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
             resync(&mut state, &expected.seed(), &skip);
-            if let Some(d) = first_divergence(expected, &state) {
-                assert_eq!(matched, 63, "matched ticks before the divergence");
-                assert_eq!(d.field, "players[0].world_y");
-                assert_eq!((d.expected, d.got), (17, 18));
-                return;
-            }
+            assert!(
+                first_divergence(expected, &state).is_none(),
+                "diverged after {matched} tick(s): {:?}",
+                first_divergence(expected, &state).map(|d| d.field)
+            );
             prev_joy = prev.joy_6c58;
         }
-        panic!("expected a divergence within the fixture");
+        assert_eq!(f.len() - 1, 99, "the fixture is 100 frames");
     }
 
     /// Resyncing is opt-in, and since Part 10b it buys much less: with player

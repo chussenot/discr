@@ -1321,3 +1321,98 @@ Measured rather than assumed: at `tile_damage.ndjson` frame 51 the sampled
 which the up bit would have made -5. Frame 52's byte is `$80`, which serves 0.
 `tracecheck` therefore drives player 2 from the frame it is predicting, and
 player 1 from the frame it starts at, and says so.
+
+## The hit test `$10fd8`, and the whole golden fixture (Part 10d)
+
+Player 1's hit test is called from the disc loop at `$a652`, **between the
+integration and the write-back**, which is the detail that makes it work: it
+receives the three candidate coordinates in `d0`/`d1`/`d2` and can put the disc
+back where it struck. **[code+trace]**
+
+```
+$10fd8  tst.b $6cac ; bne out            ; already out of energy
+$10fe0  d5 = ($04,a5)                    ; the z it is LEAVING
+$10fe4  tst.w ($0a,a5) ; bmi $10ffc
+        dir_kind >= 0:  out unless d5 <  $6ca6 and d2 >= $6ca6
+        dir_kind <  0:  out unless d5 >  $6ca6 and d2 <= $6ca6
+                                         ; i.e. it CROSSED the player's depth
+$1100c  tst.b ($11,a5)                   ; owner: states $12/$13/$1b branch away
+$11030  state 7..10 -> the RACKET path at $11044
+$110fc  d0 inside [px - 8 + $6cbc, that + 8 + $6cbe] ?
+$11118  d1 inside [$6ca4 + $6cc0, that + $6cc2] ?
+$11178  $6d16 -= ($16,a5), clamped at 0; at 0, st $6cac
+$111ce  neg.w ($0a,a5) ; d2 += it ; clr.l ($12,a5)
+$111da  and then a state, chosen by the one it interrupted
+```
+
+Two things about it are worth stating on their own.
+
+**The box comes out of the animation.** `$6cbc`, `$6cbe`, `$6cc0` and `$6cc2`
+are four of the words `$f1ca` copies out of the current animation cell's frame
+block every frame, so **the hit box changes shape as the sprite does**. Player 1
+reads `[-3, 11, -20, 18]` standing and `[-4, 11, -19, 16]` on the first frame of
+being knocked down. `$6ca4` -- the constant 99 Part 9 identified -- is the
+vertical origin the box is measured from.
+
+**The struck state is chosen by the state it interrupted** (`$111da`):
+
+| interrupted state | what happens |
+|---|---|
+| 1, 2, 3, 4, `$15`, `$16` | the state is kept; `$11256` forces an outgoing disc to `dir_kind` +1 |
+| anything else, disc going away | `$11210`: animation `$2d60`, **state 12** |
+| anything else, disc coming back | `$11226`: animation `$2d50`, **state 11**, and `$1123a` writes the disc's `dir_kind` to exactly **+1** |
+
+That last write is why golden frame 64 shows `dir_kind` going -3 to +1 rather
+than the +3 the `neg.w` at `$111ce` produced two instructions earlier.
+
+### `player+$76` is energy, and `player+$0c` is "out"
+
+`$11178`-`$111c6` reads `$6d16`, subtracts the striking disc's `+$16`, stores it
+back and clamps at 0, and `$111ca st $6cac` marks the player out. Player 1's
+energy across the golden fixture is **5, then 2 after the first strike, then 0
+after the second** -- damage 3 each time, from the thrower's `player+$70`.
+
+Two bonus branches sit in that path and neither is modelled, because no trace
+carries a bonus code: `$1117c` skips the subtraction entirely when the code is 4
+(**a shield**) and `$11188` applies it a second time when the code is 1.
+
+### States 11, 12 and 23, and what actually paces them
+
+State 11 (`$10554`) is four instructions of substance:
+
+```
+$10554  move.b #$0b,$6ca9
+$10560  d0 = the current animation cell's frame block
+$10562  cmp.l $6ce4,d0 ; beq $f1c4      ; unchanged since last frame -> nothing
+$1056a  cmpi.w #$02,$6ca6 ; ble         ; floor
+$10574  subq.w #1,$6ca6                 ; else sink one row
+```
+
+**A knocked-down player sinks one row per animation *cell*, not per frame.**
+`$6ce4` holds the block `$f1ca` copied last frame, so the comparison is "has the
+sequence advanced". `$2d50` is two cells of four frames each, which is exactly
+the 18, 17, 17, 17, 17, 16, 16, 16 the fixture reads across frames 63-70, and
+the sequence running out at frame 71 puts the player back in state 0. State 12
+(`$1057c`) is the same code with `addq` and a ceiling of `$19`.
+
+State 23 (`$10a72`) is entered from the idle path when `$6cac` is set --
+`$f11c tst.b $6cac; bne $f170`, which loads `$2d70` and writes `$6cae = $17`.
+Its handler is a **variant of the animation tail** and the difference is the
+whole point: it tests for the terminator *before* copying, and on reaching it
+does not change state. It bumps `$6cab` by 3 and `$6c83` by 1 and returns. So
+**state 23 is terminal** -- the round is over for that player.
+
+### What this bought
+
+`disc-core` now reproduces **the whole of `tests/fixtures/golden.ndjson`**: 99
+ticks, no divergence, with only `players[1].*` resynced. Player 1's walk, both
+turn transients, both strikes, the energy 5 -> 2 -> 0, the death sequence, and
+the disc's entire flight including two serves, a floor bounce and two returns.
+
+### Still not decoded, in the same routine
+
+**The racket path, `$11030`-`$110a8`.** States 7..10 catch the disc in a second,
+wider box built from `$6cc6`/`$6cc8`, add `$6cc4` to its `vel_x`, and at
+`$113e2` install the `$a71a` steering hook. It is the last thing between
+`disc-core` and not being fed `disc+$12`, and player 2's `$c826` is its twin.
+bd discr-ovl.1.

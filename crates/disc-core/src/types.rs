@@ -204,9 +204,45 @@ pub struct Player {
     /// before Part 10; they are not rendering, they are the timer that decides
     /// when a state is over.
     ///
-    /// Only the turn transient's sequence is modelled here -- see
-    /// [`crate::player::TURN_ANIM_HOLD`].
+    /// Sequences are named in [`crate::player`]; a handler that runs one holds
+    /// its cell index in [`Player::anim_cell`].
     pub anim_hold: u16,
+    /// Which cell of the current animation sequence is showing. ST: the offset
+    /// of `$6cda` from the sequence base, in six-byte steps.
+    pub anim_cell: u8,
+    /// The cell whose frame block was last copied into `$6ce4` by `$f1ca`.
+    ///
+    /// Handlers compare against it to detect "the sequence advanced since last
+    /// frame": `$10560 move.l (A1),D0; $10562 cmp.l $6ce4,D0; beq` is state
+    /// 11's test, and it is the whole of what paces the player's vertical
+    /// movement while it is being knocked down. [`crate::player::NO_CELL`] is
+    /// the value on entering a new sequence, where `$6ce4` still holds the
+    /// *previous* sequence's block and so can never match.
+    pub anim_shown: u8,
+    /// ST `player+$1c`..`+$22` (`$6cbc`, `$6cbe`, `$6cc0`, `$6cc2`): the four
+    /// words of this player's hit box, in that order.
+    ///
+    /// **Copied out of the current animation cell's frame block every frame**
+    /// by `$f1ca`, so the box changes shape as the sprite does. This crate does
+    /// not carry the frame blocks, so it is a fed input.
+    /// `// UNKNOWN: see bd discr-75o`.
+    ///
+    /// The hit test reads them as `x in [px - 8 + b0, px - 8 + b0 + 8 + b1]`
+    /// and `y in [99 + b2, 99 + b2 + b3]` (`$110fc`-`$1112c`).
+    pub hit_box: [i16; 4],
+    /// ST `player+$76` (`$6d16` / `$6d96`): the energy a strike subtracts from.
+    ///
+    /// `$11178`-`$111c6`: `d5 = $6d16`, minus the striking disc's `+$16` unless
+    /// the bonus code is 4, stored back, and clamped to 0 -- at which point
+    /// `$111ca st $6cac` marks the player down. Player 1 reads 5 at the start of
+    /// the golden fixture, 2 after the first strike and 0 after the second.
+    pub energy: i16,
+    /// ST `player+$0c` (`$6cac`): set by `$111ca` when the energy reaches 0.
+    ///
+    /// Gates the whole hit test (`$10fd8 tst.b $6cac; bne`) and the idle path
+    /// (`$f11c`). No trace column: this crate produces it and nothing checks
+    /// it. `// UNKNOWN (what clears it): see bd discr-75o`.
+    pub down: bool,
 }
 
 /// The width of one arena column in world-X units. ST `$7bfe` is 152 bytes of

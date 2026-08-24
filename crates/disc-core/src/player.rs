@@ -62,8 +62,9 @@
 //! this crate does not carry. `// UNKNOWN: see bd discr-75o`.
 
 use crate::{
-    DirBits, Event, FACING_LEFT, FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE, GRID_CELL_FAR_ROW, Input,
-    Player, TILE_CELLS, Tile, WALK_STEP, WALK_X_MAX, WALK_X_MIN,
+    DirBits, DiscSlot, Event, FACING_LEFT, FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE,
+    GRID_CELL_FAR_ROW, Input, Player, PlayerId, TILE_CELLS, Tile, WALK_STEP, WALK_X_MAX,
+    WALK_X_MIN,
 };
 
 /// The transient state a player passes through when starting or stopping a
@@ -79,14 +80,103 @@ pub const STATE_WALK_RIGHT: u8 = 2;
 /// ST state 0: idle, handled inline in `$f104` rather than through the table.
 pub const STATE_IDLE: u8 = 0;
 
-/// Frames the turn transient holds. ST `$2f7e`, the sequence loaded at `$f27a`,
-/// `$f2ce` and `$f7c4`: **one cell with a hold of 4, then a zero terminator**.
+/// How low a knocked-down player sinks. ST `$1056a`: `cmpi.w #$02,$6ca6; ble`.
+pub const STRUCK_Y_FLOOR: i16 = 2;
+
+/// ST state 11: knocked down and sinking (`$10554`).
+pub const STATE_STRUCK_DOWN: u8 = 0x0b;
+
+/// ST state 12: knocked down and rising (`$1057c`).
+pub const STATE_STRUCK_UP: u8 = 0x0c;
+
+/// ST state 23: out of energy (`$10a72`). Terminal -- nothing leaves it.
+pub const STATE_DEAD: u8 = 0x17;
+
+/// The value [`Player::anim_shown`] takes on entering a sequence.
 ///
-/// The tick that enters state 20 also runs the animation tail, so the count is
-/// 3 at the first sample and the state changes on the fourth handler run --
-/// which is the three consecutive frames of state 20 the fixture shows, at
-/// f11-f13 and again at f29-f31.
-pub const TURN_ANIM_HOLD: u16 = 4;
+/// ST: `$6ce4` still holds the *previous* sequence's frame block, so the
+/// `cmp.l $6ce4,D0` a handler opens with can never match on the entry frame.
+/// 255 is out of range for any sequence this crate carries.
+pub const NO_CELL: u8 = 0xff;
+
+/// One animation sequence: the hold counts of its cells, in order.
+///
+/// ST: a list of six-byte cells -- a four-byte frame-block pointer and a
+/// two-byte hold -- ending in a zero longword. The frame blocks are sprite and
+/// hit-box data this crate does not carry, so only the holds are here, which is
+/// all the state machine's timing depends on.
+pub type AnimSeq = &'static [u16];
+
+/// ST `$2f7e`: the turn transient. One cell, hold 4, then the terminator.
+///
+/// Loaded at `$f27a`, `$f2ce`, `$f7c4` and `$f9e0`.
+pub const ANIM_TURN: AnimSeq = &[4];
+
+/// ST `$2d50`: knocked down. Two cells, holds 4 and 4. Loaded at `$11226`.
+pub const ANIM_STRUCK_DOWN: AnimSeq = &[4, 4];
+
+/// ST `$2d60`: knocked upward. Two cells, holds 4 and 4. Loaded at `$11210`.
+pub const ANIM_STRUCK_UP: AnimSeq = &[4, 4];
+
+/// ST `$2d70`: the death sequence. Sixteen cells, hold 4 each. Loaded at
+/// `$f1a0`, and state 23 never leaves it -- see [`dead`].
+pub const ANIM_DEAD: AnimSeq = &[4; 16];
+
+/// What one run of the animation tail did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AnimStep {
+    /// The current cell still has frames left. ST: `$f1f2 bne`.
+    Holding,
+    /// The cursor moved to the next cell. ST: `$f1f4 addq.l #6,a1`.
+    Advanced,
+    /// The cursor reached the zero longword. ST: `$f1fc tst.l (a1); beq`, which
+    /// is where a state ends.
+    Ended,
+}
+
+/// Load a sequence and enter its first cell. ST: the three-instruction preamble
+/// every handler writes before setting `$6cae` --
+/// `lea <seq>,a1; move.w ($04,a1),$6ce2; move.l a1,$6cda`.
+pub fn enter_anim(player: &mut Player, seq: AnimSeq) {
+    player.anim_cell = 0;
+    player.anim_shown = NO_CELL;
+    player.anim_hold = seq[0];
+}
+
+/// The animation tail every handler ends in. ST `$f1c4`, faithfully in order:
+/// the frame block is copied *first* (which is what makes `$6ce4` the
+/// previous frame's cell for the next handler run), then the hold is
+/// decremented, then the cursor may advance.
+pub fn anim_tick(player: &mut Player, seq: AnimSeq) -> AnimStep {
+    // $f1ca: the copy, before anything else. Only the cell identity matters here.
+    player.anim_shown = player.anim_cell;
+
+    // $f1ee: subq.w #1,$6ce2.
+    player.anim_hold = player.anim_hold.saturating_sub(1);
+    if player.anim_hold > 0 {
+        return AnimStep::Holding;
+    }
+    // $f1f4/$f1f6: six bytes on, and reload the hold from the new cell.
+    player.anim_cell = player.anim_cell.saturating_add(1);
+    match seq.get(player.anim_cell as usize) {
+        Some(&hold) => {
+            player.anim_hold = hold;
+            AnimStep::Advanced
+        }
+        // $f1fc: the zero longword.
+        None => AnimStep::Ended,
+    }
+}
+
+/// Whether the sequence advanced since the last handler run.
+///
+/// ST `$10560`-`$10566`: `move.l (A1),D0; cmp.l $6ce4,D0; beq` -- the handler
+/// compares the cell it is about to show against the one `$f1ca` copied last
+/// frame. It is what paces a knocked-down player's vertical movement.
+#[must_use]
+pub const fn anim_advanced(player: &Player) -> bool {
+    player.anim_cell != player.anim_shown
+}
 
 /// How far ahead of the player the destination cell is probed.
 ///
@@ -190,7 +280,10 @@ fn walk(
 /// which is the `- 1` here.
 fn enter_turn(player: &mut Player) {
     player.state_index = STATE_TURN;
-    player.anim_hold = TURN_ANIM_HOLD - 1;
+    enter_anim(player, ANIM_TURN);
+    // $f292 / $f7d8: the entering tick falls straight into the tail, so the
+    // count is already down one before the frame is sampled.
+    anim_tick(player, ANIM_TURN);
 }
 
 /// State 0, the idle path inlined in `$f104` rather than reached through the
@@ -202,6 +295,17 @@ fn enter_turn(player: &mut Player) {
 /// this leaves `state_index` alone for them rather than entering a state it
 /// cannot then run. `// UNKNOWN: see bd discr-75o`.
 fn idle(player: &mut Player, input: Input) {
+    // $f11c: `tst.b $6cac; bne $f170` -- out of energy, so the idle path plays
+    // the death sequence instead and never comes back. $f1b4 also sets $6d2d,
+    // player 2's +$0d, which this crate does not model.
+    if player.down {
+        player.state_index = STATE_DEAD;
+        enter_anim(player, ANIM_DEAD);
+        // $f1b8 bra $f1c4: the tail runs on the entering tick too.
+        anim_tick(player, ANIM_DEAD);
+        return;
+    }
+
     // $f1ba: tst.b (a0); beq -> clr.b $6ca9 at $f1c0.
     if input.dir == DirBits(0) && !input.fire_edge {
         player.facing = 0;
@@ -235,10 +339,186 @@ fn idle(player: &mut Player, input: Input) {
 /// sequence runs out writes `$6caa` into `$6cae` (`$1099a`).
 fn turn(player: &mut Player) {
     player.facing = STATE_TURN;
-    match player.anim_hold.checked_sub(1) {
-        Some(0) | None => player.state_index = player.pending_state,
-        Some(left) => player.anim_hold = left,
+    // $1099a: the sequence running out is what writes $6caa into $6cae.
+    if anim_tick(player, ANIM_TURN) == AnimStep::Ended {
+        player.state_index = player.pending_state;
     }
+}
+
+/// State 11, knocked down. ST `$10554`.
+///
+/// ```text
+/// $10554  move.b #$0b,$6ca9
+/// $10560  d0 = the current cell's frame block
+/// $10562  cmp.l $6ce4,d0 ; beq $f1c4    ; unchanged -> just run the tail
+/// $1056a  cmpi.w #$02,$6ca6 ; ble       ; floor at 2
+/// $10574  subq.w #1,$6ca6               ; else sink one row
+/// ```
+///
+/// So the player sinks **one row per animation cell**, not per frame, which is
+/// why `golden.ndjson` reads 18, 17, 17, 17, 17, 16, 16, 16 across frames
+/// 63-70: the `$2d50` sequence is two cells of four frames each.
+fn struck_down(player: &mut Player) {
+    player.facing = STATE_STRUCK_DOWN;
+    if anim_advanced(player) && player.world_y > STRUCK_Y_FLOOR {
+        player.world_y -= 1;
+    }
+    // $10578 bra $f1c4: the plain tail, so the sequence ending lands on state 0.
+    if anim_tick(player, ANIM_STRUCK_DOWN) == AnimStep::Ended {
+        player.state_index = STATE_IDLE;
+    }
+    player.grid_cell = grid_cell(player.world_x, player.world_y);
+}
+
+/// State 23, out of energy. ST `$10a72`.
+///
+/// A **variant of the animation tail**, and the difference is the point: it
+/// tests for the terminator *before* copying, and on reaching it does not
+/// change state at all. It bumps `$6cab` -- the control-lockout counter -- by 3
+/// and `$6c83` by 1, and returns. So state 23 is terminal, which is what makes
+/// it the end of a round rather than another transient.
+/// `// UNKNOWN ($6c83, and what ever leaves this state): see bd discr-st8`.
+fn dead(player: &mut Player) {
+    player.facing = STATE_DEAD;
+    anim_tick(player, ANIM_DEAD);
+}
+
+/// State 12, knocked upward. ST `$1057c`, the mirror of [`struck_down`].
+///
+/// Both arms of its `cmpi.w #$19,$6ca6` add one to `$6ca6`; the `>= 25` arm
+/// (`$105a4`) then does more that is not decoded, so this models the add and
+/// stops. `// UNKNOWN: see bd discr-75o`.
+fn struck_up(player: &mut Player) {
+    player.facing = STATE_STRUCK_UP;
+    if anim_advanced(player) {
+        player.world_y += 1;
+    }
+    if anim_tick(player, ANIM_STRUCK_UP) == AnimStep::Ended {
+        player.state_index = STATE_IDLE;
+    }
+    player.grid_cell = grid_cell(player.world_x, player.world_y);
+}
+
+/// Player 1's hit test. ST `$10fd8`, called from the disc loop at `$a652`
+/// **between the integration and the write-back**, which is why it takes the
+/// three candidate coordinates and returns a possibly-modified `world_z`.
+///
+/// Only the strike -- the disc hitting the player's body -- is modelled. Two
+/// other paths through the same routine are not:
+///
+/// * **states 7..10 are the racket** (`$11030`-`$11096`): the player is
+///   swinging, the disc is caught inside a second, wider box built from
+///   `$6cc6`/`$6cc8`, and `$110a6` adds `$6cc4` to its `vel_x`. That is the
+///   path that installs the `$a71a` steering hook at `$113e2`, so decoding it
+///   is what would let `disc-core` stop being fed `disc+$12`.
+///   `// UNKNOWN: see bd discr-ovl.1`.
+/// * **the three owner-specific states** `$12`, `$13` and `$1b` (`$11012`).
+///
+/// The strike, transcribed:
+///
+/// ```text
+/// $10fd8  tst.b $6cac ; bne out          ; already down
+/// $10fe4  did the disc CROSS $6ca6 this frame, in its direction of travel?
+/// $11030  state 7..10 -> the racket path instead
+/// $110fc  x candidate inside [px - 8 + b0, px - 8 + b0 + 8 + b1]?
+/// $11118  y candidate inside [99 + b2, 99 + b2 + b3]?
+/// $11178  energy -= the disc's +$16, clamped at 0; at 0, $6cac is set
+/// $111ce  neg.w ($0a,a5) ; d2 += it ; clr.l ($12,a5)
+/// $111da  and then a state, chosen by the state it interrupted
+/// ```
+///
+/// The energy path has two bonus branches this crate does not model (`$1117c`
+/// skips the subtraction entirely when the bonus code is 4 -- a shield -- and
+/// `$11188` applies it twice when the code is 1). No trace carries a non-zero
+/// bonus code. `// UNKNOWN: see bd discr-z8m`.
+#[must_use]
+pub fn hit_test(
+    player: &mut Player,
+    disc: &mut DiscSlot,
+    x_cand: i16,
+    y_cand: i16,
+    z_before: i16,
+    z_cand: i16,
+) -> i16 {
+    // $10fd8: a player already down is not hit again.
+    if player.down {
+        return z_cand;
+    }
+
+    // $10fe4-$11008: the disc must have crossed the player's depth this frame,
+    // in the direction it is travelling. Two separate comparisons, not a range
+    // test: where it WAS on the near side and where it WILL BE on the far one.
+    let crossed = if disc.dir_kind >= 0 {
+        z_before < player.world_y && z_cand >= player.world_y
+    } else {
+        z_before > player.world_y && z_cand <= player.world_y
+    };
+    if !crossed {
+        return z_cand;
+    }
+
+    // $11030: the racket states take a different path entirely.
+    if (7..=10).contains(&player.state_index) {
+        return z_cand;
+    }
+
+    // $110fc-$1112c: the body box, whose four words come out of the current
+    // animation cell (see Player::hit_box).
+    let [b0, b1, b2, b3] = player.hit_box;
+    let left = player.world_x - 8 + b0;
+    let right = left + 8 + b1;
+    if x_cand < left || x_cand > right {
+        return z_cand;
+    }
+    let bottom = crate::disc::PLAYER_HEIGHT_REF + b2;
+    if y_cand < bottom || y_cand > bottom + b3 {
+        return z_cand;
+    }
+
+    // $11130: state $1a is a case of its own. // UNKNOWN: see bd discr-75o.
+    if player.state_index == 0x1a {
+        return z_cand;
+    }
+
+    // $1116e-$111c6: only one owner value takes damage.
+    if disc.aim == PlayerId::One {
+        player.energy -= disc.damage;
+        if player.energy < 0 {
+            player.energy = 0;
+            // $111ca st $6cac.
+            player.down = true;
+        }
+    }
+
+    // $111ce-$111d6: the disc bounces, and the bounce is applied to the
+    // candidate the disc loop is about to write back.
+    disc.dir_kind = disc.dir_kind.wrapping_neg();
+    let z = z_cand + disc.dir_kind;
+    disc.hook = crate::SteerHook::None;
+
+    match player.state_index {
+        // $111da-$11208: interrupting a walk or a turn keeps the state and only
+        // touches two fields this crate does not model ($6cce, $6cd2)...
+        1 | 2 | 3 | 4 | 0x15 | 0x16 => {
+            // ...except $11256, which forces an outgoing disc to dir_kind +1.
+            if disc.dir_kind >= 0 {
+                disc.dir_kind = 1;
+            }
+        }
+        // $11210: still travelling away -> knocked upward.
+        _ if disc.dir_kind < 0 => {
+            player.state_index = STATE_STRUCK_UP;
+            enter_anim(player, ANIM_STRUCK_UP);
+        }
+        // $11226: knocked down, and the disc leaves at exactly +1.
+        _ => {
+            player.state_index = STATE_STRUCK_DOWN;
+            enter_anim(player, ANIM_STRUCK_DOWN);
+            // $1123a: move.w #$0001,($000a,a5).
+            disc.dir_kind = 1;
+        }
+    }
+    z
 }
 
 /// Advance one player by one frame.
@@ -264,6 +544,9 @@ pub fn step(
     match player.state_index {
         STATE_IDLE => idle(player, input),
         STATE_TURN => turn(player),
+        STATE_STRUCK_DOWN => struck_down(player),
+        STATE_STRUCK_UP => struck_up(player),
+        STATE_DEAD => dead(player),
         1 => walk(player, input, tiles, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
         2 => walk(
             player,
@@ -277,11 +560,9 @@ pub fn step(
         // Opaque pass-through -- moving a field we cannot justify would only
         // make a trace comparison diverge on the fields these do not touch.
         5 => {}       // $fb6e (tests fire, btst #7,(a0) at $fb74). UNKNOWN: see bd discr-75o
-        11 => {}      // $10554. UNKNOWN: see bd discr-75o
         14 => {}      // $106b2, entered under Right+Fire. UNKNOWN: see bd discr-75o
         19 => {}      // $108f4. UNKNOWN: see bd discr-75o
         21 => {}      // $109aa. UNKNOWN: see bd discr-75o
-        23 => {}      // $10a72. UNKNOWN: see bd discr-75o
         24 => {}      // $10ac4. UNKNOWN: see bd discr-75o
         27 => {}      // $10c8a. UNKNOWN: see bd discr-75o
         31 => {}      // $10dda. UNKNOWN: see bd discr-75o
@@ -426,8 +707,8 @@ mod tests {
 
     #[test]
     fn opaque_states_move_nothing() {
-        // 0 and 20 left the list in Part 10: they are modelled now.
-        for state in [5, 11, 14, 16, 17, 19, 21, 23, 24, 27, 31] {
+        // 0, 11, 12, 20 and 23 left the list as Part 10 modelled them.
+        for state in [5, 14, 16, 17, 19, 21, 24, 27, 31] {
             let before = walking(state, 117);
             let mut p = before;
             run(&mut p, press(DirBits::LEFT), &FLOOR);

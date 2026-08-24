@@ -308,7 +308,7 @@ the project's history — now matches for 21 ticks with nothing waived at all.
 The walls, in the same order:
 
 * **63** — `players[0].world_y` at frame 64, where player 1's hit test `$10fd8`
-  puts it into state 11 and moves it. discr-ovl.1's other half.
+  puts it into state 11 and moves it. Taken down in Part 10d below.
 * **118** — `tiles[14]` at frame 119, the anomaly discr-b4q owns: a cell's type
   cleared with its hp intact. This run now goes *past* the frame-70 tile impact
   with **no `--resync` at all**, where Part 10 needed `--resync discs[0]` to
@@ -387,3 +387,99 @@ on frame 52 has `vel_y` 0; frame 52's byte is `$80`, which serves 0.
   away: it is no longer "the trace carries no input for player 2" but "player 2
   reaches 28 states this crate has no handler for". The waiver list grew 13 → 15
   for the two new fed-input rows.
+
+---
+
+# Part 10d — the hit test, and a fixture reproduced end to end
+
+`tests/fixtures/golden.ndjson` now runs **99 ticks with no divergence at all**.
+That is the first time this project has reproduced a whole trace.
+
+## The scoreboard
+
+| run | what it measures | pre-10 | 10 | 10b | 10c | **10d** |
+|---|---|---|---|---|---|---|
+| `golden --skip-waived` | everything but player 2 | 10 | 10 | 51 | 63 | **99 — the whole fixture, clean** |
+| `tile_damage --skip-waived` | the same, idle fixture | 10 | 51 | 51 | 118 | 118 |
+| `golden` (no flags) | nothing waived, nothing resynced | 0 | 0 | 0 | 21 | 21 |
+
+The first row is no longer a prefix length. It is the entire trace: player 1's
+walk, both turn transients, **both strikes**, its energy going 5 → 2 → 0, the
+death sequence, and the disc's whole flight including two serves, a floor bounce
+and two returns. `mise run core-check` still gates on the prefix length rather
+than on cleanliness, because that is what catches a regression — the number can
+only go down from here.
+
+The other two are unchanged and their walls are unchanged: the frame-119 tile
+anomaly (discr-b4q) and player 2's state 18 (discr-b6x).
+
+## What `$10fd8` turned out to be
+
+Called from the disc loop at `$a652`, **between the integration and the
+write-back** — which is the detail that makes it work. It gets the three
+candidate coordinates in registers and can put the disc back where it struck.
+
+Three findings worth separating out:
+
+**The hit box comes out of the animation.** `$6cbc`, `$6cbe`, `$6cc0` and
+`$6cc2` are four of the words `$f1ca` copies out of the current animation cell's
+frame block every frame, so the box changes shape as the sprite does — player 1
+reads `[-3, 11, -20, 18]` standing and `[-4, 11, -19, 16]` on the first frame of
+being knocked down. `$6ca4`, the constant 99 Part 9 identified as a "height
+reference", is the origin the vertical half is measured from. `disc-core` does
+not carry the frame blocks, so the box is a fed input.
+
+**`player+$76` is energy and `player+$0c` is "out".** `$11178` subtracts the
+striking disc's `+$16` — which Part 10c had just established comes from the
+thrower's `+$70` — clamps at 0, and sets `$6cac`. Player 1's 5 → 2 → 0 across
+the fixture is now a *compared* row, the 16th.
+
+**A knocked-down player sinks one row per animation cell, not per frame.**
+State 11 opens with `cmp.l $6ce4,d0; beq` — the block copied last frame against
+the cell about to show — so the vertical movement is paced by the sequence
+advancing. `$2d50` is two cells of four, which is exactly the 18, 17, 17, 17,
+17, 16, 16, 16 the fixture reads across frames 63–70.
+
+That comparison also justified generalising the animation engine: `AnimSeq`,
+`anim_cell`, `anim_shown` and `anim_tick` are now a faithful `$f1c4`, and the
+turn transient's hand-rolled countdown was rewritten in terms of them. State 23
+is a *variant* of the same tail — it tests for the terminator before copying and
+does not change state on reaching it, which is what makes being out of energy
+terminal rather than another transient.
+
+## Two orderings, both measured rather than assumed
+
+**The disc loop runs before the player update.** Part 10c had already shown the
+serve must come after the disc loop (a disc served on frame N is not integrated
+on frame N). Part 10d needs the strike to come *before* the player update, so
+that state 11's handler runs in the same tick and `world_y` moves on frame 64
+rather than 65. Both are satisfied by the ST's actual order, and switching
+`tick` to it changed none of the three numbers — which is the check that it was
+safe.
+
+**`$6da1` is written and consumed inside one VBL** (Part 10c), so player 2 is
+driven from the frame being predicted while player 1 is driven from the frame
+the tick starts at. Recorded here too because it is the single most
+counter-intuitive line in `tracecheck`.
+
+## Honest limits
+
+* **Six ST fields are fed every tick** now, up from four: `disc+$12`,
+  `disc+$10` bit 7, and `player+$3a`/`+$1c..$22`/`+$6e`/`+$70`. Every one is
+  written by code outside the loops `disc-core` models, the header line names
+  them all, and none of them is a decision — they are sprite data, an animation
+  cursor and two constants.
+* **The racket path is not modelled.** States 7..10 of `$10fd8` catch the disc
+  in a second, wider box from `$6cc6`/`$6cc8`, add `$6cc4` to its `vel_x`, and
+  install the `$a71a` steering hook at `$113e2`. That is the last thing between
+  `disc-core` and not being fed `disc+$12`, and player 2's `$c826` is its twin.
+  Neither fixture reaches it: player 1 never swings.
+* **The two bonus branches in the energy path are not modelled** — code 4 is a
+  shield (`$1117c`) and code 1 doubles the damage (`$11188`). No trace carries a
+  bonus code.
+* **99 ticks is one fixture.** The idle fixture still stops at 118 and the
+  fully-compared run at 21. A clean run on `golden` means `disc-core` is right
+  about everything that fixture does, not about everything the game does.
+* **`player+$0c` has no trace column**, so the "out" flag is produced and never
+  checked. It is only reachable after the energy row, which *is* checked, hits
+  zero — but that is an argument, not a measurement.

@@ -48,8 +48,9 @@ tag or index.
 | `discs[n].damage` | `i16` | `disc+$16` | compared |
 | `tiles[n].tile_type` | `u16` | `tile+$00` | compared |
 | `tiles[n].hp` | `i16` | `tile+$02` | compared |
+| `players[n].energy` | `i16` | `player+$76` (`$6d16`) | compared |
 
-15 compared fields.
+16 compared fields.
 
 Notes on individual rows:
 
@@ -103,6 +104,12 @@ Notes on individual rows:
 * `tiles[n].tile_type` -- `{0,1,2}`; 0 = destroyed = unwalkable, and the
   movement code `tst.w`s it as its walkability gate. `$a354` clears it when HP
   reaches 0.
+* `players[n].energy` -- **added in Part 10d.** `player+$76`, the word the
+  strike at `$11178` subtracts the striking disc's `+$16` from, clamped to 0 at
+  `$111c6`, at which point `$111ca` sets `$6cac` and the player is out. Player 1
+  reads 5, 2 and 0 across the golden fixture and `disc-core` produces all three.
+  Two bonus branches are not modelled: code 4 skips the subtraction entirely
+  (`$1117c`, a shield) and code 1 applies it twice (`$11188`).
 
 ## Waived and excluded
 
@@ -122,14 +129,15 @@ Notes on individual rows:
 | -- (what places a bonus on a cell) | -- | `tile+$02` bit 7, and `$6e3a` | waived:discr-ovl.4 |
 | -- (the bonus effects) | -- | `$6d9a`/`$6d9c`/`$6d9e`, table `$9aa2` | waived:discr-z8m |
 | -- (the far wall's tile grid) | -- | `$7596`, damaged by `$9f5e` | waived:discr-ovl.3 |
-| -- (the animation engine) | `pending_state`, `anim_hold` | `$6caa`, `$6cda`, `$6ce2` | waived:discr-75o |
+| -- (the animation engine) | `pending_state`, `anim_hold`, `anim_cell`, `anim_shown` | `$6caa`, `$6cda`, `$6ce2`, `$6ce4` | waived:discr-75o |
+| `players[n].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` | waived:discr-75o |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
 | -- (disc sub-record pointers) | -- | `disc+$1a`, `disc+$3e` | excluded:pointer |
 | -- (tile trailing long) | -- | `tile+$04` | excluded:always-zero |
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
-20 waived or excluded rows: 15 waived against a filed unknown, 5 excluded by
+21 waived or excluded rows: 16 waived against a filed unknown, 5 excluded by
 scope. **The count is unchanged from before Part 10 and that is close to the
 honest number**: five waivers were resolved and five new ones filed from what
 the answers exposed -- a second tile grid, the bonus placer, the hook installer,
@@ -176,11 +184,11 @@ Why each waiver or exclusion:
   is the one visible at the *next* sampling point, not the current one.
 * Round, scoring and win (**discr-st8**): unchanged. `GameState::default()` is
   all zeroes, deliberately not `$aa50`'s round-init state.
-* Player state semantics (**discr-75o**, **discr-rf9**): **narrowed in Part
-  10b.** Four states are modelled now -- 0 (the idle path inlined in `$f104`,
-  not a table entry: `$10e2c`'s entry 0 is null), 1 and 2 (the walks) and 20
-  (the turn transient) -- which is every state player 1 reaches in the fixtures
-  before its hit test fires. The mechanism behind all 32 is also known: each
+* Player state semantics (**discr-75o**, **discr-rf9**): **narrowed twice.**
+  Seven states are modelled -- 0 (the idle path inlined in `$f104`, not a table
+  entry: `$10e2c`'s entry 0 is null), 1 and 2 (the walks), 20 (the turn
+  transient), 11 and 12 (knocked down and up) and 23 (out of energy, terminal)
+  -- which is every state player 1 reaches anywhere in either fixture. The mechanism behind all 32 is also known: each
   handler ends in the animation tail at `$f1c4`, which counts `$6ce2` down and
   advances the six-byte sequence cursor `$6cda`, and **running off the end of a
   sequence is what changes state**. What stays waived is the other 28 handlers'

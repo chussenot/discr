@@ -373,7 +373,7 @@ pub fn disc_cell(world_x: i16, world_y: i16) -> Option<usize> {
 pub fn step(
     disc: &mut DiscSlot,
     _slot: usize,
-    players: &[Player; 2],
+    players: &mut [Player; 2],
     _tiles: &mut [Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
@@ -384,8 +384,12 @@ pub fn step(
         return;
     }
 
+    // $10fd8/$c826 read the coordinate the disc is LEAVING as well as the one
+    // it is arriving at, so keep it.
+    let z_before = disc.world_z;
+
     // $a546-$a550: the hook, before the integrate.
-    let (aim_x, aim_y) = aim_for(disc.hook, players);
+    let (aim_x, aim_y) = aim_for(disc.hook, &*players);
     if let Some(target) = aim_x {
         disc.vel_x = steer(disc.vel_x, disc.world_x, target);
     }
@@ -408,6 +412,7 @@ pub fn step(
         }
         next => disc.world_x = next,
     }
+    let disc_x_after = disc.world_x;
 
     // $a556: add.w ($08,a5),d1. Unconditional, no bound of its own.
     disc.world_y = disc.world_y.saturating_add(disc.vel_y);
@@ -450,6 +455,19 @@ pub fn step(
     // $a640-$a650: vel_y bleeds one step toward zero, AFTER the integration.
     // This is why vel_y reads 0 at every sampling point while world_y moves.
     disc.vel_y -= disc.vel_y.signum();
+
+    // $a652: player 1's hit test, still before the write-back at $a65e, which
+    // is why it can move the disc back to where it struck. $a656 is player 2's
+    // ($c826) and is not modelled -- it is the catch, and what installs the two
+    // player-2 steering hooks. // UNKNOWN: see bd discr-ovl.1.
+    disc.world_z = crate::player::hit_test(
+        &mut players[0],
+        disc,
+        disc_x_after,
+        disc.world_y,
+        z_before,
+        disc.world_z,
+    );
 }
 
 /// Serve a disc from `thrower` into the first free slot. ST `$c07a`-`$c0fa`
@@ -610,7 +628,7 @@ mod tests {
     /// frames 6-10 are this, at vel_x -2.
     #[test]
     fn world_x_integrates_by_vel_x_while_z_advances() {
-        let players = players_at(117, 63);
+        let mut players = players_at(117, 63);
         let mut disc = DiscSlot {
             vel_x: 2,
             ..flying(10, aim_y())
@@ -622,7 +640,7 @@ mod tests {
         let mut clamped = false;
         for _ in 0..Z_FAR {
             let (prev_x, prev_z) = (disc.world_x, disc.world_z);
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
             assert_eq!(disc.world_z, prev_z + 1, "z advances by dir_kind (+1)");
             if disc.world_x == X_MAX {
                 // $a58e: the only frame that does not integrate cleanly.
@@ -644,7 +662,7 @@ mod tests {
     /// nothing in this crate reactivates it (bd discr-0fm).
     #[test]
     fn the_dwell_is_an_inactive_slot_not_a_z_phase() {
-        let players = players_at(117, 63);
+        let mut players = players_at(117, 63);
         let frozen = DiscSlot {
             active: false,
             vel_x: 2,
@@ -657,7 +675,7 @@ mod tests {
         let mut events = Vec::new();
 
         for _ in 0..64 {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
             assert_eq!(disc, frozen, "an inactive record is not touched at all");
         }
         assert!(
@@ -671,7 +689,7 @@ mod tests {
     /// turn at f208.
     #[test]
     fn the_return_leg_steps_three_and_the_near_bound_turns_it_outbound() {
-        let players = players_at(117, 57);
+        let mut players = players_at(117, 57);
         let mut disc = DiscSlot {
             world_z: 53,
             dir_kind: RETURN_DIR_KIND,
@@ -683,14 +701,14 @@ mod tests {
         for expected_z in [
             50, 47, 44, 41, 38, 35, 32, 29, 26, 23, 20, 17, 14, 11, 8, 5, 2,
         ] {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
             assert_eq!((disc.world_z, disc.dir_kind), (expected_z, RETURN_DIR_KIND));
         }
 
         // f70: 2 - 3 would be -1, so $a5fe clamps -- and $a618 writes +1
         // outright rather than letting the neg.w stand, which off a -3 return
         // leg would have given +3.
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
         assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
     }
 
@@ -703,7 +721,7 @@ mod tests {
     /// the ST's condition -- see step() and bd discr-217.
     #[test]
     fn the_near_bound_governs_the_descent() {
-        let players = players_at(117, 63);
+        let mut players = players_at(117, 63);
         assert_eq!(aim_x(&players, PlayerId::Two), 44);
 
         let mut disc = DiscSlot {
@@ -715,12 +733,12 @@ mod tests {
         let mut events = Vec::new();
 
         for expected_x in [19, 17, 15, 13, 11, 9, 7, 5, 3, 1] {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
             assert_eq!((disc.world_x, disc.vel_x), (expected_x, -2), "{disc:?}");
         }
 
         // f11: the floor clamps and flips, and only then is the disc steered.
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
         assert_eq!((disc.world_x, disc.vel_x), (0, 2));
     }
 
@@ -751,7 +769,7 @@ mod tests {
     /// world (67, 81) on a -3 return leg and cell 6 goes (1,1) -> (0,0).
     #[test]
     fn the_near_bound_damages_the_cell_the_disc_is_over() {
-        let players = players_at(117, 63);
+        let mut players = players_at(117, 63);
         let mut disc = DiscSlot {
             world_z: 2,
             dir_kind: RETURN_DIR_KIND,
@@ -765,7 +783,7 @@ mod tests {
         };
         let mut events = Vec::new();
 
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
         assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
         assert_eq!(
             tiles[6],
@@ -789,7 +807,7 @@ mod tests {
     /// the whole of the retracted "vel_y is inert" story.
     #[test]
     fn the_two_player_two_hooks_differ_only_in_the_vertical_axis() {
-        let players = players_at(117, 63);
+        let mut players = players_at(117, 63);
         assert_eq!(aim_for(SteerHook::AtP2Wide, &players), (Some(59), None));
         assert_eq!(aim_for(SteerHook::AtP2Deep, &players), (Some(44), Some(83)));
 
@@ -804,7 +822,7 @@ mod tests {
             ..flying(0, 81)
         };
         for n in 1..=10 {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
             assert_eq!((disc.world_x, disc.vel_x), (2 * n, 2), "{disc:?}");
             assert_eq!((disc.world_y, disc.vel_y), (81, 0), "$a7d8 is X only");
         }
@@ -812,7 +830,7 @@ mod tests {
         // f22 -> f24 under $a816: world_y climbs to the aim and stays.
         disc.hook = SteerHook::AtP2Deep;
         for expected_y in [82, 83, 83, 83] {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
             assert_eq!(disc.world_y, expected_y, "{disc:?}");
             assert_eq!(disc.vel_y, 0, "$a640 decays vel_y before the sample");
         }
@@ -823,7 +841,7 @@ mod tests {
     /// on the aim point at vel_x 2 and f34 has it one further on at vel_x 1.
     #[test]
     fn step_steers_at_player_two_and_decays_on_the_aim_point() {
-        let players = players_at(117, 63);
+        let mut players = players_at(117, 63);
         let mut disc = DiscSlot {
             vel_x: 2,
             world_z: 31,
@@ -833,7 +851,7 @@ mod tests {
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
         assert_eq!((disc.world_x, disc.vel_x), (45, 1));
     }
 
@@ -845,7 +863,7 @@ mod tests {
     /// ST guard $a600 bpl on d2 is undecoded -- see bd discr-217.
     #[test]
     fn world_x_clamps_at_zero_and_flips_the_velocity() {
-        let players = players_at(117, 63);
+        let mut players = players_at(117, 63);
         let mut disc = DiscSlot {
             vel_x: -2,
             ..flying(1, 81)
@@ -853,12 +871,12 @@ mod tests {
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
         assert_eq!((disc.world_x, disc.vel_x), (0, 2), "clamped, then negated");
         // dir_kind rides through untouched: the fixture holds flag = 1.
         assert_eq!(disc.dir_kind, SERVE_DIR_KIND);
 
-        step(&mut disc, 0, &players, &mut tiles, &mut events);
+        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
         assert_eq!((disc.world_x, disc.vel_x), (2, 2), "and away it goes");
     }
 
@@ -869,7 +887,7 @@ mod tests {
     #[test]
     fn there_is_no_ceiling() {
         // aim 133, above the whole run: the clamp holds vel_x at +2.
-        let players = players_at(117, 152);
+        let mut players = players_at(117, 152);
         let mut disc = DiscSlot {
             vel_x: 2,
             ..flying(110, 81)
@@ -878,7 +896,7 @@ mod tests {
         let mut events = Vec::new();
 
         for _ in 0..8 {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
         }
         assert_eq!((disc.world_x, disc.vel_x), (126, 2));
     }
@@ -886,7 +904,7 @@ mod tests {
     /// The other half of the invariant: z frozen => x frozen (17/17).
     #[test]
     fn an_inactive_slot_is_frozen() {
-        let players = players_at(152, 8);
+        let mut players = players_at(152, 8);
         let mut disc = DiscSlot {
             active: false,
             world_x: 40,
@@ -895,7 +913,7 @@ mod tests {
         };
         let before = disc;
         let mut tiles = [Tile::default(); TILE_CELLS];
-        step(&mut disc, 0, &players, &mut tiles, &mut Vec::new());
+        step(&mut disc, 0, &mut players, &mut tiles, &mut Vec::new());
         assert_eq!(disc, before);
     }
 
@@ -940,13 +958,13 @@ mod tests {
     #[test]
     fn step_leaves_world_y_and_vel_y_alone() {
         assert_eq!(aim_y(), 83);
-        let players = players_at(117, 8);
+        let mut players = players_at(117, 8);
         let mut disc = flying(0, 81);
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
         for _ in 0..96 {
-            step(&mut disc, 0, &players, &mut tiles, &mut events);
+            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
             assert_eq!((disc.world_y, disc.vel_y), (81, 0), "{disc:?}");
         }
     }

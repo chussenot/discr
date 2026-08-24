@@ -478,10 +478,18 @@ static void emit_frame(FILE *out, long frame)
          * player's throw dir_kind, copied into disc+$0a; +$70 its magnitude,
          * copied into disc+$16 at $a9cc. */
         fprintf(out, "%s{\"x\":%u,\"y\":%u,\"facing\":%u,\"state\":%u,\"cell\":%u"
-                     ",\"anim\":%u,\"throw_dk\":%d,\"throw_mag\":%d}",
+                     ",\"anim\":%u,\"throw_dk\":%d,\"throw_mag\":%d"
+                     ",\"box\":[%d,%d,%d,%d],\"energy\":%d}",
                 i ? "," : "", rd16(b + 2), rd16(b + 6), ram[b + 9], ram[b + 0x0e], rd16(b + 0x10),
                 (rd16(b + 0x3a) << 16) | rd16(b + 0x3c),
-                (int16_t)rd16(b + 0x6e), (int16_t)rd16(b + 0x70));
+                (int16_t)rd16(b + 0x6e), (int16_t)rd16(b + 0x70),
+                /* +$1c..+$22 are the player's hit box, copied out of the current
+                 * animation cell's frame block every frame by $f1ca, and read
+                 * by the hit test at $110fc-$1112c.  +$76 is the energy the
+                 * strike subtracts from at $11178. */
+                (int16_t)rd16(b + 0x1c), (int16_t)rd16(b + 0x1e),
+                (int16_t)rd16(b + 0x20), (int16_t)rd16(b + 0x22),
+                (int16_t)rd16(b + 0x76));
     }
     fprintf(out, "],\"disc\":[");
     for (i = 0; i < 8; i++) {

@@ -67,20 +67,20 @@ impl GameState {
         // ST $8198: addq.w #1,$6ab4 is the VBL handler's first instruction.
         self.frame = self.frame.wrapping_add(1);
 
-        // ST $f5d0: the player state dispatch, per player.
-        for (i, p) in self.players.iter_mut().enumerate() {
-            player::step(p, inputs[i], &self.tiles, &mut events);
-        }
-
         // ST $a4ea: the disc update loop walks all 8 records.
         for slot in 0..DISC_SLOTS {
             disc::step(
                 &mut self.discs[slot],
                 slot,
-                &self.players,
+                &mut self.players,
                 &mut self.tiles,
                 &mut events,
             );
+        }
+
+        // ST $f5d0: the player state dispatch, per player.
+        for (i, p) in self.players.iter_mut().enumerate() {
+            player::step(p, inputs[i], &self.tiles, &mut events);
         }
 
         // ST $c068 / $c0fe, player 2's throw states 15 and 16. The release is

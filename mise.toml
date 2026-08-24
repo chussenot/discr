@@ -11,18 +11,21 @@ rust = "latest"
 # ---------------------------------------------------------------------------
 
 [env]
-# The measured prefix.  With docs/state-schema.md's waived rows resynced from
-# the trace, disc-core reproduces 51 ticks of the golden fixture and then stops
-# where the ST re-serves disc 0 into the same slot from inside player 2's
-# control routine (discr-b6x).  The gate is on the LENGTH of that prefix, not on
-# the run being clean: a divergence a bead owns is a boundary, and a gate that
-# is red by design gets ignored.  Raise it when the prefix grows.
-# reports/part10-report.md carries the reasoning, and scripts/oracle_diff.py
-# uses the same --min-agree idiom for the oracle's 275-frame boundary.
+# THE WHOLE FIXTURE.  With only docs/state-schema.md's waived rows resynced,
+# disc-core reproduces all 99 ticks of tests/fixtures/golden.ndjson with no
+# divergence at all -- player 1's walk, its two turn transients, both strikes,
+# the energy going 5 -> 2 -> 0, the death sequence, and the disc's whole flight
+# including two serves and a floor bounce.
 #
-# It was 10 before Part 10b (players[0].state_index went 0 -> 20 without
-# disc-core) and 51 before the serve landed.
-TRACE_MIN_AGREE = "63"
+# The gate is still on the LENGTH of the matching prefix rather than on the run
+# being clean, because that is what catches a regression: this number can only
+# go down.  reports/part10-report.md carries the reasoning, and
+# scripts/oracle_diff.py uses the same --min-agree idiom for the oracle's
+# 275-frame boundary.
+#
+# 10 before Part 10, 51 after the state machine, 63 after the serve, 99 after
+# the hit test.
+TRACE_MIN_AGREE = "99"
 GOLDEN = "tests/fixtures/golden.ndjson"
 
 # The second gate.  tests/fixtures/tile_damage.ndjson is the idle fixture, so
