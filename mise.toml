@@ -65,7 +65,7 @@ depends = ["oracle"]
 run = "./scripts/oracle_check.sh"
 
 [tasks.core-check]
-description = "The phase gate: fmt + clippy + tests + tracecheck on the golden fixture"
+description = "The phase gate: fmt + clippy + tests + four tracecheck runs over both fixtures"
 run = [
   "cargo fmt --check",
   "cargo clippy --all-targets -- -D warnings",
@@ -84,7 +84,7 @@ run = [
 ]
 
 [tasks.tracecheck-deep]
-description = "Both fixtures with nothing waived: the strictest measurement, not a gate"
+description = "Both fixtures with nothing waived -- golden is clean; tile_damage stops at the smash"
 run = [
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN",
   "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE",

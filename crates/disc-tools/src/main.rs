@@ -62,6 +62,11 @@ const SCHEMA_COMPARED: usize = 18;
 const SCHEMA_WAIVED: usize = 17;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
+/// The trace a bare invocation replays: the committed golden fixture, which is
+/// the one `mise run core-check` gates on first and the only one guaranteed to
+/// be present in a clean clone.
+const DEFAULT_TRACE: &str = "tests/fixtures/golden.ndjson";
+
 /// Compared rows a trace may carry no column for; see [`Frame`].
 ///
 /// Part 10 added `vy` and `dmg` to the oracle's emitter, so a freshly generated
@@ -95,7 +100,10 @@ const JOY_FIRE_BIT: u8 = 0x80;
     about = "Replay an ST trace against disc-core and report the first divergence."
 )]
 struct Cli {
-    /// NDJSON trace to replay (e.g. tests/fixtures/golden.ndjson).
+    /// NDJSON trace to replay. Defaults to the golden fixture, so a bare
+    /// `cargo run -p disc-tools` replays it rather than failing on a missing
+    /// argument -- the run's own header always says which trace it read.
+    #[arg(default_value = DEFAULT_TRACE)]
     trace: PathBuf,
     /// Stop after this many ticks instead of running the whole trace.
     #[arg(long, value_name = "N")]
@@ -764,7 +772,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     } else {
         println!(
-            "  waived rows: COMPARED anyway (the default), so {}* ({}) stops the run on\n               its first tick -- it cannot match. --skip-waived resyncs waived rows\n               from the trace instead and reports the first divergence among the\n               compared rows.",
+            "  waived rows: COMPARED anyway -- the default, and since Part 10j it is\n               the interesting mode: {}* ({}) reproduces the whole golden fixture.\n               --skip-waived resyncs them from the trace instead, which is now a\n               weaker statement rather than a more permissive one.",
             WAIVED[0].0, WAIVED[0].1
         );
     }
@@ -775,7 +783,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     }
     println!(
-        "  disc inputs fed each tick, never modelled: disc+$12 (the steering hook,\n         \x20              discr-ovl.1) and disc+$10 bit 7 (whether the ST simulates the\n         \x20              record at all, discr-0fm)"
+        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt). NOTHING on the disc side."
     );
     println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",

@@ -1,4 +1,7 @@
 [package]
+# A bare `cargo run` should be unambiguous rather than depending on this crate
+# having exactly one binary.
+default-run = "tracecheck"
 name = "disc-tools"
 description = "Trace tooling for disc-core: tracecheck replays an ST trace and reports the first divergence."
 version.workspace = true

@@ -17,14 +17,31 @@ the field-by-field contract between `disc-core` and a trace, and
 
 ## The two gates
 
-    mise run oracle-check      # oracle vs Hatari, differential
-    mise run core-check      # fmt + clippy + tests + tracecheck on the golden fixture
+    mise run oracle-check    # oracle vs Hatari, differential
+    mise run core-check      # fmt + clippy + tests + four tracecheck runs
+    cargo run --release      # a bare tracecheck over the golden fixture
 
-Both are green today. Neither is green *clean*: each gates on a **measured
-prefix** via `--min-agree` rather than on zero divergence, because both
-divergences are understood and owned by a bead, and a gate that is red by
-design gets ignored. `reports/oracle-report.md` and `reports/core-report.md`
-each say where their number came from and when to raise it.
+Both are green today, and `core-check`'s four runs are three clean and one
+prefix-gated:
+
+| run | result |
+|---|---|
+| `golden --skip-waived` | **clean** — 99 of 99 ticks, no divergence |
+| `tile_damage --skip-waived` | **clean** — 214 of 214 |
+| `golden`, nothing waived at all | **clean** — 99 of 99, both players |
+| `tile_damage`, nothing waived | 161 of 214, stopping at player 2's running smash |
+
+The last one still gates on a **measured prefix** via `--min-agree` rather than
+on zero divergence, because its divergence is understood and owned by a bead,
+and a gate that is red by design gets ignored. The three clean runs are gated
+the same way, so the number can only ever go down — which is what catches a
+regression. `reports/part10-report.md` has the history of every one of those
+numbers; `reports/core-report.md` is the older account and says at the top what
+Part 10 superseded.
+
+`oracle-check` is prefix-gated for a different and permanent reason: the oracle
+and Hatari agree byte-for-byte for a bounded window, and
+`reports/oracle-report.md` says why.
 
 ## What you need installed
 
