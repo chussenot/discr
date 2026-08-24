@@ -76,3 +76,11 @@ New per-frame columns: `joy_6c59`, `ai_6da1`, `mode_6da0`, `bonus_6d9a`.
 
 With `dmg` present, `tracecheck` compares all 15 of `docs/state-schema.md`'s
 compared rows and says so in its header instead of naming missing columns.
+
+## Regenerated again for Part 10b-d
+
+Same seed, same programme, more columns, and every pre-existing column verified
+byte-identical again. Added per player: `anim` (`player+$3a`, the animation
+sequence cursor the serve gates on), `throw_dk` / `throw_mag` (`+$6e` / `+$70`,
+the dir_kind and damage that player's throws carry), `box` (`+$1c`..`+$22`, the
+hit box, copied out of the current animation cell) and `energy` (`+$76`).
