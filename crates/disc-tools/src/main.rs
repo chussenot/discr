@@ -57,7 +57,7 @@ use disc_core::{DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, TILE_CE
 use serde::Deserialize;
 
 /// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
-const SCHEMA_COMPARED: usize = 17;
+const SCHEMA_COMPARED: usize = 18;
 /// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
 const SCHEMA_WAIVED: usize = 16;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
@@ -200,6 +200,12 @@ struct TracePlayer {
     /// `player+$12`, how far ahead this player reaches for a disc. Part 10f.
     #[serde(default)]
     reach: i16,
+    /// `player+$6a`, how many discs this player has in play. Part 10g.
+    #[serde(default)]
+    discs_out: i16,
+    /// `player+$6c`, the cap on that count. Part 10g.
+    #[serde(default)]
+    disc_cap: i16,
 }
 
 #[derive(Deserialize)]
@@ -273,6 +279,7 @@ impl Frame {
         Input {
             dir: DirBits(self.joy_6c58 & JOY_DIR_MASK),
             fire_edge: self.joy_6c58 & JOY_FIRE_BIT != 0 && prev & JOY_FIRE_BIT == 0,
+            fire_held: self.joy_6c58 & JOY_FIRE_BIT != 0,
         }
     }
 
@@ -294,6 +301,7 @@ impl Frame {
         Input {
             dir: DirBits(self.ai_6da1 & JOY_DIR_MASK),
             fire_edge: self.ai_6da1 & JOY_FIRE_BIT != 0 && prev & JOY_FIRE_BIT == 0,
+            fire_held: self.ai_6da1 & JOY_FIRE_BIT != 0,
         }
     }
 
@@ -327,6 +335,9 @@ impl Frame {
                 hit_box: t.hit_box,
                 energy: t.energy,
                 reach: t.reach,
+                discs_out: t.discs_out,
+                disc_cap: t.disc_cap,
+                round_over: false,
                 down: false,
             };
         }
@@ -335,7 +346,9 @@ impl Frame {
                 // Part 10: `disc+$10` bit 7 is the ST's own liveness bit
                 // ($a4f0 beq / $a534 bpl).  Pre-Part-10 traces have no `act`
                 // column, and there `flag != 0` is the only proxy available.
-                active: t.act.map_or(t.flag != 0, |a| a & 0x80 != 0),
+                // `disc+$10` verbatim. A pre-Part-10 trace has no column, and
+                // there a nonzero dir_kind is the only liveness proxy going.
+                active: t.act.unwrap_or(if t.flag != 0 { 0xff } else { 0 }),
                 // `disc+$11`. Which byte value names which player is not
                 // settled -- every trace reads 0 -- so 0 maps to One and
                 // anything else to Two, and the row stays waived.
@@ -450,6 +463,10 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
         // also what disc-core starts it at, so comparing it there is a no-op
         // rather than a false failure.
         push(format!("discs[{n}].vel_y"), e.vy.into(), g.vel_y.into());
+        // Part 10g: disc+$10, whose whole life disc-core models now.
+        if let Some(act) = e.act {
+            push(format!("discs[{n}].active"), act.into(), g.active.into());
+        }
         // Part 10f: disc+$12, which disc-core installs itself now.
         if let Some(raw) = e.hook {
             push(
@@ -508,9 +525,6 @@ fn is_player_two(field: &str) -> bool {
 /// every tick for the same reason the joystick byte is, and the run says so in
 /// its header. `// UNKNOWN: see bd discr-ovl.1` and `bd discr-0fm`.
 fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
-    for (s, w) in state.discs.iter_mut().zip(&want.discs) {
-        s.active = w.active;
-    }
     // `player+$3a` is driven by the animation engine ($f1c4), which this crate
     // does not model, and the serve gates on its exact value ($c06e). Feeding
     // it means the SERVE ITSELF is not fed: the trigger is the ST's own, and
@@ -529,6 +543,8 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
         // `disc+$12` -- which changed 30 times across the two fixtures -- for
         // this constant.
         s.reach = w.reach;
+        // `player+$6c` is never written anywhere in the analysed image either.
+        s.disc_cap = w.disc_cap;
     }
 }
 
@@ -579,6 +595,9 @@ fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool)
         }
         if skip(&format!("discs[{n}].hook")) {
             s.hook = w.hook;
+        }
+        if skip(&format!("discs[{n}].active")) {
+            s.active = w.active;
         }
         if skip(&format!("discs[{n}].damage")) {
             s.damage = w.damage;
@@ -873,7 +892,7 @@ mod tests {
         assert_eq!(
             names.len(),
             // Part 10 added discs[n].vel_y and discs[n].damage, so 7 per disc.
-            1 + 2 * 6 + DISC_SLOTS * 8 + TILE_CELLS * 2,
+            1 + 2 * 6 + DISC_SLOTS * 9 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
     }
@@ -906,14 +925,15 @@ mod tests {
         assert_eq!(f.len() - 1, 99, "the fixture is 100 frames");
     }
 
-    /// Resyncing is opt-in, and it buys much less than it used to: with player
-    /// 2's own input byte fed from `$6da1` and its states 0, 1, 2, 18 and 20
-    /// modelled, the default run -- nothing waived, nothing resynced, every
-    /// compared row of both players -- reaches **39** ticks. It stops where
-    /// state 18's handler steps player 2 six units left into a throw
-    /// (`$c1d0`), which needs the two disc counters this crate does not model.
+    /// Resyncing is opt-in, and it buys much less than it used to: the default
+    /// run -- nothing waived, nothing resynced, every compared row of both
+    /// players -- reaches **58** ticks. It stops where player 2 leaves state 17
+    /// for state 0, which happens when the animation sequence that state 18's
+    /// commit loaded runs out, and this crate does not carry the sequence
+    /// tables (discr-75o).
     ///
-    /// It stopped on frame 1 before Part 10c, and on frame 22 before 10f.
+    /// It stopped on frame 1 before Part 10c, on 22 before 10f, and on 40
+    /// before state 18's handler landed.
     #[test]
     fn without_skip_waived_the_run_still_stops_on_player_two() {
         let f = golden();
@@ -925,7 +945,7 @@ mod tests {
             feed_disc_inputs(&mut state, &prev.seed());
             state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
             if let Some(d) = first_divergence(expected, &state) {
-                assert_eq!(matched, 39, "matched ticks with nothing waived");
+                assert_eq!(matched, 58, "matched ticks with nothing waived");
                 assert!(is_player_two(&d.field), "{}", d.field);
                 return;
             }

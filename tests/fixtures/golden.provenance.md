@@ -91,3 +91,9 @@ Two more additive columns, old ones verified byte-identical again: `banks`
 (**both** 16-cell tile banks, `$7596` then `$7616`, 32 entries -- the 17-cell
 `grid` above predates the discovery that a bank is 16 and is kept so earlier
 fixtures still load) and per-player `reach` (`player+$12`).
+
+## Regenerated for Part 10g
+
+Three more additive per-player columns, old ones verified identical again:
+`discs_out` (`player+$6a`, how many discs that player has in play) and
+`disc_cap` (`player+$6c`, the cap state 18 refuses to throw past).

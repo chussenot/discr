@@ -199,6 +199,33 @@ pub const THROW_STATES: [(u8, u32, i16, i16); 4] = [
 /// ST `$c0c4` / `$c158`: `move.b #$11,$6d2e`.
 pub const STATE_AFTER_THROW: u8 = 0x11;
 
+/// The value `$a9b8`'s `st` puts in [`DiscSlot::active`].
+pub const ACTIVE_LIVE: u8 = 0xff;
+
+/// What a catch adds to it. ST `$caae` / `$cb1e`: `addq.b #4,($10,a5)`, which
+/// off `$ff` wraps to 3 and starts the countdown.
+pub const ACTIVE_RETIRE_STEP: u8 = 4;
+
+/// Count every retired slot down one. ST `$012582`-`$012594`, in the render
+/// pass rather than in `$a4ea`:
+///
+/// ```text
+/// $012582  tst.b ($10,a5)
+/// $012586  bmi $12596          ; live -> draw it
+/// $012588  subq.b #1,($10,a5)  ; retired -> one frame closer to free
+/// ```
+///
+/// A free slot is skipped by the caller, so 0 does not wrap back to `$ff`.
+/// Called after the disc loop, which is why a disc caught on tick N already
+/// reads 2 rather than 3 when tick N is sampled.
+pub fn retire_tick(discs: &mut [DiscSlot]) {
+    for d in discs {
+        if d.occupied() && !d.simulated() {
+            d.active -= 1;
+        }
+    }
+}
+
 /// The disc's X aim point for the player it is homing on.
 ///
 /// ST `$a71a` reads `$6ca2 - $13` for player 1. Player 2 has *two* observed
@@ -397,7 +424,7 @@ pub fn step(
     // $a4f0 tst.b ($10,a5) beq / $a534 tst.b bpl: a slot the ST is not
     // simulating is not touched -- no integration, no decay, nothing. This is
     // the whole of the "dwell". // UNKNOWN (what retires it): see bd discr-0fm.
-    if !disc.active {
+    if !disc.simulated() {
         return;
     }
 
@@ -412,6 +439,18 @@ pub fn step(
     }
     if let Some(target) = aim_y {
         disc.vel_y = steer_y(disc.vel_y, disc.world_y, target);
+    }
+
+    // $a55e-$a578: the owner branch. For one owner value the disc is retired
+    // outright when the OTHER player is out -- `$a564 tst.b $6d2d; bne $a570`
+    // then `addq.b #4,($10,a5)` and `subq.w #1,$6d8a`. That is what ends a
+    // round: every disc in play is taken off the board.
+    {
+        let holder = if disc.aim == PlayerId::One { 1 } else { 0 };
+        if players[holder].round_over || players[holder].down {
+            disc.active = disc.active.wrapping_add(ACTIVE_RETIRE_STEP);
+            players[holder].discs_out = players[holder].discs_out.saturating_sub(1);
+        }
     }
 
     // $a552: d0 = world_x + vel_x, then $a58e/$a5a6 bound it. Both bounds do
@@ -489,7 +528,14 @@ pub fn step(
     // -- the part that installs the steering hooks and puts player 2 into state
     // 18 or 27. Its strike and racket halves mirror $10fd8's and are not.
     // // UNKNOWN: see bd discr-b6x.
-    crate::player::anticipate(&mut players[1], disc, disc_x_after, disc.world_z, tiles_far);
+    disc.world_z = crate::player::p2_hit_test(
+        &mut players[1],
+        disc,
+        disc_x_after,
+        z_before,
+        disc.world_z,
+        tiles_far,
+    );
 }
 
 /// Serve a disc from `thrower` into the first free slot. ST `$c07a`-`$c0fa`
@@ -541,7 +587,7 @@ pub fn serve(
     events: &mut Vec<Event>,
 ) -> Option<usize> {
     // $a9a2: the first record whose +$10 is zero.
-    let slot = discs.iter().position(|d| !d.active)?;
+    let slot = discs.iter().position(|d| !d.occupied())?;
 
     let dir_kind = thrower.throw_dir_kind;
 
@@ -557,8 +603,11 @@ pub fn serve(
         0
     };
 
+    // $a9aa: addq.w #$01,$6d8a.
+    // (the thrower's count is bumped by the caller, which owns the Player)
     discs[slot] = DiscSlot {
-        active: true,
+        // $a9b8: st ($10,a1).
+        active: ACTIVE_LIVE,
         aim: PlayerId::One,
         hook: SteerHook::None,
         world_x: thrower.world_x + x_offset,
@@ -648,7 +697,8 @@ mod tests {
 
     fn flying(world_x: i16, world_y: i16) -> DiscSlot {
         DiscSlot {
-            active: true,
+            // $a9b8: st ($10,a1).
+            active: ACTIVE_LIVE,
             world_x,
             world_y,
             dir_kind: SERVE_DIR_KIND,
@@ -705,7 +755,7 @@ mod tests {
     fn the_dwell_is_an_inactive_slot_not_a_z_phase() {
         let mut players = players_at(117, 63);
         let frozen = DiscSlot {
-            active: false,
+            active: 0,
             vel_x: 2,
             world_z: 54,
             hook: SteerHook::AtP2Deep,
@@ -1047,7 +1097,7 @@ mod tests {
     fn an_inactive_slot_is_frozen() {
         let mut players = players_at(152, 8);
         let mut disc = DiscSlot {
-            active: false,
+            active: 0,
             world_x: 40,
             vel_x: 2,
             ..DiscSlot::default()
@@ -1163,6 +1213,7 @@ mod tests {
         let input = Input {
             dir: DirBits::RIGHT,
             fire_edge: false,
+            fire_held: false,
         };
 
         assert_eq!(
@@ -1170,7 +1221,7 @@ mod tests {
             Some(0)
         );
         let d = discs[0];
-        assert!(d.active);
+        assert!(d.simulated());
         assert_eq!((d.world_x, d.world_y, d.world_z), (48, 81, 53));
         assert_eq!((d.vel_x, d.vel_y, d.dir_kind), (2, 0, -3));
         assert_eq!(d.damage, 3, "$a9cc copies the thrower's +$70");
@@ -1189,11 +1240,12 @@ mod tests {
             ..Player::default()
         };
         let mut discs = [DiscSlot::default(); 8];
-        discs[0].active = true;
+        discs[0].active = ACTIVE_LIVE;
         let mut events = Vec::new();
         let input = Input {
             dir: DirBits::RIGHT,
             fire_edge: false,
+            fire_held: false,
         };
 
         assert_eq!(
@@ -1223,6 +1275,7 @@ mod tests {
                 Input {
                     dir: DirBits::LEFT,
                     fire_edge: false,
+                    fire_held: false,
                 },
                 0,
                 1,
@@ -1246,6 +1299,7 @@ mod tests {
             Input {
                 dir: DirBits::UP,
                 fire_edge: false,
+                fire_held: false,
             },
             0,
             1,

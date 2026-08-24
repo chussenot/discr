@@ -50,8 +50,9 @@ tag or index.
 | `tiles[n].hp` | `i16` | `tile+$02` | compared |
 | `players[n].energy` | `i16` | `player+$76` (`$6d16`) | compared |
 | `discs[n].hook` | `SteerHook` | `disc+$12` | compared |
+| `discs[n].active` | `u8` | `disc+$10` | compared |
 
-17 compared fields.
+18 compared fields.
 
 Notes on individual rows:
 
@@ -118,7 +119,6 @@ Notes on individual rows:
 | --- | --- | --- | --- |
 | `players[1].*` (all 5 fields) | as `players[0]` | `$6d20` + `$02`/`$06`/`$09`/`$0e`/`$10` | waived:discr-b6x |
 | -- (the opponent's policy) | -- | `$d2cc`, the rule table at `$efa8` | waived:discr-b6x |
-| `discs[n].active` | `bool` | `disc+$10` bit 7 | waived:discr-0fm |
 | `discs[n].aim` | `PlayerId` | `disc+$11` | waived:discr-ovl.2 |
 | `players[n].anim_cursor` | `u32` | `player+$3a` | waived:discr-75o |
 | `players[n].throw_dir_kind` / `throw_damage` | `i16` | `player+$6e` / `+$70` | waived:discr-qqt |
@@ -131,6 +131,7 @@ Notes on individual rows:
 | -- (the animation engine) | `pending_state`, `anim_hold`, `anim_cell`, `anim_shown` | `$6caa`, `$6cda`, `$6ce2`, `$6ce4` | waived:discr-75o |
 | `players[n].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` | waived:discr-75o |
 | `players[n].reach` | `i16` | `player+$12` | waived:discr-b6x |
+| `players[n].disc_cap` | `i16` | `player+$6c` | waived:discr-b6x |
 | -- (the far bank `$7596`) | -- | 16 cells of stride 8 | waived:discr-ovl.3 |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
@@ -158,15 +159,20 @@ Why each waiver or exclusion:
   itself, from `$c826`'s anticipation cascade, and both fixtures stay clean with
   the row compared rather than fed. That is 30 installs and every clear,
   reproduced frame for frame.
-* **`discs[n].active` and `aim` are MIRRORED ST FIELDS**, not
-  models. Part 10 disassembled `$a4ea`: `disc+$10` is a byte whose bit 7 says
+* **`discs[n].active` is COMPARED as of Part 10g, and discr-0fm is CLOSED.**
+  `disc+$10` is a byte with three regimes, and all four of its writers are now
+  known: `$a9b8` claims a slot, `$caae`/`$cb1e` retire it when player 2 catches
+  the disc, `$a570` retires it when the round ends, and `$012588` counts a
+  retired slot down from the render pass. The "dwell" was a caught disc.
+* **`discs[n].aim` is a MIRRORED ST FIELD**, not a
+  model. Part 10 disassembled `$a4ea`: `disc+$10` is a byte whose bit 7 says
   whether the ST simulates the record (`$a4f0 beq` free, `$a534 bpl` frozen),
   `disc+$11` is the owner the wall handlers flip, and `disc+$12` is a longword
   hook holding one of three steering routines. The old note here -- "the ST
   encoding of an unused slot is not known", "there is no possession" -- was
   wrong on both counts and is retracted.
   They stay waived because each is written by code **outside** the disc loop:
-  what retires a disc (**discr-0fm**) is not decoded, and the owner byte's
+  the owner byte's
   polarity (**discr-ovl.2**) cannot be settled because every trace reads 0 on
   every live slot -- no trace has ever seen a disc change hands. `tracecheck`
   feeds `active` in every tick, the way it feeds `$6c58`, and says so in its

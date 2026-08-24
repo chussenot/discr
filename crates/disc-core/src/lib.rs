@@ -99,6 +99,18 @@ impl GameState {
             player::step(p, inputs[i], &self.tiles, &mut events);
         }
 
+        // ST $f1b4: `st $6d2d` -- entering the death state sets the flag on the
+        // OTHER player, and the disc loop reads it to clear the board.
+        for i in 0..2 {
+            if self.players[i].state_index == player::STATE_DEAD {
+                self.players[1 - i].round_over = true;
+            }
+        }
+
+        // ST $012582: the render pass counts every retired slot down. After the
+        // disc loop, so a disc caught this tick already reads one lower.
+        disc::retire_tick(&mut self.discs);
+
         // ST $c068 / $c0fe, player 2's throw states 15 and 16. The release is
         // gated on the animation cursor reaching one exact value, which is why
         // Player::anim_cursor is carried as a raw ST pointer: it is a fed input
@@ -126,6 +138,8 @@ impl GameState {
             {
                 // $c0c4 / $c158: the thrower goes to state 17 on this frame.
                 self.players[1].state_index = disc::STATE_AFTER_THROW;
+                // $a9aa: addq.w #$01,$6d8a.
+                self.players[1].discs_out += 1;
             }
         }
 

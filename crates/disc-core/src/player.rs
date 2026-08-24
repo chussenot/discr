@@ -390,6 +390,33 @@ fn dead(player: &mut Player) {
     anim_tick(player, ANIM_DEAD);
 }
 
+/// State 18, stepping across to intercept. ST `$c196`.
+///
+/// ```text
+/// $c196  move.b #$12,$6d29                    ; not modelled
+/// $c19c  if $6d5a is $4624 or $4634 -> commit, else just run the animation
+/// $c1b4  btst #$7,(a0) ; beq out              ; fire must still be HELD
+/// $c1bc  btst #$1,(a0) ; bne out              ; and down must not be
+/// $c1c4  if $6d8a == $6d8c -> out             ; already at the disc cap
+/// $c1d0  subq.w #6,$6d22                      ; six units left, in one step
+/// $c1d4  animation $45f0
+/// $c1e2  move.b #$f,$6d2e                     ; and into state 15, the throw
+/// ```
+///
+/// `golden.ndjson` frames 39 -> 40 are exactly this: the cursor reaches `$4624`
+/// and player 2 goes from `x` 63 to 57, in state 15.
+fn intercept(player: &mut Player, input: Input) {
+    if player.anim_cursor != INTERCEPT_RELEASE_A && player.anim_cursor != INTERCEPT_RELEASE_B {
+        return;
+    }
+    if !input.fire_held || input.dir.has(DirBits::DOWN) || player.discs_out == player.disc_cap {
+        return;
+    }
+    player.world_x -= INTERCEPT_STEP;
+    player.grid_cell = grid_cell(player.world_x, player.world_y);
+    player.state_index = STATE_THROW_STANDING;
+}
+
 /// State 12, knocked upward. ST `$1057c`, the mirror of [`struck_down`].
 ///
 /// Both arms of its `cmpi.w #$19,$6ca6` add one to `$6ca6`; the `>= 25` arm
@@ -528,6 +555,114 @@ pub fn hit_test(
     z
 }
 
+/// ST state 17: a four-byte stub, `$1089a bra $f1c4` / `$c192 bra $ac40`. It is
+/// the only entry in either 32-state table that does not stamp `player+$09`,
+/// and the only one whose handler has no body at all.
+pub const STATE_STUB: u8 = 0x11;
+
+/// The two animation cursor values state 18 commits on. ST `$c19c` / `$c1a8`.
+pub const INTERCEPT_RELEASE_A: u32 = 0x4624;
+/// The other one.
+pub const INTERCEPT_RELEASE_B: u32 = 0x4634;
+
+/// How far the intercept steps, in one move. ST `$c1d0`: `subq.w #6,$6d22`.
+pub const INTERCEPT_STEP: i16 = 6;
+
+/// The standing throw state the intercept commits into. ST `$c1e2`.
+pub const STATE_THROW_STANDING: u8 = 0x0f;
+
+/// The catch window's half-width from `$6d22`, for state 18. ST `$ca9a`.
+pub const CATCH_WIDTH_INTERCEPT: i16 = 0x1a;
+
+/// State 27's is asymmetric: `$cb0a` subtracts `$10` and `$cb14` adds `$20`.
+pub const CATCH_LOW_REACH: i16 = 0x10;
+/// The other half of state 27's window. ST `$cb14`.
+pub const CATCH_HIGH_REACH: i16 = 0x20;
+
+/// Player 2's hit test, `$c826`. Called from the disc loop at `$a656`, right
+/// after player 1's, and like it takes the candidate coordinates because it
+/// runs before the write-back.
+///
+/// Structurally it is `$10fd8` with a tail. The head is the same crossing test
+/// and the same owner check; what is different is that three of player 2's own
+/// states get a **catch** window of their own before the body box is reached:
+///
+/// ```text
+/// $c860  state $12 -> $ca96     ; the intercept's catch
+/// $c86a  state $13 -> $cad0     ; (not modelled -- no fixture reaches it)
+/// $c874  state $1b -> $cb06     ; the reach's catch
+/// $c87e  states 7..10 -> the racket path, not modelled
+/// $c934  otherwise the body box, the mirror of $110fc, not modelled
+/// ```
+///
+/// A catch is two instructions: `addq.b #4,($10,a5)` retires the disc and
+/// `subq.w #1,$6d8a` drops the thrower's live count. Missing it
+/// (`$cab8`/`$cb28`) drops through to the strike instead -- which is the
+/// game: reach for a disc, miss, and it hits you.
+///
+/// Returns the possibly-modified `world_z`. Only the catch and the anticipation
+/// tail are modelled; everything else returns the candidate unchanged.
+/// `// UNKNOWN: see bd discr-b6x`.
+pub fn p2_hit_test(
+    player: &mut Player,
+    disc: &mut DiscSlot,
+    x_cand: i16,
+    z_before: i16,
+    z_cand: i16,
+    own_bank: &[Tile; TILE_CELLS],
+) -> i16 {
+    // $c826: a player already out does not catch.
+    if player.down {
+        return z_cand;
+    }
+
+    // $c82e-$c856: exactly $10fd8's crossing test against its own depth.
+    let crossed = if disc.dir_kind >= 0 {
+        z_before < player.world_y && z_cand >= player.world_y
+    } else {
+        z_before > player.world_y && z_cand <= player.world_y
+    };
+    if !crossed {
+        // $cb2c: no crossing this frame, so try to anticipate one.
+        anticipate(player, disc, x_cand, z_cand, own_bank);
+        return z_cand;
+    }
+
+    // $c85a-$c87a: the owner check, then the three catch states.
+    if disc.aim == PlayerId::One {
+        // $ca96 (state 18) and $cb06 (state 27), two windows on the disc's X.
+        let caught = match player.state_index {
+            STATE_INTERCEPT => {
+                let lo = player.world_x - CATCH_WIDTH_INTERCEPT;
+                (lo..=lo + CATCH_WIDTH_INTERCEPT).contains(&x_cand)
+            }
+            STATE_REACH => {
+                let lo = player.world_x - CATCH_LOW_REACH;
+                (lo..=lo + CATCH_HIGH_REACH).contains(&x_cand)
+            }
+            // $cad0 is state 19's, and the strike path is $c934. Neither is
+            // modelled, and neither fixture reaches either.
+            _ => return z_cand,
+        };
+        if caught {
+            // $caae / $cb1e, then $cab2 / $cb22.
+            disc.active = disc.active.wrapping_add(crate::disc::ACTIVE_RETIRE_STEP);
+            player.discs_out = player.discs_out.saturating_sub(1);
+        } else {
+            // $cab8 / $cb28: the miss goes on to the strike, which is not
+            // modelled, but state 18's miss does set state 17 first ($cac6).
+            if player.state_index == STATE_INTERCEPT {
+                player.state_index = STATE_AFTER_CATCH;
+            }
+        }
+    }
+    z_cand
+}
+
+/// The state a missed intercept drops into. ST `$cac6`: `move.b #$11,$6d2e` --
+/// the same state a completed throw goes to, which is [`STATE_STUB`].
+pub const STATE_AFTER_CATCH: u8 = STATE_STUB;
+
 /// ST state 18: stepping across to intercept (`$c6ec` entry 18, `$c196`).
 pub const STATE_INTERCEPT: u8 = 0x12;
 
@@ -576,6 +711,7 @@ pub fn anticipate(
     own_bank: &[Tile; TILE_CELLS],
 ) {
     // $cb2c-$cb4e: four gates, all of them exits.
+    // (Reached from p2_hit_test, or directly when the crossing test fails.)
     if player.state_index != STATE_IDLE || disc.dir_kind <= 0 || disc.aim != PlayerId::One {
         return;
     }
@@ -674,14 +810,22 @@ pub fn step(
     tiles: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
-    // Every handler in the table opens by stamping its own index into $6ca9 --
+    // Almost every handler opens by stamping its own index into player+$09 --
     // $f5e2 writes 1, $f7f6 writes 2, $10554 writes $0b, $1057c writes $0c,
     // $1094a writes $14, $109aa writes $15, $10a72 writes $17, $10ac4 writes
-    // $18. So the stamp is universal and can be done here, once, for all 32
-    // entries including the ones whose behaviour is not modelled. Only state 0
-    // is different: its inline path clears $6ca9 rather than stamping it, and
-    // only when the joystick reads zero ($f1c0).
-    if player.state_index != STATE_IDLE {
+    // $18, and player 2's $c196 writes $12 into $6d29. So the stamp is done
+    // here, once, for all 32 entries including the ones whose behaviour is not
+    // modelled. Two states are different, and both are measured rather than
+    // assumed:
+    //
+    // * state 0 is the inline idle path, which *clears* the byte, and only when
+    //   the joystick reads zero ($f1c0);
+    // * state 17's handler is a four-byte stub that does nothing but jump to
+    //   the shared animation tail -- `$1089a bra $f1c4` for player 1 and
+    //   `$c192 bra $ac40` for player 2 -- so it never stamps. Comparing each
+    //   table entry with the next handler in address order finds exactly one
+    //   such stub per player, and it is state 17 in both.
+    if player.state_index != STATE_IDLE && player.state_index != STATE_STUB {
         player.facing = player.state_index;
     }
 
@@ -693,6 +837,7 @@ pub fn step(
         STATE_STRUCK_DOWN => struck_down(player),
         STATE_STRUCK_UP => struck_up(player),
         STATE_DEAD => dead(player),
+        STATE_INTERCEPT => intercept(player, input),
         1 => walk(player, input, tiles, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
         2 => walk(
             player,
@@ -741,6 +886,7 @@ mod tests {
         Input {
             dir,
             fire_edge: false,
+            fire_held: false,
         }
     }
 
@@ -844,6 +990,7 @@ mod tests {
             Input {
                 dir: DirBits::LEFT,
                 fire_edge: true,
+                fire_held: true,
             },
             &FLOOR,
             &mut Vec::new(),
@@ -853,10 +1000,11 @@ mod tests {
 
     #[test]
     fn opaque_states_move_nothing() {
-        // 0, 11, 12, 20 and 23 left the list as Part 10 modelled them. What is
-        // left changes exactly one field: every handler stamps $6ca9 with its
-        // own index as its first instruction, modelled or not.
-        for state in [5, 14, 16, 17, 19, 21, 24, 31] {
+        // 0, 11, 12, 18, 20 and 23 left the list as Part 10 modelled them. What
+        // is left changes exactly one field: every handler stamps $6ca9 with
+        // its own index as its first instruction, modelled or not -- with 17
+        // the single exception, a four-byte stub that stamps nothing.
+        for state in [5, 14, 16, 19, 21, 24, 31] {
             let before = walking(state, 117);
             let mut p = before;
             run(&mut p, press(DirBits::LEFT), &FLOOR);
@@ -867,6 +1015,12 @@ mod tests {
                 "state {state} must otherwise be a pass-through"
             );
         }
+
+        // $1089a / $c192: state 17's handler is `bra` and nothing else.
+        let before = walking(STATE_STUB, 117);
+        let mut p = before;
+        run(&mut p, press(DirBits::LEFT), &FLOOR);
+        assert_eq!(p, before, "the state-17 stub touches nothing at all");
     }
 
     /// golden.ndjson f10-f14, the whole start-walking sequence. Idle with Left

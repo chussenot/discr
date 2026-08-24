@@ -687,3 +687,111 @@ analysed image.
   nothing yet. discr-ovl.3.
 * **Player 1's racket path is still unreachable** in both fixtures. `$113e2`
   fires zero times in 215 frames.
+
+---
+
+# Part 10g — the last disc-side fed input, and discr-0fm
+
+Both fixtures still clean, and now with `disc+$10` **produced and compared**
+instead of fed. Nothing on the disc side is supplied any more. The
+fully-compared run went **39 → 58**.
+
+## The scoreboard
+
+| run | 10e | 10f | **10g** |
+|---|---|---|---|
+| `golden --skip-waived` | 99 clean | 99 clean | **99 clean, `active` + `hook` compared** |
+| `tile_damage --skip-waived` | 214 clean | 214 clean | **214 clean, same** |
+| `golden` (no flags) | 21 | 39 | **58** |
+
+18 compared rows now. Both new ones — `discs[n].active` and `discs[n].hook` —
+were fed inputs two parts ago.
+
+## discr-0fm closed: the dwell was a caught disc
+
+Open since Part 8, and `--watch 0x6e4e 0x6e4f` answered it in one run. All four
+writers of `disc+$10`:
+
+| PC | what |
+|---|---|
+| `$a9b8` | `st` — the serve claims a free slot |
+| `$caae` / `$cb1e` | `addq.b #4` — player 2 catches it, from state 18 or 27 |
+| `$a570` | `addq.b #4` — the round ended, clear the board |
+| `$012588` | `subq.b #1` — the **render pass** counts a retired slot down |
+
+`$ff + 4` is `$03` and the countdown's first step lands in the same tick as the
+catch, so a caught disc reads 2, 1, 0 and its record never moves again. **The
+"dwell at `world_z` 54" was a disc that had been caught** — not a `world_z`
+phase, not an anomaly, nothing to do with the `$4f` bound.
+
+The countdown lives in `$012582`, the routine that draws a live disc and counts
+down a retired one. Nine phases of reading `$a4ea` were never going to find it;
+one watch did.
+
+Two more rules came with it. **Missing a catch falls through to the strike** —
+`$cab8`/`$cb28` branch on to `$c934`, the mirror of `$110fc` — so reaching for a
+disc and missing means being hit by it. And **`player+$0d` ends a round**:
+`$a564 tst.b $6d2d; bne $a570` retires every disc in play when the other player's
+flag is set, and `$f1b4` sets it three instructions after they enter the death
+state. `golden.ndjson` frame 97 is exactly that.
+
+## State 18's handler, and the one stub in 64 states
+
+`$c196` commits the intercept: on the frame the animation cursor reaches `$4624`,
+if fire is still **held** (a level, not the edge the walk handlers consume with
+`bclr`), and down is not, and the disc count has not reached its cap, step six
+units left in one move and go straight into state 15.
+
+`$6d8c` is that cap, never written anywhere in the image: **4 for player 2 and 0
+for player 1** — whose count is also 0, so player 1 can never throw from that
+state, which is consistent with it never throwing in either fixture.
+
+And a correction to Part 10f. That part said every handler stamps its own index
+into `player+$09` and stamped it for all 32 entries. Comparing each of the 64
+table entries with the next handler in address order finds exactly **one
+four-byte stub per player**, and it is state 17 in both — `$1089a bra $f1c4` and
+`$c192 bra $ac40`. It has no body and stamps nothing, which the fixtures show
+plainly: player 2's `+$09` holds 15 for all seven frames it spends in state 17
+after a throw. The universal stamp was right for 31 of 32 entries and wrong for
+the one the fixtures spend most time in.
+
+## The fed-input ledger
+
+| | 10f | 10g |
+|---|---|---|
+| `disc+$12` | produced | produced |
+| `disc+$10` | fed | **produced and compared** |
+| `player+$3a` | fed | fed — the animation cursor (discr-75o) |
+| `player+$1c..$22` | fed | fed — sprite-derived hit box (discr-75o) |
+| `player+$6e`/`+$70`/`+$12` | fed | fed — per-player constants |
+| `player+$6c` | — | fed — the disc cap, another constant |
+
+**Nothing on the disc side is fed any more.** What is left is one animation
+cursor, one block of sprite-derived box data, and four per-player constants that
+nothing in the analysed image writes.
+
+## Where the fully-compared run stops now, and why
+
+Frame 59: player 2 should leave state 17 for state 0 and `disc-core` holds it in
+17. Leaving state 17 is the shared animation tail running out, which needs the
+sequence the *entering* state loaded — `$45f0` after an intercept, `$462e` after
+a missed catch. `disc-core` carries hold counts for the four sequences
+transcribed so far and no more.
+
+That is the clear next step and it is structural rather than exploratory: give
+`Player` the sequence it is running, not just a cell index, and transcribe the
+handful of `$45xx`/`$46xx` tables the fixtures touch. Everything needed is in
+the image and readable with `--disasm`.
+
+## Honest limits
+
+* **`player+$6a` (the disc count) is produced but its four possession sites are
+  not.** `disc-core` moves it on a serve, a catch and a round end. The disc
+  loop's four possession-transfer sites (`$a5ee`-`$a5fa`, `$a630`-`$a63c`) are
+  not modelled, and no trace exercises them — no disc has ever changed hands.
+* **State 19's catch (`$cad0`) is not modelled.** No fixture reaches state 19.
+* **Player 2's strike and racket halves are not modelled**, only its catch and
+  anticipation. They mirror `$10fd8`'s, which is modelled, so this is
+  transcription work rather than discovery.
+* **Two clean fixtures are still two fixtures.** The strictest run reaches 58 of
+  99 ticks.

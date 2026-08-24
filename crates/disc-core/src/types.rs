@@ -128,6 +128,12 @@ pub struct Input {
     pub dir: DirBits,
     /// ST `$6c58` bit `$80`, as a one-frame edge (cleared by `bclr #7`).
     pub fire_edge: bool,
+    /// The same bit as a **level**, which some handlers want instead: `$c1b4
+    /// btst #$7,(a0)` in state 18 commits to a throw only while fire is still
+    /// held. The two differ because `$f606`/`$f81a` consume the bit inside the
+    /// walk handlers, so an edge is what those see and a level is what a state
+    /// reading the byte directly sees.
+    pub fire_held: bool,
 }
 
 /// A player entity record.
@@ -237,6 +243,32 @@ pub struct Player {
     /// `$111ca st $6cac` marks the player down. Player 1 reads 5 at the start of
     /// the golden fixture, 2 after the first strike and 0 after the second.
     pub energy: i16,
+    /// ST `player+$0d` (`$6cad` / `$6d2d`): set on the OTHER player when this
+    /// one runs out of energy. ST `$f1b4`: `st $6d2d`, three instructions after
+    /// player 1 enters state 23.
+    ///
+    /// The disc loop reads it: `$a564 tst.b $6d2d; bne $a570` retires every disc
+    /// in play and drops the count, so **setting it is what ends a round**.
+    /// `// UNKNOWN (what clears it): see bd discr-st8`.
+    pub round_over: bool,
+    /// ST `player+$6a` (`$6d0a` / `$6d8a`): how many discs this player has in
+    /// play.
+    ///
+    /// `$a9aa addq.w #$01,$6d8a` on a serve, `$cab2`/`$cb22 subq.w #$01` when a
+    /// catch retires one, and four more sites in the disc loop's possession
+    /// paths that this crate does not model. Player 1's is never written in
+    /// either fixture. Read by state 18's handler at `$c1c4`, which refuses to
+    /// throw when it equals `player+$6c` -- a cap that reads 4 for player 2 and
+    /// is never written at all. `// UNKNOWN: see bd discr-b6x`.
+    pub discs_out: i16,
+    /// ST `player+$6c` (`$6d0c` / `$6d8c`): the cap on [`Player::discs_out`].
+    ///
+    /// `$c1c4 cmp.w $6d8c,d0; beq` -- state 18's handler refuses to throw when
+    /// the count has reached it. Reads 4 for player 2 and **0 for player 1**,
+    /// whose count is also 0, so player 1 can never throw from that state --
+    /// which is consistent with player 1 never throwing in either fixture.
+    /// Never written anywhere in the analysed image.
+    pub disc_cap: i16,
     /// ST `player+$12` (`$6cb2` / `$6d32`): how far ahead of itself this player
     /// can reach a disc. 12 for player 1, 26 for player 2.
     ///
@@ -310,26 +342,31 @@ pub enum SteerHook {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiscSlot {
-    /// Whether the ST simulates this slot. **ST `disc+$10`, bit 7** (Part 10).
-    ///
-    /// `$a4f0 tst.b ($10,a5); beq` skips a *free* slot and `$a534 tst.b; bpl`
-    /// skips an occupied one whose bit 7 is clear, so `+$10` is a byte with
-    /// three regimes and this field is its bit 7:
+    /// **ST `disc+$10`**, verbatim: the byte that says whether the slot is in
+    /// play, and its whole three-state life is modelled as of Part 10g.
     ///
     /// ```text
-    /// $ff  live -- integrate the record
-    /// 3..1 occupied but NOT simulated: the whole record freezes
-    /// 0    free -- the slot may be filled by the serve loop at $a9a2
+    /// $ff   live -- $a4f0 tst.b beq skips a free slot, $a534 tst.b bpl a
+    ///       retired one, so bit 7 is "simulate this record"
+    /// 3..1  retired but not yet free: the record is frozen and $012588
+    ///       counts the byte down one per frame from the render pass
+    /// 0     free -- $a9a2's slot search will fill it
     /// ```
     ///
-    /// The 1..3 regime is the "dwell"/"freeze" of bd discr-0fm: it is not a
-    /// `world_z` phenomenon at all. `tests/fixtures/golden.ndjson` shows disc 0
-    /// going `255 -> 2 -> 1 -> 0` at frames 124-126 with `world_z` stuck at 54,
-    /// and the record then sits untouched until a fresh serve overwrites it.
-    /// **What retires a disc -- what takes `+$10` off `$ff` -- is not decoded**,
-    /// so nothing in this crate ever clears this field. `// UNKNOWN: see bd
-    /// discr-0fm`.
-    pub active: bool,
+    /// Every writer, from `--watch 0x6e4e 0x6e4f` over 215 frames:
+    ///
+    /// | PC | what |
+    /// |---|---|
+    /// | `$a9b8` | `st` -- the serve claims the slot |
+    /// | `$caae` | `addq.b #4` -- player 2 catches it from state 18 |
+    /// | `$cb1e` | `addq.b #4` -- ...or from state 27 |
+    /// | `$012588` | `subq.b #1` -- the render pass counts a retired slot down |
+    ///
+    /// `$ff + 4` is `$03`, and the countdown's first step lands in the same tick
+    /// as the catch, so a caught disc reads 2, 1, 0 on the next three frames and
+    /// its record does not move again. **That is bd discr-0fm's "dwell":** not a
+    /// `world_z` phase and not an anomaly, but a disc that has been caught.
+    pub active: u8,
     /// Which player "has" this disc. **ST `disc+$11`** (Part 10).
     ///
     /// `$a55e`, `$a5d0` and `$a612` branch on this byte, and the wall handlers
@@ -385,6 +422,21 @@ pub struct Tile {
     /// ST `tile+$02` (word): hit points. `$a31c` subtracts the striking disc's
     /// `+$16`; `$a34a  clr.w d6` clamps at 0, so it is never negative.
     pub hp: i16,
+}
+
+impl DiscSlot {
+    /// Whether `$a4ea` simulates this record. ST `$a534`: `tst.b ($10,a5); bpl`.
+    #[must_use]
+    pub const fn simulated(self) -> bool {
+        self.active & 0x80 != 0
+    }
+
+    /// Whether the slot is taken at all. ST `$a4f0` and `$a9a2`:
+    /// `tst.b ($10,a5); beq` -- **not** the same test as [`Self::simulated`].
+    #[must_use]
+    pub const fn occupied(self) -> bool {
+        self.active != 0
+    }
 }
 
 impl Tile {

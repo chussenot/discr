@@ -1645,3 +1645,108 @@ stamps it once for all 32 entries, **including the 25 whose behaviour is not
 modelled**, and `players[n].facing` is then correct for every state either
 player reaches. Only state 0 differs: its inline path *clears* the byte, and
 only when the joystick reads zero (`$f1c0`).
+
+## bd discr-0fm CLOSED: the dwell was a caught disc (Part 10g)
+
+`disc+$10`'s four writers, from `--watch 0x6e4e 0x6e4f` over 215 frames:
+
+```
+frame  33  pc $00caae  write.b $006e4e = $03     player 2 catches it (state 18)
+frame  33  pc $012588  write.b $006e4e = $02       and the countdown's first step
+frame  34  pc $012588  write.b $006e4e = $01
+frame  35  pc $012588  write.b $006e4e = $00       free
+frame  51  pc $00a9b8  write.b $006e4e = $ff     the serve claims the slot
+frame 123  pc $00cb1e  write.b $006e4e = $03     caught again (state 27)
+...
+```
+
+and on the golden programme one more:
+
+```
+frame  97  pc $00a570  write.b $006e4e = $03     the ROUND ENDED
+```
+
+So the byte's whole life is:
+
+| PC | what |
+|---|---|
+| `$a9b8` | `st` -- the serve claims a free slot |
+| `$caae` | `addq.b #4` -- player 2 catches it from state 18 |
+| `$cb1e` | `addq.b #4` -- ...or from state 27 |
+| `$a570` | `addq.b #4` -- the round is over, clear the board |
+| `$012588` | `subq.b #1` -- the **render pass** counts a retired slot down |
+
+`$ff + 4` is `$03`, and `$012582`'s countdown runs in the same tick as the
+catch, so a caught disc reads 2, 1, 0 over the next three frames and its record
+never moves again. **The "dwell at `world_z` 54" was a disc that had been
+caught.** Not a `world_z` phase, not an anomaly, and nothing to do with the
+`$4f` bound. `disc-core` models all four writers and `discs[n].active` is a
+compared row.
+
+The countdown living in `$012582` -- the render routine, which draws a live disc
+and counts down a retired one -- is why nine phases of reading `$a4ea` never
+found it.
+
+### The catch, and what missing it costs
+
+`$c826`'s head is `$10fd8`'s, and after the owner check three of player 2's own
+states get a catch window before the body box is reached:
+
+```
+$c860  state $12 -> $ca96      ; the intercept's catch: x within $6d22 +/- $1a
+$c86a  state $13 -> $cad0      ; not modelled -- no fixture reaches state 19
+$c874  state $1b -> $cb06      ; the reach's catch: x in [$6d22 - $10, + $20]
+```
+
+A catch is two instructions -- `addq.b #4,($10,a5)` and `subq.w #1,$6d8a` -- and
+**missing it falls through to the strike** (`$cab8`/`$cb28` branch on to
+`$c934`, the mirror of `$110fc`). Reach for a disc, miss, and it hits you. State
+18's miss also sets state 17 first (`$cac6`).
+
+### `player+$0d` ends a round
+
+`$a564 tst.b $6d2d; bne $a570` -- the disc loop retires every disc in play when
+the *other* player's `+$0d` is set, and `$f1b4 st $6d2d` sets it three
+instructions after player 1 enters the death state. So a round ends by clearing
+the board, and `golden.ndjson` frame 97 is exactly that: player 1 hit state 23
+at frame 97 and disc 0 was retired on the same tick, by `$a570` rather than by a
+catch.
+
+## Player 2's state 18 handler, and the one stub in 64 states (Part 10g)
+
+`$c196`, the commit half of the intercept:
+
+```
+$c196  move.b #$12,$6d29
+$c19c  if $6d5a is $4624 or $4634 -> commit; otherwise just run the animation
+$c1b4  btst #$7,(a0) ; beq out           ; fire must still be HELD, not an edge
+$c1bc  btst #$1,(a0) ; bne out           ; and down must not be
+$c1c4  if $6d8a == $6d8c -> out          ; already at the disc cap
+$c1d0  subq.w #6,$6d22                   ; six units left, in a single step
+$c1d4  animation $45f0
+$c1e2  move.b #$f,$6d2e                  ; and straight into state 15
+```
+
+`$6d8c` is the cap on `$6d8a`, never written anywhere in the image: **4 for
+player 2 and 0 for player 1**, whose count is also 0 -- so player 1 can never
+throw from this state, which is consistent with it never throwing in either
+fixture.
+
+`btst #$7,(a0)` wants the fire bit as a **level**, not the edge the walk
+handlers see (`$f606`/`$f81a` consume it with `bclr`), which is why
+[`crate::Input`] carries both.
+
+### State 17 is the only handler in either table with no body
+
+Comparing each of the 64 table entries with the next handler in address order
+finds exactly one four-byte stub per player, and it is **state 17** in both:
+`$1089a bra $f1c4` and `$c192 bra $ac40`. It stamps nothing, so it is the one
+exception to "every handler writes its own index into `player+$09`" -- and the
+fixtures show it plainly: player 2's `+$09` holds 15 for all seven frames it
+spends in state 17 after a throw.
+
+Leaving state 17 is the shared animation tail running out, which needs the
+sequence the entering state loaded -- `$45f0` after an intercept, `$462e` after
+a missed catch. `disc-core` carries hold counts for the four sequences it has
+transcribed and no more, so that is where the fully-compared run now stops.
+`// UNKNOWN: see bd discr-75o`.
