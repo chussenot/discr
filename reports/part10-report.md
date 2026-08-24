@@ -19,30 +19,30 @@ command in this file, and every gap is named with the bead that owns it.
 `mise run core-check`'s gate is the length of the matching prefix. There are now
 two, because the two fixtures hit different walls.
 
-| run | before Part 10 | after | the wall it stops on |
-|---|---|---|---|
-| `golden.ndjson --skip-waived` | **10** | **10** | `players[0].state_index` — discr-75o, the player state machine, untouched this phase |
-| `tile_damage.ndjson --skip-waived` | **10** | **51** | the ST re-serves disc 0 at frame 52, from inside player 2's control routine — discr-b6x |
-| `golden.ndjson --skip-waived --resync players[0]` | **22** | **51** | the same re-serve |
-| `tile_damage.ndjson --skip-waived --resync discs[0]` | 69 | **118** | `tiles[14]` at frame 119 — discr-b4q's anomaly |
+| run | before Part 10 | after 10 | after 10b | the wall it stops on |
+|---|---|---|---|---|
+| `golden.ndjson --skip-waived` | **10** | 10 | **51** | the ST re-serves disc 0 at frame 52, from inside player 2's control routine — discr-b6x |
+| `tile_damage.ndjson --skip-waived` | **10** | 51 | **51** | the same re-serve |
+| `golden.ndjson --skip-waived --resync players[0]` | 22 | 51 | — | superseded: the player rows no longer need supplying |
+| `golden.ndjson --skip-waived --resync discs` | — | — | **63** | `players[0].world_y` at frame 64, where player 1's hit test `$10fd8` enters state 11 — discr-ovl.1 |
+| `tile_damage.ndjson --skip-waived --resync discs[0]` | 69 | **118** | 118 | `tiles[14]` at frame 119 — discr-b4q's anomaly |
 
-Read the second row as the headline: **on the idle fixture, with nothing
-resynced at all, `disc-core` now reproduces 51 consecutive ST frames.** It used
-to reproduce 10. The idle fixture is the one that measures the disc model,
-because an idle player 1 never changes state and so never trips discr-75o.
+Read the first row as the headline: **on both fixtures, with nothing resynced
+but player 2, `disc-core` now reproduces 51 consecutive ST frames.** It used to
+reproduce 10. Part 10 got the idle fixture there by fixing the disc loop; Part
+10b got the *walking* fixture there by modelling the player state machine, so
+both now stop at the same wall — the serve, which is player 2's action and the
+one thing on either side that is still missing.
 
-Read the third row as the like-for-like comparison: same fixture, same resync
-set, **22 → 51**, and the two rows that used to have to be supplied to get past
-frame 22 — `discs[0].world_y` and the steering — are now produced.
+Read the fourth and fifth rows as what each half reaches when the other is
+supplied. The player half runs to 63 and stops where player 1's hit test moves
+its `world_y`; the disc half runs to 118, *past* the tile event at frame 70,
+which `disc::step` now causes itself. **`tile::damage` is exercised end to end
+by trace comparison for the first time**, not only by unit tests. Neither is
+gated: a resynced row is one `disc-core` was given, not one it produced.
 
-Read the fourth as the one that matters for the tile module: it runs *past* the
-tile event at frame 70, which `disc::step` now causes itself. **`tile::damage`
-is exercised end to end by trace comparison for the first time**, not only by
-unit tests. It is deliberately not gated: a resynced row is one `disc-core` was
-given, not one it produced.
-
-`mise run core-check` gates rows 1 and 2 at `TRACE_MIN_AGREE` = 10 and
-`TILE_MIN_AGREE` = 51. Row 4 is `mise run tracecheck-deep`, ungated.
+`mise run core-check` gates rows 1 and 2, both at 51. Rows 4 and 5 are
+`mise run tracecheck-deep`, ungated.
 
 ## What was decoded, and how much of it a trace confirms
 
@@ -173,9 +173,9 @@ Stated rather than glossed, in the order a next phase should probably take them.
   built**. What exists towards it is the trace column (`ai_6da1`), the certainty
   that `$6da1` is the whole channel, and the mechanism a controller would have
   to implement.
-* **The player state machine is untouched**, so the `golden.ndjson` gate is
-  still 10 and discr-75o and discr-xfw are exactly where they were. This is the
-  single biggest remaining blocker and it is the obvious next headline.
+* ~~**The player state machine is untouched.**~~ Done in Part 10b — see below.
+  What is left of discr-75o is the other 28 handlers' behaviour and the
+  animation frame data their sequences point at.
 * **No bonus is exercised by any trace.** Every row of the `$9aa2` table is a
   code read. A trace in which a disc strikes a bit-7 cell is now the
   highest-value fixture this project does not have — it would test five effects
@@ -213,3 +213,78 @@ Stated rather than glossed, in the order a next phase should probably take them.
 * **A "do not model X" note is a claim about code and deserves the same
   evidence.** Two of them have now been retracted. Both were correct
   observations paired with an untested assumption about the rule's inputs.
+
+---
+
+# Part 10b — the player state machine
+
+The "obvious next headline" above, done. One more Ghidra session, and the
+`golden.ndjson` gate moved **10 → 51**, which is the number the whole phase was
+trying to move.
+
+## What it turned out to be
+
+Not 32 unrelated handlers. **One mechanism.** `$f104`'s first two instructions
+are `tst.b $6cae; bne $f5d0` — so state 0 is not a table entry at all (entry 0
+of `$10e2c` is a null longword), it is the code that follows. And every handler,
+including that one, ends in the same tail at `$f1c4`:
+
+* an animation sequence is a list of **six-byte cells** — a four-byte frame
+  pointer and a two-byte hold count — ending in a zero longword;
+* `$6ce2` counts the current cell's hold down once per frame, `$6cda` walks the
+  cursor forward six bytes when it expires;
+* **running off the end of the sequence is what changes state.** `$f1c4`'s
+  ending goes to state 0; state 20's copy of the tail (`$1099a`) goes to
+  `$6caa`, the pending state.
+
+That makes the transient reproducible to the frame rather than fitted. Pressing
+Left from idle writes `$6caa = 1`, loads the sequence at `$2f7e` — **one cell,
+hold 4, then the terminator** — sets the state to 20 and falls into the tail in
+the same tick, so the count reads 3 at the first sample. Three more handler runs
+and the state becomes 1. The fixture shows exactly three frames of state 20, at
+f11-f13 and again at f29-f31.
+
+`$6cda` and `$6ce2` were `excluded:rendering` in `docs/state-schema.md`. They
+are the state machine's clock. That row is `waived:discr-75o` now, and the
+excluded count drops 6 → 5 while the waived count rises 12 → 13.
+
+## discr-xfw answered: `$6ca9` is not a facing flag
+
+Every handler's *first* instruction stamps its own state number there — `$f5e2`
+writes 1, `$f7f6` writes 2, `$1094a` writes `$14`, `$109aa` writes `$15`, and
+the idle path clears it at `$f1c0`. A handler may then change `$6cae` before the
+frame ends, so the sampled `$6ca9` is **the state whose handler ran this frame**
+while `$6cae` is the state that will run next. That is the one-frame lag, and it
+explains the three exceptions the old analysis could not place: those are frames
+where a handler ran and the state changed twice.
+
+`disc-core` writes it from the handler now, so the row passes for the right
+reason rather than by coincidence on states 1 and 2.
+
+## What is modelled, and what is not
+
+States **0, 1, 2 and 20** — every state player 1 reaches in either fixture
+before its hit test fires. The other 28 entries stay opaque pass-throughs: their
+handler addresses are known, their behaviour is not, and their sequences point
+at frame-block data this crate does not carry. Entering one would mean running a
+state `disc-core` cannot simulate.
+
+Two smaller facts fell out:
+
+* **`$6cba` is a per-frame X delta lifted out of the animation frame block**,
+  applied by the idle path at `$f118`. Some movement is authored in animation
+  data rather than in code; the walk states do their own `subq.w #3` on top.
+* **Player 2 has its own 32-entry table at `$c6ec`**, not `$10e2c`. Entry 15 is
+  `$c068` — the block containing the serve — so the serve is player 2's *state
+  15*, and `$c0c4` moves it to 17 on the frame the disc leaves.
+
+## The wall, and it is the same one on both sides
+
+Both fixtures now stop at trace frame 52, `discs[0].world_x` 45 vs 48: the ST
+re-serves disc 0 into the same slot and `disc-core` has no trigger for it. The
+trigger is known — player 2's animation cursor `$6d5a` reaching `$4602` — but it
+lives inside player 2's control routine, which means modelling player 2's state
+machine and the AI that drives it. **discr-b6x is now the single thing standing
+between `disc-core` and the rest of both fixtures**, and the machinery to do it
+exists: `$c6ec` is the table, `$abb2` the dispatcher, `$d2cc` the policy, and
+`ai_6da1` is already a trace column.

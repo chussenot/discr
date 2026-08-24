@@ -62,14 +62,17 @@ Notes on individual rows:
 * `players[0].world_x` -- walkable 8..152, `+/-3` per frame (`$f658`,
   `$f86c`, range-checked against 8 and `$98`).
 * `players[0].world_y` -- `$f838` tests `> 14` to select the far row.
-* `players[0].facing` -- the notes read `$6ca9` as 1 = left (`$f5e2`), 2 =
-  right (`$f7f6`). **`tests/fixtures/golden.ndjson` contradicts that** and the
-  row stays `compared` so the contradiction stays visible: `+$09` takes
-  `{0,1,11,20,23}` for p1 and `{0,1,2,15,16,18,20}` for p2 -- exactly the sets
-  their `state_index` takes, one frame behind (96 of 99 p1 frame pairs). It
-  looks like the previous state, not a facing flag, and 1/2 is the only region
-  where the two readings agree. **discr-xfw**. `disc-core` still writes 1/2, so
-  this row is right for the wrong reason wherever it passes.
+* `players[0].facing` -- **discr-xfw is answered (Part 10b) and the field is not
+  a facing flag.** Every handler opens by writing its own state number to
+  `$6ca9`: `$f5e2 move.b #$01`, `$f7f6 move.b #$02`, `$1094a move.b #$14`,
+  `$109aa move.b #$15`, and the idle path clears it at `$f1c0` when the joystick
+  reads zero. A handler may then change `state_index` before the frame ends, so
+  the sampled `+$09` is *the state whose handler ran this frame* while
+  `state_index` is the state that will run next -- the one-frame lag the fixture
+  shows. 1 and 2 look like left and right only because those are the two walk
+  states. `disc-core` writes it from the handler now, so the row passes for the
+  right reason. The Rust field keeps its name for the moment; renaming it moves
+  this table, the fixture column and the differ together.
 * `players[0].state_index` -- index into the 32-entry jump table at `$10e2c`.
   The *number* is compared; the transitions that produce most of those numbers
   are not modelled (see the waivers below), so a trace comparison stops here
@@ -117,22 +120,24 @@ Notes on individual rows:
 | -- (what places a bonus on a cell) | -- | `tile+$02` bit 7, and `$6e3a` | waived:discr-ovl.4 |
 | -- (the bonus effects) | -- | `$6d9a`/`$6d9c`/`$6d9e`, table `$9aa2` | waived:discr-z8m |
 | -- (the far wall's tile grid) | -- | `$7596`, damaged by `$9f5e` | waived:discr-ovl.3 |
+| -- (the animation engine) | `pending_state`, `anim_hold` | `$6caa`, `$6cda`, `$6ce2` | waived:discr-75o |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
 | -- (disc sub-record pointers) | -- | `disc+$1a`, `disc+$3e` | excluded:pointer |
 | -- (tile trailing long) | -- | `tile+$04` | excluded:always-zero |
-| -- (animation cursor, countdown) | -- | `$6cda`, `$6ce2` | excluded:rendering |
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
-18 waived or excluded rows: 12 waived against a filed unknown, 6 excluded by
-scope. **The count is unchanged from before Part 10 and that is the honest
-number**: five waivers were resolved and five new ones filed from what the
-answers exposed -- a second tile grid, the bonus placer, the hook installer, the
-owner polarity, and what retires a disc. What changed is not how many unknowns
-there are but where they sit: six of them used to stand between the disc model
-and the fixture, and now one does. `reports/part10-report.md` has the
-before-and-after gate numbers. With the 15 compared rows above, that is the
-whole table, and
+18 waived or excluded rows: 13 waived against a filed unknown, 5 excluded by
+scope. **The count is unchanged from before Part 10 and that is close to the
+honest number**: five waivers were resolved and five new ones filed from what
+the answers exposed -- a second tile grid, the bonus placer, the hook installer,
+the owner polarity, and what retires a disc -- and one row moved from
+`excluded:rendering` to `waived:discr-75o`, because `$6cda`/`$6ce2` turned out
+to be the state machine's clock rather than a rendering detail. What changed is
+not how many unknowns there are but where they sit: six of them used to stand
+between the disc model and the fixture, and now one does.
+`reports/part10-report.md` has the before-and-after gate numbers. With the 15
+compared rows above, that is the whole table, and
 `tracecheck`'s header prints these three numbers so a drift between tool and
 file is visible on every run.
 
@@ -161,10 +166,17 @@ Why each waiver or exclusion:
   7 action routines, and the sensor pass `$cea6`.
 * Round, scoring and win (**discr-st8**): unchanged. `GameState::default()` is
   all zeroes, deliberately not `$aa50`'s round-init state.
-* Player state semantics (**discr-75o**, **discr-rf9**): unchanged, and this is
-  what stops the `golden.ndjson` gate at 10 ticks. State 17 is now partly
-  explained -- `$c0c4 move.b #$11,$6d2e` is the serve setting it -- but the
-  handler's behaviour is still unrecovered.
+* Player state semantics (**discr-75o**, **discr-rf9**): **narrowed in Part
+  10b.** Four states are modelled now -- 0 (the idle path inlined in `$f104`,
+  not a table entry: `$10e2c`'s entry 0 is null), 1 and 2 (the walks) and 20
+  (the turn transient) -- which is every state player 1 reaches in the fixtures
+  before its hit test fires. The mechanism behind all 32 is also known: each
+  handler ends in the animation tail at `$f1c4`, which counts `$6ce2` down and
+  advances the six-byte sequence cursor `$6cda`, and **running off the end of a
+  sequence is what changes state**. What stays waived is the other 28 handlers'
+  behaviour and the frame-block data their sequences point at, which this crate
+  does not carry. State 17 is partly explained -- `$c0c4 move.b #$11,$6d2e` is
+  the serve setting it.
 * The tile unknowns are **narrower than they were**. Bit 7 of `tile+$02` is now
   known to mark a cell as carrying a bonus, and `$a29c andi.w #$0f` is the
   writer that clears it on pickup, which closes the old discr-dc0. What is left

@@ -12,14 +12,18 @@ rust = "latest"
 
 [env]
 # The measured prefix.  With docs/state-schema.md's waived rows resynced from
-# the trace, disc-core reproduces 10 ticks of the golden fixture before
-# players[0].state_index goes 0 -> 20 without it -- a transition bead discr-75o
-# owns.  The gate is on the LENGTH of that prefix, not on the run being clean:
-# a divergence a bead owns is a boundary, and a gate that is red by design gets
-# ignored.  Raise it when the prefix grows.  reports/core-report.md carries the
-# reasoning, and scripts/oracle_diff.py uses the same --min-agree idiom for the
-# oracle's 275-frame boundary.
-TRACE_MIN_AGREE = "10"
+# the trace, disc-core reproduces 51 ticks of the golden fixture and then stops
+# where the ST re-serves disc 0 into the same slot from inside player 2's
+# control routine (discr-b6x).  The gate is on the LENGTH of that prefix, not on
+# the run being clean: a divergence a bead owns is a boundary, and a gate that
+# is red by design gets ignored.  Raise it when the prefix grows.
+# reports/part10-report.md carries the reasoning, and scripts/oracle_diff.py
+# uses the same --min-agree idiom for the oracle's 275-frame boundary.
+#
+# It was 10 before Part 10b, where players[0].state_index went 0 -> 20 without
+# disc-core: the player state machine is modelled now, so both fixtures hit the
+# same wall.
+TRACE_MIN_AGREE = "51"
 GOLDEN = "tests/fixtures/golden.ndjson"
 
 # The second gate, added in Part 10.  tests/fixtures/tile_damage.ndjson is the
@@ -71,8 +75,15 @@ run = [
 ]
 
 [tasks.tracecheck-deep]
-description = "How far the disc model reaches with the disc row supplied: a measurement, not a gate"
-run = "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived --resync 'discs[0]'"
+description = "How far each half reaches with the other supplied: measurements, not gates"
+run = [
+  # The disc model, with the serve supplied: 118, stopping on discr-b4q's
+  # frame-119 tile anomaly, past the frame-70 impact disc-core now causes.
+  "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived --resync 'discs[0]'",
+  # The player model, with the discs supplied: 63, stopping where player 1's hit
+  # test $10fd8 enters state 11 and moves its world_y (discr-75o, discr-ovl.1).
+  "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived --resync 'discs'",
+]
 
 [tasks.fmt]
 description = "Format the Rust workspace"

@@ -1111,3 +1111,126 @@ ever noticed. Every tile event ever observed was at index 6, 7, 8 or 14, all
 inside the bank, so no result depends on it -- but the differ and the fixture
 both carry one word that is not a tile, and the far bank has never been carried
 at all. bd discr-ovl.3 and bd discr-ovl.5.
+
+## The player state machine, decoded (Part 10b)
+
+`$f104` is player 1's control routine and its first two instructions are the
+whole architecture. **[code+trace]**
+
+```
+$f104  movea.l $6cca,a2
+$f108  tst.b $6cae ; bne $f5d0     ; state != 0 -> dispatch
+       ; state == 0 falls through: THE IDLE PATH IS INLINE
+$f110  d0 = $6cba ; clr.w $6cba ; $6ca2 += d0    ; apply the animation's X delta
+```
+
+**State 0 is not a table entry.** Entry 0 of `$10e2c` is a null longword; the
+idle behaviour is the code after the `bne`. That is why nine phases of tracing
+never found a "state 0 handler".
+
+### Every handler ends in the same animation tail, and that tail is the clock
+
+`$f1c4`, reached by a `bra` from the bottom of every state handler:
+
+```
+$f1c4  a1 = $6cda              ; the animation SEQUENCE CURSOR
+$f1c8  a1 = (a1)               ; -> this cell's frame block
+$f1ca  copy 20 bytes of it into $6ce4, $6cd6, $6cb6, $6cba, $6cbc, $6cc0,
+                               $6cb4, $6cb5
+$f1ea  a1 = $6cda
+$f1ee  subq.w #1,$6ce2         ; frames left on this cell
+$f1f2  bne $f1fc
+$f1f4  addq.l #6,a1            ; expired -> the next cell, six bytes on
+$f1f6  $6ce2 = ($04,a1)        ;   and its hold count
+$f1fc  tst.l (a1) ; bne $f218  ; a zero longword TERMINATES the sequence
+$f202  a1 = $2c78              ; ended: fall back to the idle sequence
+$f206  $6ce2 = ($04,a1) ; $6cda = a1
+$f210  move.b #$00,$6cae       ;   and the state becomes 0
+$f218  $6cda = a1 ; rts
+```
+
+So an animation sequence is a list of **six-byte cells -- a four-byte frame
+pointer and a two-byte hold count -- ending in a zero longword**, and *running
+off the end of a sequence is what changes state*. `$f1c4`'s own ending goes to
+state 0; state 20's copy of the tail (`$1099a`) writes `$6caa` instead.
+
+`$6cda` (the cursor) and `$6ce2` (the count) were listed
+`excluded:rendering` in `docs/state-schema.md` before this. **They are not
+rendering. They are the state machine's clock**, and that entry is now
+`waived:discr-75o`.
+
+Two consequences worth stating separately:
+
+* **`$6cba` is a per-frame X delta lifted out of the animation frame block** and
+  applied by the idle path at `$f118`. Some movement is authored in the
+  animation data rather than in code. The walk states do their own `subq.w #3`
+  on top.
+* **The whole 32-state machine is one mechanism**, not 32 unrelated handlers.
+  What is still missing for the other 28 is only their sequence data and what
+  each handler does on the way.
+
+### `$6ca9` is the state whose handler last ran — bd discr-xfw answered
+
+Every handler's *first* instruction stamps its own state number:
+
+```
+$f5e2  move.b #$01,$6ca9      (state 1, walk left)
+$f7f6  move.b #$02,$6ca9      (state 2, walk right)
+$1094a move.b #$14,$6ca9      (state 20, the turn)
+$109aa move.b #$15,$6ca9      (state 21)
+$f1c0  clr.b  $6ca9           (the idle path, when the joystick reads zero)
+```
+
+A handler may then change `$6cae` before the frame is over, so at the sampling
+point `$6ca9` holds *the state that ran this frame* and `$6cae` holds *the state
+that will run next*. That is the one-frame lag, exactly. It is not a facing flag
+and not quite "the previous state" either -- 1 and 2 look like left and right
+only because those happen to be the two walk states.
+
+### The turn transient, frame for frame
+
+`golden.ndjson` frames 10-14 read `0, 20, 20, 20, 1` and every step of that is
+now accounted for:
+
+```
+$f260  btst #2,(a0) ; beq $f2b2        ; LEFT
+$f266  tst.b $6ca9  ; bne $f296        ; already mid-something -> skip the turn
+$f26c  $6cde = $2a8a                   ; the sequence to run AFTER the turn
+$f274  $6caa = 1                       ; the pending state
+$f27a  a1 = $2f7e ; $6ce2 = ($04,a1)   ; the turn sequence: ONE cell, hold 4,
+$f284  $6cda = a1                      ;   then a zero terminator
+$f288  $6cae = $14
+$f292  bra $f1c4                       ; and run the tail in the SAME tick
+```
+
+`$2f7e` in the image is one cell with a hold of **4** followed by the
+terminator. The entering tick runs the tail too, so the count is already 3 when
+the frame is sampled; three more handler runs take it to 0, the cursor reaches
+the terminator, and `$1099a` writes `$6caa` into `$6cae`. **Three sampled frames
+of state 20, then the walk** -- which is what the fixture shows at f11-f13, and
+again at f29-f31 when the stick is released (`$f7b8` clears `$6caa` first, so
+the pending state is 0).
+
+The `tst.b $6ca9; bne` at `$f266` is why the transient plays from a standing
+start and not mid-move: the idle path clears `$6ca9` on every frame the joystick
+reads zero.
+
+Leaving a walk is a whole-byte test, not a bit test: `$f654 cmpi.b #$04,(a0);
+bne $f7b8`. Anything other than exactly Left ends the walk.
+
+### What this bought
+
+`disc-core` models states 0, 1, 2 and 20 as of Part 10b, which is every state
+player 1 reaches in either fixture before its hit test `$10fd8` fires. Both
+fixtures now run **51 ticks** with nothing resynced but `players[1].*`, against
+10 before. Supplying the discs instead, the player half alone reaches 63 and
+stops where `$10fd8` puts player 1 into state 11 and moves its `world_y` --
+which is bd discr-ovl.1's other half.
+
+## Player 2's state table is at `$c6ec`, not `$10e2c` (Part 10b)
+
+`$afb8 lea (...,pc),a1` in `$abb2` resolves to **`$c6ec`**, a second 32-entry
+table with the same shape as player 1's at `$10e2c` -- entry 0 null, 31 handler
+addresses in `$afc2`..`$c69a`. Entry 15 is `$c068`, which is the block that
+contains the serve at `$c06e`. So **the serve is player 2's state 15**, and
+`$c0c4 move.b #$11,$6d2e` moves it to state 17 on the frame the disc leaves.

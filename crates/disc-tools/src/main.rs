@@ -59,9 +59,9 @@ use serde::Deserialize;
 /// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
 const SCHEMA_COMPARED: usize = 15;
 /// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
-const SCHEMA_WAIVED: usize = 12;
+const SCHEMA_WAIVED: usize = 13;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
-const SCHEMA_EXCLUDED: usize = 6;
+const SCHEMA_EXCLUDED: usize = 5;
 /// Compared rows a trace may carry no column for; see [`Frame`].
 ///
 /// Part 10 added `vy` and `dmg` to the oracle's emitter, so a freshly generated
@@ -246,6 +246,13 @@ impl Frame {
                 facing: t.facing,
                 state_index: t.state,
                 grid_cell: t.cell,
+                // `player+$0a` and `player+$42` have no trace column. They are
+                // carried across ticks by disc-core rather than reseeded, so
+                // these only set the value at frame 0 -- correct for a trace
+                // that starts with the player idle, which both fixtures do.
+                // A trace seeded mid-turn would need the columns.
+                pending_state: 0,
+                anim_hold: 0,
             };
         }
         for (d, t) in st.discs.iter_mut().zip(&self.disc) {
@@ -747,12 +754,15 @@ mod tests {
         );
     }
 
-    /// The number `make core-check` gates on and `reports/core-report.md`
-    /// cites: with the schema's waived rows resynced from the trace, the
-    /// golden fixture matches for 10 ticks and then diverges on a row that
-    /// bead discr-75o owns. Mirrors the loop in `run`.
+    /// The number `mise run core-check` gates on and `reports/part10-report.md`
+    /// cites: with the schema's waived rows resynced from the trace, the golden
+    /// fixture matches for 51 ticks and then stops where the ST re-serves disc
+    /// 0 from inside player 2's control routine, which this crate does not
+    /// model (discr-b6x). Mirrors the loop in `run`.
+    ///
+    /// It was 10 until Part 10b modelled the player state machine.
     #[test]
-    fn skip_waived_matches_ten_ticks_then_stops_on_state_index() {
+    fn skip_waived_matches_fifty_one_ticks_then_stops_on_the_reserve() {
         let f = golden();
         let skip = |field: &str| WAIVED.iter().any(|(p, _)| field.starts_with(p));
         let mut state = f[0].seed();
@@ -764,9 +774,9 @@ mod tests {
             state.tick([prev.input(prev_joy), Input::default()]);
             resync(&mut state, &expected.seed(), &skip);
             if let Some(d) = first_divergence(expected, &state) {
-                assert_eq!(matched, 10, "matched ticks before the divergence");
-                assert_eq!(d.field, "players[0].state_index");
-                assert_eq!((d.expected, d.got), (20, 0));
+                assert_eq!(matched, 51, "matched ticks before the divergence");
+                assert_eq!(d.field, "discs[0].world_x");
+                assert_eq!((d.expected, d.got), (48, 45));
                 return;
             }
             prev_joy = prev.joy_6c58;

@@ -140,12 +140,47 @@ pub struct Player {
     pub world_x: i16,
     /// ST `player+$06` (`$6ca6`): world Y (row); > 14 selects the far row.
     pub world_y: i16,
-    /// ST `player+$09` (`$6ca9`): 1 = left, 2 = right.
+    /// ST `player+$09` (`$6ca9`): **the state whose handler last ran**, stamped
+    /// at handler entry. Part 10 -- and this is bd discr-xfw's answer.
+    ///
+    /// Every handler opens by writing its own state number here: `$f5e2
+    /// move.b #$01,$6ca9` for walk-left, `$f7f6 move.b #$02` for walk-right,
+    /// `$1094a move.b #$14` for the turn transient, `$109aa move.b #$15`. The
+    /// idle path clears it (`$f1c0`) when the joystick reads zero. Because a
+    /// handler may then change `state_index` before the frame ends, the value
+    /// sampled at the VBL is the state that ran *this* frame while
+    /// `state_index` is the state that will run *next* -- which is exactly the
+    /// one-frame lag the fixture shows, and why it reads like a previous-state
+    /// field. It is not a facing flag; 1 and 2 are simply the two walk states.
+    ///
+    /// The name is kept for now because renaming it touches the schema, the
+    /// fixture column and the differ together.
     pub facing: u8,
     /// ST `player+$0e` (`$6cae`): index into the 32-entry jump table at `$10e2c`.
     pub state_index: u8,
     /// ST `player+$10` (`$6cb0`): grid cell index, observed 9..16.
     pub grid_cell: u16,
+    /// ST `player+$0a` (`$6caa`): the state to enter when the current
+    /// animation sequence ends. Part 10.
+    ///
+    /// Written before entering the turn transient (`$f274` writes 1 for
+    /// walk-left, `$f2c8` writes 2 for walk-right, `$f7b8`/`$f9ce` clear it on
+    /// release) and read by state 20's handler at `$1099a`,
+    /// `move.b $6caa,$6cae`.
+    pub pending_state: u8,
+    /// ST `player+$42` (`$6ce2`): frames left on the current animation cell.
+    ///
+    /// The state machine's clock. Every handler ends in the animation tail at
+    /// `$f1c4`, which does `subq.w #1,$6ce2`; at zero it advances the sequence
+    /// cursor `$6cda` by six bytes and reloads the count, and when the cursor
+    /// reaches the sequence's zero terminator the state changes. `$6ce2` and
+    /// `$6cda` were listed as `excluded:rendering` in `docs/state-schema.md`
+    /// before Part 10; they are not rendering, they are the timer that decides
+    /// when a state is over.
+    ///
+    /// Only the turn transient's sequence is modelled here -- see
+    /// [`crate::player::TURN_ANIM_HOLD`].
+    pub anim_hold: u16,
 }
 
 /// The width of one arena column in world-X units. ST `$7bfe` is 152 bytes of

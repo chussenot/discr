@@ -20,13 +20,73 @@
 //!
 //! Fire is not read here. `$f606` / `$f81a` `bclr #7,(a0)` *consumes* the fire
 //! bit at the top of each walk handler, so [`Input::fire_edge`] arrives already
-//! consumed; what the walk handlers then do with it is not in the notes (the
-//! serve trigger is `bd discr-m4x`).
+//! consumed; what the walk handlers then do with it is not in the notes.
+//!
+//! # The state machine (Part 10)
+//!
+//! `$f104` is player 1's control routine and its first instruction is the whole
+//! architecture: `tst.b $6cae; bne $f5d0`. **State 0 is not a table entry** --
+//! entry 0 of `$10e2c` is a null pointer -- it is the code that follows, the
+//! idle path. Every other state dispatches.
+//!
+//! Every handler ends in the same animation tail, `$f1c4`:
+//!
+//! ```text
+//! $f1c4  a1 = $6cda            ; the animation sequence cursor
+//! $f1c8  a1 = (a1)             ; -> this cell's frame block
+//! $f1ca  copy 20 bytes of it into $6ce4, $6cd6, $6cb6, $6cba, $6cbc, ...
+//! $f1ee  subq.w #1,$6ce2       ; frames left on this cell
+//! $f1f2  bne $f1fc
+//! $f1f4  addq.l #6,a1          ; expired -> next cell, 6 bytes on
+//! $f1f6  $6ce2 = (4,a1)        ; reload its hold count
+//! $f1fc  tst.l (a1) ; bne out  ; a zero longword terminates the sequence
+//! $f202  ... the sequence ENDED: load the next one and change state
+//! ```
+//!
+//! So an animation sequence is a list of 6-byte cells -- a 4-byte pointer and a
+//! 2-byte hold count -- ending in a zero longword, and **running off the end is
+//! what changes state**. `$f1c4`'s own ending goes to state 0; state 20's copy
+//! of the tail (`$1099a`) goes to `$6caa`, the pending state.
+//!
+//! That makes the observed `0 -> 20 -> 20 -> 20 -> 1` exactly reproducible.
+//! Pressing Left from idle (`$f260`) writes `$6caa = 1`, loads the sequence at
+//! `$2f7e` -- **one cell, hold 4, then the terminator** -- sets `$6cae = $14`
+//! and falls into the tail in the same tick, so the count is already 3 when the
+//! frame is sampled. Three more handler runs take it to 0, the cursor hits the
+//! terminator, and `$6caa` becomes the state.
+//!
+//! `$6cba` is a per-frame X delta lifted out of the animation frame block and
+//! applied by the idle path at `$f118` (`$6ca2 += $6cba`), so some movement is
+//! animation-driven. The walk states do their own `subq.w #3` instead. Only the
+//! turn transient's sequence is modelled here; the frame blocks live in data
+//! this crate does not carry. `// UNKNOWN: see bd discr-75o`.
 
 use crate::{
     DirBits, Event, FACING_LEFT, FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE, GRID_CELL_FAR_ROW, Input,
     Player, TILE_CELLS, Tile, WALK_STEP, WALK_X_MAX, WALK_X_MIN,
 };
+
+/// The transient state a player passes through when starting or stopping a
+/// walk. ST `$10e2c` entry 20 = `$1094a`.
+pub const STATE_TURN: u8 = 0x14;
+
+/// ST state 1: walk left (`$f5e2`). Also the value `$6ca9` takes while it runs.
+pub const STATE_WALK_LEFT: u8 = 1;
+
+/// ST state 2: walk right (`$f7f6`).
+pub const STATE_WALK_RIGHT: u8 = 2;
+
+/// ST state 0: idle, handled inline in `$f104` rather than through the table.
+pub const STATE_IDLE: u8 = 0;
+
+/// Frames the turn transient holds. ST `$2f7e`, the sequence loaded at `$f27a`,
+/// `$f2ce` and `$f7c4`: **one cell with a hold of 4, then a zero terminator**.
+///
+/// The tick that enters state 20 also runs the animation tail, so the count is
+/// 3 at the first sample and the state changes on the fourth handler run --
+/// which is the three consecutive frames of state 20 the fixture shows, at
+/// f11-f13 and again at f29-f31.
+pub const TURN_ANIM_HOLD: u16 = 4;
 
 /// How far ahead of the player the destination cell is probed.
 ///
@@ -100,8 +160,18 @@ fn walk(
     // ST $f5e2 / $f7f6: the handler sets $6ca9 on entry.
     player.facing = facing;
 
-    // ST $f650 / $f864: cmp.b against the direction bit, bne past the write.
-    if input.dir == held {
+    // ST $f654 / $f868: `cmpi.b #$04,(a0); bne $f7b8` -- a WHOLE-BYTE compare,
+    // so anything other than exactly this direction leaves the walk. The exit
+    // clears the pending state ($f7b8 / $f9ce) and enters the turn transient
+    // ($f7d2 / $f9e8 write #$14), which then lands on state 0.
+    if input.dir != held {
+        player.pending_state = STATE_IDLE;
+        enter_turn(player);
+        player.grid_cell = grid_cell(player.world_x, player.world_y);
+        return;
+    }
+
+    {
         let probe = (player.world_x + step_x.signum() * PROBE_AHEAD).clamp(WALK_X_MIN, WALK_X_MAX);
         // ST $f63e / $f852: tst.w tile+$00 -- 0 = destroyed = unwalkable.
         if tiles[grid_cell(probe, player.world_y) as usize].walkable() {
@@ -114,23 +184,86 @@ fn walk(
     player.grid_cell = grid_cell(player.world_x, player.world_y);
 }
 
+/// Enter the turn transient. ST `$f27a`-`$f288`, `$f2ce`-`$f2dc`, `$f7c4`-`$f7d2`
+/// and `$f9e0`-`$f9e8`: load the `$2f7e` sequence, set `$6ce2` from its hold,
+/// write `$6cae = $14`, and fall into the animation tail in the same tick --
+/// which is the `- 1` here.
+fn enter_turn(player: &mut Player) {
+    player.state_index = STATE_TURN;
+    player.anim_hold = TURN_ANIM_HOLD - 1;
+}
+
+/// State 0, the idle path inlined in `$f104` rather than reached through the
+/// jump table -- entry 0 of `$10e2c` is a null pointer.
+///
+/// Only the two walk directions are modelled. Up (`$f222` -> state 5), down
+/// (`$f240`), fire (`$f21e bmi` -> `$f306`) and the `$6cac`/`$6cad` paths that
+/// reach state 26 all lead into handlers whose behaviour is unrecovered, so
+/// this leaves `state_index` alone for them rather than entering a state it
+/// cannot then run. `// UNKNOWN: see bd discr-75o`.
+fn idle(player: &mut Player, input: Input) {
+    // $f1ba: tst.b (a0); beq -> clr.b $6ca9 at $f1c0.
+    if input.dir == DirBits(0) && !input.fire_edge {
+        player.facing = 0;
+        return;
+    }
+
+    let pending = if input.dir == DirBits::LEFT {
+        STATE_WALK_LEFT
+    } else if input.dir == DirBits::RIGHT {
+        STATE_WALK_RIGHT
+    } else {
+        // Up, down, fire and every combination: unmodelled.
+        return;
+    };
+
+    // $f266 / $f2ba: `tst.b $6ca9; bne` skips the turn entirely and enters the
+    // walk state directly. So the transient plays only from a standing start,
+    // where the idle path has just cleared $6ca9 -- which is why the fixture
+    // shows it on f11 (after ten idle frames) and again on f29.
+    player.pending_state = pending;
+    if player.facing == 0 {
+        enter_turn(player);
+    } else {
+        player.state_index = pending;
+    }
+}
+
+/// State 20, the turn transient. ST `$1094a`.
+///
+/// Stamps `$6ca9`, runs the animation tail, and on the frame the `$2f7e`
+/// sequence runs out writes `$6caa` into `$6cae` (`$1099a`).
+fn turn(player: &mut Player) {
+    player.facing = STATE_TURN;
+    match player.anim_hold.checked_sub(1) {
+        Some(0) | None => player.state_index = player.pending_state,
+        Some(left) => player.anim_hold = left,
+    }
+}
+
 /// Advance one player by one frame.
 ///
 /// `tiles` is read-only here: the movement code only `tst.w`s `tile+$00` as a
 /// walkability gate. Only the disc loop writes tiles.
 ///
-/// No player event exists, so `events` is never pushed to. Transitions *into*
-/// the walk states are not modelled either: the notes give the handler for each
-/// state number but not what selects the next one (`bd discr-75o`), so
-/// `state_index` is an input to this function, never an output.
+/// No player event exists, so `events` is never pushed to.
+///
+/// Part 10 made `state_index` an **output** for the four states the fixtures
+/// exercise on player 1 -- idle, the turn transient, and the two walks. The
+/// other 28 entries are still opaque pass-throughs: their handler addresses are
+/// known and their behaviour is not, so entering one would mean running a state
+/// this crate cannot simulate. `// UNKNOWN: see bd discr-75o`.
 pub fn step(
     player: &mut Player,
     input: Input,
     tiles: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
-    // ST $f5d0: dispatch on player+$0e through the 32-entry table at $10e2c.
+    // ST $f108: `tst.b $6cae; bne $f5d0` -- state 0 is the inline idle path and
+    // everything else dispatches through the 32-entry table at $10e2c.
     match player.state_index {
+        STATE_IDLE => idle(player, input),
+        STATE_TURN => turn(player),
         1 => walk(player, input, tiles, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
         2 => walk(
             player,
@@ -147,15 +280,13 @@ pub fn step(
         11 => {}      // $10554. UNKNOWN: see bd discr-75o
         14 => {}      // $106b2, entered under Right+Fire. UNKNOWN: see bd discr-75o
         19 => {}      // $108f4. UNKNOWN: see bd discr-75o
-        20 => {}      // $1094a, transient entered when walking starts. UNKNOWN: see bd discr-75o
         21 => {}      // $109aa. UNKNOWN: see bd discr-75o
         23 => {}      // $10a72. UNKNOWN: see bd discr-75o
         24 => {}      // $10ac4. UNKNOWN: see bd discr-75o
         27 => {}      // $10c8a. UNKNOWN: see bd discr-75o
         31 => {}      // $10dda. UNKNOWN: see bd discr-75o
         16 | 17 => {} // never seen in Hatari, oracle only. UNKNOWN: see bd discr-rf9
-        // 0 is the state the Y handlers store on release (`$fe6e` / `$fbaa`
-        // `move.b #$00,$6cae`); it and every other index are unattested.
+        // Every other index is unattested.
         _ => {}
     }
 }
@@ -174,9 +305,8 @@ mod tests {
         Player {
             world_x,
             world_y: 18,
-            facing: 0,
             state_index,
-            grid_cell: 0,
+            ..Player::default()
         }
     }
 
@@ -296,12 +426,70 @@ mod tests {
 
     #[test]
     fn opaque_states_move_nothing() {
-        for state in [0, 5, 11, 14, 16, 17, 19, 20, 21, 23, 24, 27, 31] {
+        // 0 and 20 left the list in Part 10: they are modelled now.
+        for state in [5, 11, 14, 16, 17, 19, 21, 23, 24, 27, 31] {
             let before = walking(state, 117);
             let mut p = before;
             run(&mut p, press(DirBits::LEFT), &FLOOR);
             assert_eq!(p, before, "state {state} must be a pass-through");
         }
+    }
+
+    /// golden.ndjson f10-f14, the whole start-walking sequence. Idle with Left
+    /// pressed enters the turn transient ($f274/$f288), which holds for exactly
+    /// three sampled frames off the `$2f7e` hold of 4, and then becomes the
+    /// pending walk state ($1099a).
+    #[test]
+    fn pressing_left_from_idle_turns_for_three_frames_then_walks() {
+        let mut p = walking(STATE_IDLE, 117);
+        let left = press(DirBits::LEFT);
+
+        // f10 -> f11: enter the transient. The entering tick runs the animation
+        // tail too, so the count is already 3.
+        run(&mut p, left, &FLOOR);
+        assert_eq!(
+            (p.state_index, p.pending_state, p.anim_hold),
+            (STATE_TURN, STATE_WALK_LEFT, 3)
+        );
+        assert_eq!(p.world_x, 117, "the transient does not move");
+
+        // f11 -> f13: three more handler runs, the last of which transitions.
+        for expected in [2, 1] {
+            run(&mut p, left, &FLOOR);
+            assert_eq!((p.state_index, p.anim_hold), (STATE_TURN, expected));
+            assert_eq!(p.facing, STATE_TURN, "$1094a stamps $6ca9 on entry");
+        }
+        run(&mut p, left, &FLOOR);
+        assert_eq!(p.state_index, STATE_WALK_LEFT);
+        assert_eq!(p.world_x, 117, "and still has not moved");
+
+        // f14 -> f15: now it walks, three units a frame.
+        run(&mut p, left, &FLOOR);
+        assert_eq!(
+            (p.state_index, p.world_x, p.facing),
+            (STATE_WALK_LEFT, 114, 1)
+        );
+    }
+
+    /// golden.ndjson f28-f32: releasing the stick leaves the walk through the
+    /// same transient, with a pending state of 0 ($f7b8 clr.b $6caa).
+    #[test]
+    fn releasing_the_stick_turns_back_to_idle() {
+        let mut p = walking(STATE_WALK_LEFT, 75);
+        let none = Input::default();
+
+        run(&mut p, none, &FLOOR);
+        assert_eq!(
+            (p.state_index, p.pending_state, p.anim_hold),
+            (STATE_TURN, STATE_IDLE, 3)
+        );
+        for _ in 0..2 {
+            run(&mut p, none, &FLOOR);
+            assert_eq!(p.state_index, STATE_TURN);
+        }
+        run(&mut p, none, &FLOOR);
+        assert_eq!(p.state_index, STATE_IDLE);
+        assert_eq!(p.world_x, 75, "leaving a walk does not move");
     }
 
     #[test]
