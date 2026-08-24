@@ -329,6 +329,12 @@ pub fn aim_for(hook: SteerHook, players: &[Player; 2]) -> (Option<i16>, Option<i
             Some(players[PlayerId::One.index()].world_x - AIM_X_OFFSET),
             Some(aim_y()),
         ),
+        // $a78e: $6ca2 - 4, X only -- it rts'es before the vertical block, the
+        // same shape as $a7d8.
+        SteerHook::AtP1Wide => (
+            Some(players[PlayerId::One.index()].world_x - AIM_X_WIDE_OFFSET),
+            None,
+        ),
         // $a7d8: $6d22 - 4, X only.
         SteerHook::AtP2Wide => (
             Some(players[PlayerId::Two.index()].world_x - AIM_X_WIDE_OFFSET),

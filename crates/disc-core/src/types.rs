@@ -330,7 +330,8 @@ pub const COLUMN_TABLE_LEN: i16 = 160;
 /// | value | ST | aim | installed by |
 /// |---|---|---|---|
 /// | [`SteerHook::None`] | `clr.l ($12,a5)` | -- | every bound, and `$a276` |
-/// | [`SteerHook::AtP1`] | `$a71a` | `$6ca2 - $13`, then `$a758`'s `$6ca4 - $10` | `$113e2`, in player 1's hit test `$10fd8` |
+/// | [`SteerHook::AtP1`] | `$a71a` | `$6ca2 - $13`, then `$a758`'s `$6ca4 - $10` | `$113e2`, in player 1's cascade |
+/// | [`SteerHook::AtP1Wide`] | `$a78e` | `$6ca2 - $04`, **X only** | `$11334` and `$11372`, same cascade |
 /// | [`SteerHook::AtP2Wide`] | `$a7d8` | `$6d22 - $04`, **X only** -- it `rts`es at `$a814` | `$cb70` and `$cbae`, in player 2's hit test `$c826` |
 /// | [`SteerHook::AtP2Deep`] | `$a816` | `$6d22 - $13`, then falls through to `$a854`'s `$6d24 - $10` | `$cc1e`, same routine |
 ///
@@ -346,8 +347,16 @@ pub enum SteerHook {
     /// No hook: the disc is not steered this frame.
     #[default]
     None,
-    /// ST `$a71a` (+ `$a758`): home on player 1, both axes.
+    /// ST `$a71a` (+ `$a758`): home on player 1 with the deep X offset, both axes.
     AtP1,
+    /// ST `$a78e`: home on player 1 with the shallow X offset, X only -- the
+    /// exact mirror of [`SteerHook::AtP2Wide`].
+    ///
+    /// Found in Part 11 by a fixture that walks player 1 into a disc's path.
+    /// **No earlier trace had ever installed it**, so the enum was missing a
+    /// variant and `tracecheck` would have panicked on it rather than quietly
+    /// mis-steering -- which is why that mapping panics.
+    AtP1Wide,
     /// ST `$a7d8`: home on player 2 with the shallow X offset, X only.
     AtP2Wide,
     /// ST `$a816` (+ `$a854`): home on player 2 with the deep X offset, both axes.

@@ -1412,10 +1412,15 @@ the disc's entire flight including two serves, a floor bounce and two returns.
 ### Still not decoded, in the same routine
 
 **The racket path, `$11030`-`$110a8`.** States 7..10 catch the disc in a second,
-wider box built from `$6cc6`/`$6cc8`, add `$6cc4` to its `vel_x`, and at
-`$113e2` install the `$a71a` steering hook. It is the last thing between
-`disc-core` and not being fed `disc+$12`, and player 2's `$c826` is its twin.
+wider box built from `$6cc6`/`$6cc8` and add `$6cc4` to its `vel_x`.
 bd discr-ovl.1.
+
+**CORRECTED in Part 11: `$113e2` is NOT in the racket path.** It is player 1's
+own anticipation cascade -- the exact mirror of player 2's `$cb2c`-`$cc9a`, with
+`$6cb2` for the reach, `$e` = 14 for the row threshold and `$7616` for the bank.
+The racket path installs nothing. That mattered because it made discr-ovl.1's
+"player-1 half" look like an unreachable block when it is in fact the same
+cascade already decoded for player 2 with three constants swapped.
 
 ## A tile bank is eight tiles held twice, and destruction is delayed (Part 10e)
 
@@ -2003,3 +2008,47 @@ smash (`$aef4`/`$ae94`), and **12** for the intercept's step-across (`$cbe0`).
 `tests/fixtures/golden.ndjson` 99 of 99 and `tests/fixtures/tile_damage.ndjson`
 214 of 214, **with nothing waived and nothing resynced** -- every compared row of
 both players, every tick. `mise run core-check`'s four runs are four clean runs.
+
+## There are FOUR steering hooks, not three (Part 11)
+
+A fixture minted to look for a swing found something else: `$a78e`, a fourth
+routine in `disc+$12`, which no earlier trace had ever installed.
+
+```
+$a78e  move.w $6ca2,d5 ; subq.w #4,d5    ; player 1's SHALLOW aim
+$a794  cmp.w d0,d5 ; bgt/blt ...          ; the same three-case rule
+```
+
+With it the set is symmetric, two per player, and the pairing is exact:
+
+| hook | aim | axes | installed by |
+|---|---|---|---|
+| `$a71a` | `$6ca2 - $13` | X, then `$a758`'s Y | `$113e2` |
+| `$a78e` | `$6ca2 - $04` | **X only** | `$11334`, `$11372` |
+| `$a7d8` | `$6d22 - $04` | **X only** | `$cb70`, `$cbae` |
+| `$a816` | `$6d22 - $13` | X, then `$a854`'s Y | `$cc1e` |
+
+So each player's cascade installs its shallow hook when it starts tracking a
+disc (`$11334` / `$cb70`) and again if it only reaches (`$11372` / `$cbae`), and
+its deep hook when it commits to stepping across (`$113e2` / `$cc1e`). One
+routine, mirrored.
+
+`disc_core::SteerHook` had three variants and `tracecheck`'s pointer mapping
+**panics** on an unrecognised one rather than silently steering at nothing. That
+choice is what turned a missing variant into a loud failure the first time a
+trace installed `$a78e`, instead of a quiet mis-steer nobody would have noticed.
+
+### And player 1's cascade is the same code with three constants swapped
+
+```
+                      player 1            player 2
+reach                 $6cb2 (12)          $6d32 (26)
+row threshold         $e  = 14            $3a = 58
+own bank              $7616               $7596
+shallow / deep hook   $a78e / $a71a       $a7d8 / $a816
+```
+
+The row threshold differs because each player probes at its own depth: player 1's
+`world_y` is 18 and player 2's is 54. Everything else about the cascade --
+`$11340`-`$113ee` against `$cb2c`-`$cc3e` -- is instruction for instruction the
+same.

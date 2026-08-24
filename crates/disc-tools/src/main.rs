@@ -262,6 +262,7 @@ fn hook_raw(h: disc_core::SteerHook) -> u32 {
     match h {
         disc_core::SteerHook::None => 0,
         disc_core::SteerHook::AtP1 => 0xa71a,
+        disc_core::SteerHook::AtP1Wide => 0xa78e,
         disc_core::SteerHook::AtP2Wide => 0xa7d8,
         disc_core::SteerHook::AtP2Deep => 0xa816,
     }
@@ -271,6 +272,7 @@ fn steer_hook(raw: u32) -> disc_core::SteerHook {
     match raw {
         0 => disc_core::SteerHook::None,
         0xa71a => disc_core::SteerHook::AtP1,
+        0xa78e => disc_core::SteerHook::AtP1Wide,
         0xa7d8 => disc_core::SteerHook::AtP2Wide,
         0xa816 => disc_core::SteerHook::AtP2Deep,
         other => panic!("trace has an unknown disc+$12 hook: ${other:x}"),

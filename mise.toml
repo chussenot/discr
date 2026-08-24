@@ -34,6 +34,17 @@ GOLDEN = "tests/fixtures/golden.ndjson"
 # 10 before Part 10, 51, 118, 189, 207, 214.
 TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 
+# The third fixture, minted in Part 11 (tests/fixtures/p1_walk.provenance.md).
+# Player 1 walks left for 25 frames and then stands still, which is enough to
+# reach code the other two never do -- including a FOURTH steering hook, $a78e,
+# whose SteerHook variant did not exist until this fixture found it.
+#
+# It is the only one of the three that is not clean, which is why it is worth
+# having: a clean gate measures nothing new. 123 ticks, then player 2's strike
+# at $c934 -- the mirror of player 1's, which IS modelled (discr-b6x).
+P1_WALK = "tests/fixtures/p1_walk.ndjson"
+P1_WALK_MIN_AGREE = "123"
+
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
 # NOTHING resynced, every compared row of BOTH players -- and on golden it now
 # reproduces THE WHOLE FIXTURE.  Resyncing buys nothing there any more.
@@ -68,7 +79,7 @@ depends = ["oracle"]
 run = "./scripts/oracle_check.sh"
 
 [tasks.core-check]
-description = "The phase gate: fmt + clippy + tests + four tracecheck runs over both fixtures"
+description = "The phase gate: fmt + clippy + tests + five tracecheck runs over three fixtures"
 run = [
   "cargo fmt --check",
   "cargo clippy --all-targets -- -D warnings",
@@ -77,6 +88,7 @@ run = [
   "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived --min-agree $TILE_MIN_AGREE",
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --min-agree $FULL_MIN_AGREE",
   "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --min-agree $TILE_FULL_MIN_AGREE",
+  "cargo run -q -p disc-tools --bin tracecheck -- $P1_WALK --min-agree $P1_WALK_MIN_AGREE",
 ]
 
 [tasks.tracecheck]
@@ -84,6 +96,7 @@ description = "The ungated view: both fixtures without --min-agree, so a diverge
 run = [
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived",
   "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived",
+  "cargo run -q -p disc-tools --bin tracecheck -- $P1_WALK",
 ]
 
 [tasks.tracecheck-deep]
