@@ -311,7 +311,7 @@ impl Frame {
             frame: u32::from(self.vbl_6ab4),
             ..GameState::default()
         };
-        for (p, t) in st.players.iter_mut().zip(&self.player) {
+        for (i, (p, t)) in st.players.iter_mut().zip(&self.player).enumerate() {
             *p = Player {
                 world_x: t.x,
                 world_y: t.y,
@@ -329,6 +329,14 @@ impl Frame {
                 // start with the player idle, so cell 0 is right at frame 0.
                 anim_cell: 0,
                 anim_shown: 0,
+                // Both fixtures start with each player idle, so the sequence
+                // running at frame 0 is the idle one.
+                anim_base: disc_core::player::idle_anim(if i == 0 {
+                    disc_core::PlayerId::One
+                } else {
+                    disc_core::PlayerId::Two
+                })
+                .start,
                 anim_cursor: t.anim,
                 throw_dir_kind: t.throw_dk,
                 throw_damage: t.throw_mag,
@@ -927,13 +935,12 @@ mod tests {
 
     /// Resyncing is opt-in, and it buys much less than it used to: the default
     /// run -- nothing waived, nothing resynced, every compared row of both
-    /// players -- reaches **58** ticks. It stops where player 2 leaves state 17
-    /// for state 0, which happens when the animation sequence that state 18's
-    /// commit loaded runs out, and this crate does not carry the sequence
-    /// tables (discr-75o).
+    /// players -- reaches **59** ticks. It stops where player 2's state-16 entry
+    /// shifts its `world_x` by eight, one more `$c6ec` handler this crate has
+    /// not transcribed (discr-b6x).
     ///
-    /// It stopped on frame 1 before Part 10c, on 22 before 10f, and on 40
-    /// before state 18's handler landed.
+    /// It stopped on frame 1 before Part 10c, 22 before 10f, 40 before state
+    /// 18's handler, and 59 once the animation tables landed.
     #[test]
     fn without_skip_waived_the_run_still_stops_on_player_two() {
         let f = golden();
@@ -945,7 +952,7 @@ mod tests {
             feed_disc_inputs(&mut state, &prev.seed());
             state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
             if let Some(d) = first_divergence(expected, &state) {
-                assert_eq!(matched, 58, "matched ticks with nothing waived");
+                assert_eq!(matched, 59, "matched ticks with nothing waived");
                 assert!(is_player_two(&d.field), "{}", d.field);
                 return;
             }

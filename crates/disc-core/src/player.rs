@@ -99,35 +99,81 @@ pub const STATE_DEAD: u8 = 0x17;
 /// 255 is out of range for any sequence this crate carries.
 pub const NO_CELL: u8 = 0xff;
 
-/// One animation sequence: the hold counts of its cells, in order.
+/// One animation sequence, identified by the ST address a handler `lea`s.
 ///
-/// ST: a list of six-byte cells -- a four-byte frame-block pointer and a
-/// two-byte hold -- ending in a zero longword. The frame blocks are sprite and
-/// hit-box data this crate does not carry, so only the holds are here, which is
-/// all the state machine's timing depends on.
-pub type AnimSeq = &'static [u16];
-
-/// ST `$2f7e`: the turn transient. One cell, hold 4, then the terminator.
+/// A handler does not always load the *start* of a table: `$c1d4 lea $45f0,a1`
+/// picks a cell partway into the block at `$45ea`, and the sequence then runs
+/// forward from there to the same zero terminator. So a sequence is identified
+/// by its **starting cursor**, which is what [`Player::anim_base`] holds, and
+/// the holds recorded here are the ones from that cursor on.
 ///
-/// Loaded at `$f27a`, `$f2ce`, `$f7c4` and `$f9e0`.
-pub const ANIM_TURN: AnimSeq = &[4];
+/// The frame-block pointers are sprite data this crate does not carry; only the
+/// holds matter to the state machine's timing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Anim {
+    /// The ST address the handler loads into `$6cda` / `$6d5a`.
+    pub start: u32,
+    /// The hold count of each cell from there to the terminator.
+    pub holds: &'static [u16],
+}
 
-/// ST `$2d50`: knocked down. Two cells, holds 4 and 4. Loaded at `$11226`.
-pub const ANIM_STRUCK_DOWN: AnimSeq = &[4, 4];
+macro_rules! anims {
+    ($($name:ident = $addr:literal, $holds:expr, $doc:literal;)*) => {
+        $(
+            #[doc = $doc]
+            pub const $name: Anim = Anim { start: $addr, holds: &$holds };
+        )*
+        /// Every sequence transcribed so far, for [`anim_for`].
+        pub const ANIMS: &[Anim] = &[$($name),*];
+    };
+}
 
-/// ST `$2d60`: knocked upward. Two cells, holds 4 and 4. Loaded at `$11210`.
-pub const ANIM_STRUCK_UP: AnimSeq = &[4, 4];
+anims! {
+    ANIM_P1_IDLE      = 0x2c78, [6, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6],
+        "ST `$2c78`, loaded at `$f202`: player 1 standing, with three long pauses.";
+    ANIM_TURN         = 0x2f7e, [4],
+        "ST `$2f7e`, loaded at `$f27a` / `$f2ce` / `$f7c4` / `$f9e0`: the turn transient.";
+    ANIM_STRUCK_DOWN  = 0x2d50, [4, 4],
+        "ST `$2d50`, loaded at `$11226`: knocked down.";
+    ANIM_STRUCK_UP    = 0x2d60, [4, 4],
+        "ST `$2d60`, loaded at `$11210`: knocked upward.";
+    ANIM_DEAD         = 0x2d70, [4; 16],
+        "ST `$2d70`, loaded at `$f1a0`: out of energy. State 23 never leaves it.";
+    ANIM_P1_WALK_LEFT = 0x2a8a, [4, 4, 4, 4, 4, 4],
+        "ST `$2a8a`, loaded at `$f296`: player 1 walking left.";
+    ANIM_P2_IDLE      = 0x468c, [6, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6],
+        "ST `$468c`: player 2 standing -- the same shape as player 1's.";
+    ANIM_INTERCEPT    = 0x4612, [6, 6, 6, 6],
+        "ST `$4612`, loaded at `$cc26`: player 2 stepping across to intercept.";
+    ANIM_REACH        = 0x466a, [6, 6, 4, 4, 4],
+        "ST `$466a`, loaded at `$cbb6`: player 2 reaching without moving.";
+    ANIM_AFTER_INTERCEPT = 0x45f0, [4, 4, 4, 4, 4],
+        "ST `$45f0`, loaded at `$c1d4` when the intercept commits. Five cells of \
+         four, so state 15 and the state 17 that follows the serve share twenty \
+         frames between them -- which is what ends state 17.";
+    ANIM_MISSED_CATCH = 0x462e, [6, 6],
+        "ST `$462e`, loaded at `$cab8` when a catch misses.";
+}
 
-/// ST `$2d70`: the death sequence. Sixteen cells, hold 4 each. Loaded at
-/// `$f1a0`, and state 23 never leaves it -- see [`dead`].
-pub const ANIM_DEAD: AnimSeq = &[4; 16];
+/// The sequence a handler loaded, by its ST address.
+///
+/// `None` for an address no handler this crate models ever loads -- there are
+/// far more sequences in the image than the fixtures touch, and guessing at one
+/// would be worse than treating it as unknown. `// UNKNOWN: see bd discr-75o`.
+#[must_use]
+pub fn anim_for(start: u32) -> Option<&'static Anim> {
+    ANIMS.iter().find(|a| a.start == start)
+}
 
-/// ST `$466a`: player 2 reaching for a disc, loaded at `$cbb6`. Its holds are
-/// not transcribed -- state 27's handler is not modelled, so nothing runs it.
-pub const ANIM_REACH: AnimSeq = &[4];
-
-/// ST `$4612`: player 2 stepping across, loaded at `$cc26`. Same caveat.
-pub const ANIM_INTERCEPT: AnimSeq = &[4];
+/// Which sequence a player falls back to when one runs out. ST `$f202` for
+/// player 1 and the same shape in player 2's tail.
+#[must_use]
+pub const fn idle_anim(who: PlayerId) -> Anim {
+    match who {
+        PlayerId::One => ANIM_P1_IDLE,
+        PlayerId::Two => ANIM_P2_IDLE,
+    }
+}
 
 /// What one run of the animation tail did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -144,17 +190,25 @@ pub enum AnimStep {
 /// Load a sequence and enter its first cell. ST: the three-instruction preamble
 /// every handler writes before setting `$6cae` --
 /// `lea <seq>,a1; move.w ($04,a1),$6ce2; move.l a1,$6cda`.
-pub fn enter_anim(player: &mut Player, seq: AnimSeq) {
+pub fn enter_anim(player: &mut Player, anim: Anim) {
+    player.anim_base = anim.start;
     player.anim_cell = 0;
     player.anim_shown = NO_CELL;
-    player.anim_hold = seq[0];
+    player.anim_hold = anim.holds.first().copied().unwrap_or(1);
 }
 
 /// The animation tail every handler ends in. ST `$f1c4`, faithfully in order:
 /// the frame block is copied *first* (which is what makes `$6ce4` the
 /// previous frame's cell for the next handler run), then the hold is
 /// decremented, then the cursor may advance.
-pub fn anim_tick(player: &mut Player, seq: AnimSeq) -> AnimStep {
+pub fn anim_tick(player: &mut Player) -> AnimStep {
+    // The sequence is whichever one the handler that entered this state loaded.
+    let Some(anim) = anim_for(player.anim_base) else {
+        // A sequence this crate has not transcribed: hold, rather than invent a
+        // length. // UNKNOWN: see bd discr-75o.
+        return AnimStep::Holding;
+    };
+    let holds = anim.holds;
     // $f1ca: the copy, before anything else. Only the cell identity matters here.
     player.anim_shown = player.anim_cell;
 
@@ -165,7 +219,7 @@ pub fn anim_tick(player: &mut Player, seq: AnimSeq) -> AnimStep {
     }
     // $f1f4/$f1f6: six bytes on, and reload the hold from the new cell.
     player.anim_cell = player.anim_cell.saturating_add(1);
-    match seq.get(player.anim_cell as usize) {
+    match holds.get(player.anim_cell as usize) {
         Some(&hold) => {
             player.anim_hold = hold;
             AnimStep::Advanced
@@ -290,7 +344,7 @@ fn enter_turn(player: &mut Player) {
     enter_anim(player, ANIM_TURN);
     // $f292 / $f7d8: the entering tick falls straight into the tail, so the
     // count is already down one before the frame is sampled.
-    anim_tick(player, ANIM_TURN);
+    anim_tick(player);
 }
 
 /// State 0, the idle path inlined in `$f104` rather than reached through the
@@ -309,7 +363,7 @@ fn idle(player: &mut Player, input: Input) {
         player.state_index = STATE_DEAD;
         enter_anim(player, ANIM_DEAD);
         // $f1b8 bra $f1c4: the tail runs on the entering tick too.
-        anim_tick(player, ANIM_DEAD);
+        anim_tick(player);
         return;
     }
 
@@ -347,7 +401,7 @@ fn idle(player: &mut Player, input: Input) {
 fn turn(player: &mut Player) {
     player.facing = STATE_TURN;
     // $1099a: the sequence running out is what writes $6caa into $6cae.
-    if anim_tick(player, ANIM_TURN) == AnimStep::Ended {
+    if anim_tick(player) == AnimStep::Ended {
         player.state_index = player.pending_state;
     }
 }
@@ -371,7 +425,7 @@ fn struck_down(player: &mut Player) {
         player.world_y -= 1;
     }
     // $10578 bra $f1c4: the plain tail, so the sequence ending lands on state 0.
-    if anim_tick(player, ANIM_STRUCK_DOWN) == AnimStep::Ended {
+    if anim_tick(player) == AnimStep::Ended {
         player.state_index = STATE_IDLE;
     }
     player.grid_cell = grid_cell(player.world_x, player.world_y);
@@ -387,7 +441,24 @@ fn struck_down(player: &mut Player) {
 /// `// UNKNOWN ($6c83, and what ever leaves this state): see bd discr-st8`.
 fn dead(player: &mut Player) {
     player.facing = STATE_DEAD;
-    anim_tick(player, ANIM_DEAD);
+    anim_tick(player);
+}
+
+/// State 17. ST `$1089a` / `$c192`: `bra` to the shared animation tail and
+/// nothing else -- no stamp, no movement, no decision.
+///
+/// So all it does is run whatever sequence the state that entered it had
+/// loaded, and **the sequence running out is what leaves it**. After a serve
+/// that sequence is `$45f0`, five cells of four, shared with the state 15 that
+/// preceded it: `golden.ndjson` spends twelve frames in state 15 and seven in
+/// state 17 and then falls back to state 0 on frame 59.
+fn stub(player: &mut Player, who: PlayerId) {
+    if anim_tick(player) == AnimStep::Ended {
+        // $f202-$f210 / $ac8c: the tail's own ending loads the idle sequence and
+        // writes state 0.
+        enter_anim(player, idle_anim(who));
+        player.state_index = STATE_IDLE;
+    }
 }
 
 /// State 18, stepping across to intercept. ST `$c196`.
@@ -414,7 +485,29 @@ fn intercept(player: &mut Player, input: Input) {
     }
     player.world_x -= INTERCEPT_STEP;
     player.grid_cell = grid_cell(player.world_x, player.world_y);
+    // $c1d4-$c1e2: the throw's own sequence, then the state, then $c1e8's bra
+    // into the tail -- so the entering tick advances it once like every other.
     player.state_index = STATE_THROW_STANDING;
+    enter_anim(player, ANIM_AFTER_INTERCEPT);
+    anim_tick(player);
+}
+
+/// The four throw states, whose handlers -- `$b3ee`, `$b4a0`, `$c068`, `$c0fe` --
+/// all end in `bra $ac40`, the shared tail.
+///
+/// What they *decide* (whether the animation cursor has reached the release
+/// frame) is in [`crate::GameState::tick`], because it builds a disc record.
+/// What is here is the part every handler shares: the animation runs, and the
+/// sequence ending drops the state back to 0.
+///
+/// Not modelled: states 3 and 4 also slide the player one unit a frame during
+/// the wind-up and jump ten at one animation frame. `// UNKNOWN: see bd
+/// discr-b6x`.
+fn throwing(player: &mut Player, who: PlayerId) {
+    if anim_tick(player) == AnimStep::Ended {
+        enter_anim(player, idle_anim(who));
+        player.state_index = STATE_IDLE;
+    }
 }
 
 /// State 12, knocked upward. ST `$1057c`, the mirror of [`struck_down`].
@@ -427,7 +520,7 @@ fn struck_up(player: &mut Player) {
     if anim_advanced(player) {
         player.world_y += 1;
     }
-    if anim_tick(player, ANIM_STRUCK_UP) == AnimStep::Ended {
+    if anim_tick(player) == AnimStep::Ended {
         player.state_index = STATE_IDLE;
     }
     player.grid_cell = grid_cell(player.world_x, player.world_y);
@@ -806,6 +899,7 @@ fn can_stand(player: &Player, probe_x: i16, own_bank: &[Tile; TILE_CELLS]) -> bo
 /// this crate cannot simulate. `// UNKNOWN: see bd discr-75o`.
 pub fn step(
     player: &mut Player,
+    who: PlayerId,
     input: Input,
     tiles: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
@@ -838,6 +932,8 @@ pub fn step(
         STATE_STRUCK_UP => struck_up(player),
         STATE_DEAD => dead(player),
         STATE_INTERCEPT => intercept(player, input),
+        STATE_STUB => stub(player, who),
+        3 | 4 | 15 | 16 => throwing(player, who),
         1 => walk(player, input, tiles, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
         2 => walk(
             player,
@@ -850,15 +946,16 @@ pub fn step(
         // Tier-1 states: the handler address is known, the behaviour is not.
         // Opaque pass-through -- moving a field we cannot justify would only
         // make a trace comparison diverge on the fields these do not touch.
-        5 => {}       // $fb6e (tests fire, btst #7,(a0) at $fb74). UNKNOWN: see bd discr-75o
-        14 => {}      // $106b2, entered under Right+Fire. UNKNOWN: see bd discr-75o
-        19 => {}      // $108f4. UNKNOWN: see bd discr-75o
-        21 => {}      // $109aa. UNKNOWN: see bd discr-75o
-        24 => {}      // $10ac4. UNKNOWN: see bd discr-75o
-        27 => {}      // $10c8a. UNKNOWN: see bd discr-75o
-        31 => {}      // $10dda. UNKNOWN: see bd discr-75o
-        16 | 17 => {} // never seen in Hatari, oracle only. UNKNOWN: see bd discr-rf9
-        // Every other index is unattested.
+        5 => {}  // $fb6e (tests fire, btst #7,(a0) at $fb74). UNKNOWN: see bd discr-75o
+        14 => {} // $106b2, entered under Right+Fire. UNKNOWN: see bd discr-75o
+        19 => {} // $108f4. UNKNOWN: see bd discr-75o
+        21 => {} // $109aa. UNKNOWN: see bd discr-75o
+        24 => {} // $10ac4. UNKNOWN: see bd discr-75o
+        27 => {} // $10c8a. UNKNOWN: see bd discr-75o
+        31 => {} // $10dda. UNKNOWN: see bd discr-75o
+        // States 16 and 17 used to sit here under bd discr-rf9, "never observed
+        // in Hatari"; player 2 spends much of both fixtures in them and they
+        // are modelled above. Every other index is still unattested.
         _ => {}
     }
 }
@@ -891,7 +988,7 @@ mod tests {
     }
 
     fn run(player: &mut Player, input: Input, tiles: &[Tile; TILE_CELLS]) {
-        step(player, input, tiles, &mut Vec::new());
+        step(player, PlayerId::One, input, tiles, &mut Vec::new());
     }
 
     /// The four `$6cb0` observations of the Part-4 `player_x_hunt` and
@@ -987,6 +1084,7 @@ mod tests {
         let mut p = walking(1, 117);
         step(
             &mut p,
+            PlayerId::One,
             Input {
                 dir: DirBits::LEFT,
                 fire_edge: true,
@@ -1084,7 +1182,13 @@ mod tests {
     fn no_walk_produces_an_event() {
         let mut events = Vec::new();
         let mut p = walking(2, 117);
-        step(&mut p, press(DirBits::RIGHT), &FLOOR, &mut events);
+        step(
+            &mut p,
+            PlayerId::One,
+            press(DirBits::RIGHT),
+            &FLOOR,
+            &mut events,
+        );
         assert!(events.is_empty());
     }
 }

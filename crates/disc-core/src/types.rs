@@ -213,6 +213,12 @@ pub struct Player {
     /// Sequences are named in [`crate::player`]; a handler that runs one holds
     /// its cell index in [`Player::anim_cell`].
     pub anim_hold: u16,
+    /// The ST address of the animation sequence this player is running -- the
+    /// value a handler `lea`d into `$6cda` / `$6d5a` when it entered the state.
+    ///
+    /// Identifies the sequence for [`crate::player::anim_for`]. Distinct from
+    /// [`Player::anim_cursor`], which is the *current* cell and advances.
+    pub anim_base: u32,
     /// Which cell of the current animation sequence is showing. ST: the offset
     /// of `$6cda` from the sequence base, in six-byte steps.
     pub anim_cell: u8,

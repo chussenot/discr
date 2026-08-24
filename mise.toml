@@ -35,13 +35,14 @@ GOLDEN = "tests/fixtures/golden.ndjson"
 TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
-# NOTHING resynced, every compared row of BOTH players.  58 ticks, stopping where
-# player 2 leaves state 17 for state 0 -- which happens when the animation
-# sequence state 18's commit loaded runs out, and disc-core does not carry the
-# sequence tables (discr-75o).
+# NOTHING resynced, every compared row of BOTH players.  59 ticks, stopping where
+# player 2's state-16 entry shifts its world_x by eight -- one more $c6ec handler
+# nobody has transcribed.  From here on this number moves one handler at a time,
+# and the method is settled: --watch the field, --disasm the writer, transcribe.
 # Before Part 10c this run stopped on frame 1, because player 2 was driven with
-# no input at all; 22 before 10f, 40 before state 18's handler landed.
-FULL_MIN_AGREE = "58"
+# no input at all; 22 before 10f, 40 before state 18's handler, 58 before the
+# animation tables.
+FULL_MIN_AGREE = "59"
 TILE_MIN_AGREE = "214"
 
 # The repository's first three commits predate conventional commits (`bd init`

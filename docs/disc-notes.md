@@ -1750,3 +1750,54 @@ sequence the entering state loaded -- `$45f0` after an intercept, `$462e` after
 a missed catch. `disc-core` carries hold counts for the four sequences it has
 transcribed and no more, so that is where the fully-compared run now stops.
 `// UNKNOWN: see bd discr-75o`.
+
+## The animation tables, and how a handler names a sequence (Part 10h)
+
+The state machine's clock needed the tables themselves, and recovering them
+turned up one thing worth knowing: **a handler does not always load the start of
+a table.** `$c1d4 lea $45f0,a1` picks a cell partway into the block that begins
+at `$45ea`, and the sequence then runs forward from there to the same zero
+terminator. So a sequence is identified by *the cursor a handler loads*, not by
+a table base.
+
+Recovering them from the image is mechanical once you know that a real cell is
+`(a plausible frame pointer, a small hold)` -- the packed tables sit adjacent, so
+walking backwards from a known cell stops on the previous table's terminator,
+and the hold field is what tells them apart: a real hold is 4, 6, 48 or 80,
+whereas a frame pointer read as a hold is five figures.
+
+The eleven sequences either fixture touches, all cross-checked against the `lea`
+that loads them:
+
+| ST | cells | holds | loaded by |
+|---|---|---|---|
+| `$2c78` | 16 | 6,6,6,6,**48**,6,6,6,**48**,6,6,6,**48**,6,6,6 | `$f202` -- player 1 standing |
+| `$2a8a` | 6 | 4 x 6 | `$f296` -- player 1 walking left |
+| `$2b0e` | 6 | 4 x 6 | `$f22a` -- player 1's state 5 |
+| `$2d50` | 2 | 4, 4 | `$11226` -- knocked down |
+| `$2d60` | 2 | 4, 4 | `$11210` -- knocked upward |
+| `$2d70` | 16 | 4 x 16 | `$f1a0` -- out of energy |
+| `$2f7e` | 1 | 4 | `$f27a` and three others -- the turn transient |
+| `$468c` | 16 | the same shape as `$2c78` | player 2 standing |
+| `$4612` | 4 | 6 x 4 | `$cc26` -- player 2 stepping across |
+| `$466a` | 5 | 6, 6, 4, 4, 4 | `$cbb6` -- player 2 reaching |
+| `$45f0` | 5 | 4 x 5 | `$c1d4` -- when the intercept commits |
+| `$462e` | 2 | 6, 6 | `$cab8` -- a missed catch |
+
+The three 48-frame holds in the idle sequence are the standing animation's
+pauses, and they are why an idle player's `+$09` sits still for so long.
+
+### `$45f0` is why state 17 ends when it does
+
+Twenty frames of animation -- five cells of four -- shared between state 15 and
+the state 17 that follows the serve. `golden.ndjson` spends twelve frames in
+state 15 and seven in state 17, and the sequence runs out on the twentieth tick,
+which is where `$ac8c` writes state 0. **A serve does not load a new sequence**:
+`$c068`'s release path is `bsr $a972; move.b #$11,$6d2e; bra $ac40`, so state 17
+inherits whatever state 15 was running, and the throw animation finishing is what
+ends the follow-through.
+
+That is the general shape of the whole machine, now that all the pieces are in
+one place: a state loads a sequence, its handler runs each frame, the sequence's
+holds pace whatever the handler does, and the sequence running out is the
+transition. Nothing in it is a timer.

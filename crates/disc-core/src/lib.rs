@@ -96,7 +96,8 @@ impl GameState {
 
         // ST $f5d0: the player state dispatch, per player.
         for (i, p) in self.players.iter_mut().enumerate() {
-            player::step(p, inputs[i], &self.tiles, &mut events);
+            let who = if i == 0 { PlayerId::One } else { PlayerId::Two };
+            player::step(p, who, inputs[i], &self.tiles, &mut events);
         }
 
         // ST $f1b4: `st $6d2d` -- entering the death state sets the flag on the

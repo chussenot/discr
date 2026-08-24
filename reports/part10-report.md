@@ -795,3 +795,72 @@ the image and readable with `--disasm`.
   transcription work rather than discovery.
 * **Two clean fixtures are still two fixtures.** The strictest run reaches 58 of
   99 ticks.
+
+---
+
+# Part 10h — the animation tables
+
+The smallest gain of the phase and the one that unlocks the rest: **59** on the
+fully-compared run, up from 58, and the machinery that makes every further
+handler cheap.
+
+## The scoreboard
+
+| run | 10g | **10h** |
+|---|---|---|
+| `golden --skip-waived` | 99 clean | **99 clean** |
+| `tile_damage --skip-waived` | 214 clean | **214 clean** |
+| `golden` (no flags) | 58 | **59** |
+
+One tick. What was actually built is the animation engine's missing half.
+
+## A handler names a sequence by the cursor it loads
+
+`$c1d4 lea $45f0,a1` picks a cell **partway into** the block that starts at
+`$45ea`, and the sequence runs forward from there to the same zero terminator. So
+a sequence is identified by the cursor a handler loads, not by a table base —
+which is why `Player` now carries `anim_base` (the loaded address) beside
+`anim_cell` and `anim_hold`, and why `Anim` is keyed by ST address.
+
+Recovering the tables is mechanical once you know a real cell is `(plausible
+frame pointer, small hold)`. The packed tables sit adjacent, so walking back from
+a known cell stops on the previous table's terminator, and the hold tells them
+apart: a real hold is 4, 6, 48 or 80, while a frame pointer read as a hold is
+five figures. Eleven sequences transcribed, every one cross-checked against the
+`lea` that loads it.
+
+## `$45f0` is why state 17 ends when it does
+
+Twenty frames — five cells of four — shared between state 15 and the state 17
+that follows the serve. Golden spends twelve frames in 15 and seven in 17, and
+the sequence runs out on the twentieth tick, which is where the tail writes state
+0. **A serve loads no new sequence**: `$c068`'s release path is `bsr $a972;
+move.b #$11,$6d2e; bra $ac40`, so state 17 inherits what state 15 was running,
+and the throw animation finishing is what ends the follow-through.
+
+With all the pieces in one place the whole machine is one sentence: a state loads
+a sequence, its handler runs each frame, the sequence's holds pace whatever the
+handler does, and the sequence running out *is* the transition. Nothing in it is
+a timer.
+
+## Also: states 16 and 17 came off discr-rf9
+
+They were waived as "seen only in an oracle autopilot run, never in Hatari".
+Player 2 spends much of both fixtures in them, both are modelled, and the four
+throw states plus the state-17 stub cover them. The bead's remaining scope is
+what states 3 and 4 do during their wind-up.
+
+## Honest limits
+
+* **One tick is one tick.** The next wall, frame 60, is player 2's state-16 entry
+  shifting its `world_x` by eight — one more `$c6ec` handler nobody has read.
+  From here the fully-compared number moves **one handler at a time**, and that
+  is now a grind rather than a discovery: `--watch` the field, `--disasm` the
+  writer, transcribe, measure.
+* **States 3 and 4's wind-up movement is not modelled** — they slide the player
+  a unit a frame and jump ten at one animation frame. Their *release* is, which
+  is why `tile_damage` frame 190's smash reproduces.
+* **`anim_tick` holds rather than guesses** when it meets a sequence address it
+  has not transcribed. That is deliberate: a wrong length would desynchronise a
+  state machine silently, and holding shows up as a visible divergence instead.
+* Both fixtures are still the same two fixtures.
