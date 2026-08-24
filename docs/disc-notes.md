@@ -1801,3 +1801,71 @@ That is the general shape of the whole machine, now that all the pieces are in
 one place: a state loads a sequence, its handler runs each frame, the sequence's
 holds pace whatever the handler does, and the sequence running out is the
 transition. Nothing in it is a timer.
+
+## Player 2's remaining handlers: the shape, and where the grind starts (Part 10i)
+
+`--watch` over `$6d22` gives every writer of player 2's `world_x` across the
+golden programme, which is the whole of what is left to transcribe on that field:
+
+```
+frame  0..5   pc $00b038   -3 per frame      state 1, walk left        modelled
+frame 10..20  pc $00abc6   +0               the IDLE PATH's X delta    NOT modelled
+frame 39      pc $00c1d0   -6               state 18's commit          modelled
+frame 59      pc $00abc6   -4               the idle path again
+frame 59      pc $00ae84   -4               state 16's ENTRY           NOT modelled
+frame 83      pc $00abc6   -4               the idle path
+frame 84      pc $00b24e   +3               state 2, walk right        modelled
+frame 89      pc $00ae84   -4               state 16's entry again
+```
+
+Two things are missing, and both are now located to the instruction.
+
+### `player+$1a` is a per-frame X delta the idle path consumes
+
+```
+$abbe  move.w $6d3a,d0        ; p1: $f110 move.w $6cba,d0
+$abc2  clr.w  $6d3a           ;     $f114 clr.w  $6cba
+$abc6  add.w  d0,$6d22        ;     $f118 add.w  d0,$6ca2
+```
+
+`player+$1a` is one of the words `$f1ca` copies out of the current animation
+cell, so **some movement is authored in the animation data**, applied by the
+idle path and cleared as it is used. Part 10b noted this and it is still not
+modelled; it is the only reason player 2's `world_x` moves while it is standing
+still. It needs one more fed column (`player+$1a`), in the same category as the
+hit box.
+
+### Every throw entry probes a cell and picks between two throws
+
+The pattern repeats verbatim in at least three places -- `$cc02` (the
+anticipation cascade), `$adf0` and `$ae54` -- and it is worth stating once
+because everything left to transcribe is a variation on it:
+
+```
+d0 = own world_x +/- <offset>          ; $adce is +$d, $ae94 is -$26
+if d0 outside 8..$98      -> not standable
+d0 = colTable[d0] + 8 ; if own world_y > $3a: d0 += 4
+if d0 == own grid_cell    -> standable
+if own bank[d0] type != 0 -> standable
+```
+
+The **polarity differs by site**, which is the part that will bite: `$cc1c`
+takes "standable" to the intercept, while `$ae0a` takes "**not** standable" to
+state 16. Reading one and assuming the other would be exactly the class of
+mistake this project has retracted three times.
+
+State 16's entry itself is four instructions:
+
+```
+$ae70  lea $45c2,a1 ; $6d62 = ($4,a1) ; $6d5a = a1
+$ae7e  move.b #$10,$6d2e         ; state 16
+$ae84  subq.w #4,$6d22           ; and step four units left
+$ae88  st $6d28
+```
+
+So the remaining work on player 2 is **transcription, not discovery**: for each
+of the states the fixtures reach, `--watch` the field it moves, `--disasm` the
+writer, transcribe the probe and the offset, measure. The fully-compared run
+moves a handful of ticks per handler. What is *not* yet located is what states 3
+and 4 do during their wind-up, and player 2's strike and racket halves -- which
+mirror `$10fd8`'s and are already modelled for player 1.

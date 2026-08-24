@@ -864,3 +864,95 @@ what states 3 and 4 do during their wind-up.
   has not transcribed. That is deliberate: a wrong length would desynchronise a
   state machine silently, and holding shows up as a visible divergence instead.
 * Both fixtures are still the same two fixtures.
+
+---
+
+# Part 10i — locating the rest of player 2, and calling the phase
+
+No code this part, and that is the point. The remaining work on player 2 is
+**transcription, not discovery**, and this part pins it down to the instruction
+so the next session starts from an address rather than from a search.
+
+## Gates, unchanged
+
+| run | |
+|---|---|
+| `golden --skip-waived` | **99 clean** |
+| `tile_damage --skip-waived` | **214 clean** |
+| `golden` (no flags) | **59** |
+
+## Everything left on player 2's `world_x`
+
+`--watch 0x6d22 0x6d24` over the golden programme is the complete list:
+
+| PC | what | state |
+|---|---|---|
+| `$b038` | −3 per frame | state 1, walk left — modelled |
+| `$b24e` | +3 per frame | state 2, walk right — modelled |
+| `$c1d0` | −6 in one step | state 18's commit — modelled |
+| `$abc6` | the idle path consuming `player+$1a` | **not modelled** |
+| `$ae84` | −4 on entering state 16 | **not modelled** |
+
+**`player+$1a` is an X delta authored in the animation data.** `$abbe`-`$abc6`
+(and `$f110`-`$f118` for player 1) reads it, clears it and adds it to
+`world_x` — so some movement lives in the sprite tables rather than in code.
+Part 10b noticed this and it is still the only reason player 2's `world_x` moves
+while it is standing still.
+
+## The pattern every throw entry follows
+
+Worth writing down once, because everything left is a variation on it. It
+appears verbatim at `$cc02`, `$adf0` and `$ae54`:
+
+```
+d0 = own world_x +/- <offset>          ; $adce is +$d, $ae94 is -$26
+if d0 outside 8..$98      -> not standable
+d0 = colTable[d0] + 8 ; if own world_y > $3a: d0 += 4
+if d0 == own grid_cell    -> standable
+if own bank[d0] type != 0 -> standable
+```
+
+**The polarity differs by site**, which is the trap: `$cc1c` takes *standable*
+to the intercept, `$ae0a` takes *not standable* to state 16. Reading one and
+assuming the other is exactly the class of mistake this project has retracted
+three times — the steering gate, `vel_y`, and the `$c0e8` doubling.
+
+## Why I stopped here rather than pushing the number
+
+Passing frame 60 needs both missing writers, and the second one needs the
+`$ae2e` mirror of the probe above, which I read the wrong half of first. One more
+handler would buy a handful of ticks. That is a legitimate grind and it is now a
+*cheap* grind — `--watch` the field, `--disasm` the writer, transcribe, measure —
+but it is not the same activity as the rest of this phase, and pretending
+otherwise by half-landing a rule would leave the repo worse than a precise
+handoff does.
+
+What is genuinely finished is more interesting than what is left:
+
+* **Both fixtures reproduce end to end** — 99 and 214 ticks, no divergence.
+* **Nothing on the disc side is fed.** `disc+$10` and `disc+$12` are produced and
+  compared; the disc loop, its four bounds, the tile impact, the collapse, the
+  serve from four throw states, the steering hooks and the catch are all
+  mirrored from the disassembly.
+* **Eight beads closed this phase**: discr-217, discr-tan, discr-5w5, discr-dc0,
+  discr-m4x, discr-fnl, discr-1q7, discr-xfw, discr-b4q, discr-0fm, discr-rf9.
+* **Three retractions written down**, each the same shape: a correct reading of
+  an instruction paired with an untested assumption about which way a branch
+  fell.
+* **Two new tools** that changed what is cheap: `scripts/ghidra/` and the
+  oracle's `--watch` / `--disasm`.
+
+## What a next phase should pick up, in order
+
+1. **`player+$1a` and state 16's entry** — the two writers above. Cheap, and
+   they take the fully-compared run past 59.
+2. **The `$ae2e` mirror** and the other throw entries, one at a time.
+3. **A trace where a bonus is picked up.** Five effects (`$9aa2`) are code reads
+   with nothing to test them against, and one of them — code 4, the shield — is
+   in the strike path `disc-core` already models.
+4. **A trace where a player swings**, which is the only way to reach the racket
+   path (`$113e2` fires zero times in 215 frames) and player 1's four throw
+   states.
+5. **`discr-st8`** — round init, scoring and win. `$aa50` and `$6c83` are
+   untouched, and Part 10g found the round's *end* (`player+$0d` clearing the
+   board) without its beginning.
