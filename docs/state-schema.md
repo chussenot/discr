@@ -125,12 +125,12 @@ Notes on individual rows:
 | -- (round init, score, win) | -- | `$aa50`, `$6d8a` | waived:discr-st8 |
 | -- (player state semantics) | -- | `$10e2c` entries 5,11,14,19,20,21,23,24,27,31 | waived:discr-75o |
 | -- (player states 16, 17) | -- | `$10e2c` entries 16, 17 | waived:discr-rf9 |
-| -- (tile type cleared with hp intact) | -- | `tile+$00`, the frame-119 writer | waived:discr-b4q |
 | -- (what places a bonus on a cell) | -- | `tile+$02` bit 7, and `$6e3a` | waived:discr-ovl.4 |
 | -- (the bonus effects) | -- | `$6d9a`/`$6d9c`/`$6d9e`, table `$9aa2` | waived:discr-z8m |
 | -- (the far wall's tile grid) | -- | `$7596`, damaged by `$9f5e` | waived:discr-ovl.3 |
 | -- (the animation engine) | `pending_state`, `anim_hold`, `anim_cell`, `anim_shown` | `$6caa`, `$6cda`, `$6ce2`, `$6ce4` | waived:discr-75o |
 | `players[n].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` | waived:discr-75o |
+| -- (the far bank `$7596`) | -- | 16 cells of stride 8 | waived:discr-ovl.3 |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
 | -- (disc sub-record pointers) | -- | `disc+$1a`, `disc+$3e` | excluded:pointer |

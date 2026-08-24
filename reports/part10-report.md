@@ -309,10 +309,8 @@ The walls, in the same order:
 
 * **63** — `players[0].world_y` at frame 64, where player 1's hit test `$10fd8`
   puts it into state 11 and moves it. Taken down in Part 10d below.
-* **118** — `tiles[14]` at frame 119, the anomaly discr-b4q owns: a cell's type
-  cleared with its hp intact. This run now goes *past* the frame-70 tile impact
-  with **no `--resync` at all**, where Part 10 needed `--resync discs[0]` to
-  reach the same number.
+* **118** — `tiles[14]` at frame 119, the anomaly discr-b4q owns. Closed in
+  Part 10e below.
 * **21** — player 2 enters state 18 at frame 22, one of the 28 handlers of its
   own table at `$c6ec` that `disc-core` has no code for.
 
@@ -483,3 +481,113 @@ counter-intuitive line in `tracecheck`.
 * **`player+$0c` has no trace column**, so the "out" flag is produced and never
   checked. It is only reachable after the energy row, which *is* checked, hits
   zero — but that is an argument, not a measurement.
+
+---
+
+# Part 10e — both fixtures clean
+
+`tile_damage.ndjson` now runs **214 ticks with no divergence**, alongside
+`golden.ndjson`'s 99. Both traces this project has, reproduced end to end.
+
+## The scoreboard
+
+| run | pre-10 | 10 | 10b | 10c | 10d | **10e** |
+|---|---|---|---|---|---|---|
+| `golden --skip-waived` | 10 | 10 | 51 | 63 | 99 clean | **99 clean** |
+| `tile_damage --skip-waived` | 10 | 51 | 51 | 118 | 118 | **214 clean** |
+| `golden` (no flags) | 0 | 0 | 0 | 21 | 21 | 21 |
+
+Getting there took three findings and one new tool.
+
+## The tool: `--watch` on the oracle
+
+`--watch LO HI` reports every write into an address range with the PC that made
+it and the frame it happened on. "Who writes this address" is the question this
+project asks most often, and answering it in Hatari costs a debugger session per
+attempt. One oracle run answers it for a whole range at once.
+
+The census that closed discr-b4q, five writes across both tile banks in 215
+frames:
+
+```
+frame  69  pc $00a34c  write.w $007648 = $0000     cell 6 hp
+frame  69  pc $00a354  write.w $007646 = $0000     cell 6 type
+frame 118  pc $014bb8  write.w $007686 = $0000     cell 14 type   <-- the anomaly
+frame 169  pc $00a34c  write.w $007650 = $0001     cell 7 hp
+frame 207  pc $00a34c  write.w $007658 = $0001     cell 8 hp
+```
+
+`--disasm ADDR N` came with it, running Musashi's own disassembler over the
+seeded RAM. `$14bb8` sits in a region the Ghidra import never reached — a raw
+1 MB image is mostly unreachable from any seed — and re-importing to read twenty
+instructions costs ninety seconds.
+
+## discr-b4q: a bank is eight tiles held twice
+
+`$a3a6 lea $7656,a0; adda.w d5,a0` is the whole explanation. `$7656` is eight
+cells past `$7616`, and `d5` is the struck cell's byte offset. Put it beside the
+two index formulas — a disc's cell is `column(x + 4) + (4 if y > 70)`, 1..8; a
+player's is `8 + column(x) + (4 if y > 14)`, 9..16 — and **cells 1..8 and 9..16
+are the same eight tiles**: 1..8 the record the damage path writes, 9..16 the
+copy the movement code reads for walkability. Hence hp 4–5 in the low eight and
+a dummy hp of 1 in the high eight.
+
+Destroying a low cell claims the single collapse-effect slot at `$779e`, points
+it at the struck cell **plus eight**, and runs 48 frames of sprite animation off
+the list at `$5be4`. The tick after that list runs out, `$14bb8 clr.w (a0)`
+clears the high copy's type — and only its type, which is exactly the
+`(1,1) → (0,1)` that looked impossible. **A tile's walkability survives its own
+destruction by 49 ticks.**
+
+There is **one** slot and no queue (`$a38c tst.b (a2); bne`), so a second tile
+destroyed mid-collapse gets no animation and — since the clear lives inside the
+animation — its walkability copy is never cleared at all. That is a game quirk,
+faithfully modelled, not a corner cut.
+
+## Each player has four throw states, two of them running smashes
+
+`move.w #$51,d0`, the first instruction of every serve parameter build, appears
+exactly **eight** times in the image: four per player. Player 2's are `$c6ec`
+entries 3, 4, 15 and 16, and they are one routine written four times with three
+constants swapped:
+
+| state | gate | `world_x` | step | wind-up |
+|---|---|---|---|---|
+| 3 | `$4754` | `p2.x - $b` | 2 | slides left one unit a frame, then jumps `-$a` |
+| 4 | `$471a` | `p2.x + 4` | 2 | slides right, then jumps `+$a` |
+| 15 | `$4602` | `p2.x - 9` | 1 | none |
+| 16 | `$45da` | `p2.x + 3` | 1 | none |
+
+**3 and 4 are running smashes** — the disc leaves with twice the sideways step.
+`tile_damage.ndjson` frame 190 is one: player 2 at x 85 puts the disc at 89 with
+`vel_x` 4, where a standing throw gives 2. Part 10c had modelled only 15 and 16
+and stopped there because those were the two the fixtures reached.
+
+## A correction that cost exactly one frame
+
+`docs/disc-notes.md` said the `$7bfe` column table is 152 bytes. It is **160** —
+four blocks of forty — and 152 was a short dump. The consequence was precise: a
+disc at `world_x` 151, which the `$9b` ceiling allows, reads index 155, and the
+152-byte reading made `disc_cell` give up on exactly the frame
+`tile_damage.ndjson` destroys a cell (208). Fixed, and the test now pins both
+151 and the out-of-arena case.
+
+## Honest limits on two clean runs
+
+* **Two clean fixtures are two fixtures.** The fully-compared run still stops at
+  21 ticks, on player 2's state 18. `disc-core` is right about everything these
+  two traces do — 313 ticks of it — and that is not the same as being right about
+  the game. `scripts/regen_golden.sh` and one oracle invocation make more.
+* **Six ST fields are still fed every tick** and the header names them.
+* **The far bank `$7596` has never changed in any trace**, so nothing tests it.
+  The oracle emits both banks now (`banks`, 32 cells) but `tracecheck` still
+  compares the 17-cell `grid`; making it compare 32 is discr-ovl.5.
+* **The racket path is still unmodelled** (discr-ovl.1) and neither fixture
+  reaches it, because neither player ever swings at a disc.
+* **Player 1's four throw states are not transcribed.** They exist at `$fa0c`,
+  `$fabe`, `$10770` and `$10806`; player 1 never throws in either fixture, so
+  their constants are unread and the model would be untested.
+* **The 48-frame collapse is one observation of one destruction.** The frame
+  count is read from the `$5be4` list rather than fitted, which is stronger than
+  n=1 usually is, but a second destruction has never been traced — and the
+  single-slot behaviour above means a second one behaves differently anyway.

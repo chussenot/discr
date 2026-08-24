@@ -1416,3 +1416,128 @@ wider box built from `$6cc6`/`$6cc8`, add `$6cc4` to its `vel_x`, and at
 `$113e2` install the `$a71a` steering hook. It is the last thing between
 `disc-core` and not being fed `disc+$12`, and player 2's `$c826` is its twin.
 bd discr-ovl.1.
+
+## A tile bank is eight tiles held twice, and destruction is delayed (Part 10e)
+
+The frame-119 anomaly in `tests/fixtures/tile_damage.ndjson` -- a cell's type
+cleared while its hp stayed 1, which `$a354` cannot do -- had been open since
+Part 8 as bd discr-b4q. **[code+trace]**
+
+It was found with a new tool rather than more reading: `--watch LO HI` on the
+oracle reports every write into a range with the PC that made it. One run over
+the whole of both banks, 215 frames, gives the complete census:
+
+```
+$ ./oracle/disc-oracle --seed seeds/diff.seed --frames 215 \
+      --trace /dev/null --watch 0x7596 0x7696
+watch frame  69  pc $00a34c  write.w $007648 = $0000     cell 6 hp
+watch frame  69  pc $00a354  write.w $007646 = $0000     cell 6 type
+watch frame 118  pc $014bb8  write.w $007686 = $0000     cell 14 type   <--
+watch frame 169  pc $00a34c  write.w $007650 = $0001     cell 7 hp
+watch frame 207  pc $00a34c  write.w $007658 = $0001     cell 8 hp
+```
+
+Five writes in 215 frames, and exactly one of them is not the damage path.
+
+### `$a3a6` explains the whole layout
+
+The destroy path does not stop at `$a354`. It spawns an effect:
+
+```
+$a354  clr.w (a0,d5)             ; hp reached 0 -> clear the type
+       ... the destruction sample ...
+$a382  bsr $9956
+$a388  lea $779e,a2              ; THE effect record -- there is one
+$a38c  tst.b (a2) ; bne $a3b2    ; already busy? then no animation at all
+$a390  st (a2)                   ; claim it
+$a392  lea ($58,pc),a0           ; = $a3ec, a sprite table indexed by d5
+$a396  move.l (a0,d5),($08,a2)
+$a39c  move.l ($04,a0,d5),($0c,a2)
+$a3a2  clr.w ($02,a2)
+$a3a6  lea $7656.w,a0            ; $7616 + 8 * 8
+$a3aa  adda.w d5,a0              ;   + the struck cell's byte offset
+$a3ac  move.l a0,($04,a2)        ; -> the cell the effect will clear
+```
+
+`$7656` is **eight cells past `$7616`**. Put that beside the two index formulas
+and the layout closes:
+
+```
+a disc's cell   ($a250)  = column(world_x + 4) + (4 if world_y > $46)   1..8
+a player's cell ($f836)  = 8 + column(world_x) + (4 if world_y > 14)    9..16
+```
+
+**Cells 1..8 and 9..16 are the same eight tiles.** 1..8 is the record the disc's
+damage path writes; 9..16 is the copy the movement code `tst.w`s for
+walkability. That is why a fresh round reads hp 4 or 5 in the eight low cells
+and a dummy hp of 1 in all eight high ones -- the high copy only ever needs a
+type. Both banks are laid out the same way, `$7596` for player 2 and `$7616` for
+player 1.
+
+### The collapse, tick by tick
+
+`--watch 0x779e 0x77b0` over the same run gives the effect's whole life:
+
+```
+tick  69  $a390  st $779e             claimed, busy = $ff
+          $a3ac  $77a2 = $7686        target: the struck cell + 8
+tick  70  $14c7a $77aa advances       the frame cursor, one entry of the
+ ..  117                              $5be4 list per tick -- 48 of them
+tick 117  $14c76 addq.b #2,(a6)       the list ran out: busy = $01, POSITIVE
+tick 118  $14bb2 subq.b #3,(a6)       -> $fe
+          $14bb8 clr.w (a0)           THE WALKABILITY COPY IS CLEARED
+          $14c76 addq.b #2,(a6)       -> $00, the slot is free again
+```
+
+The busy byte is a three-state machine in one byte: `$ff` = animating (negative,
+so `$14bac bmi` sends it to the blitter), `$01` = animation done, `$00` = free.
+The list at `$5be4` has **48 entries** before its zero terminator, which is
+where the 48 comes from; the clear lands on the tick after, so a tile's
+walkability survives its own destruction by **49 ticks**.
+
+Two consequences worth stating plainly:
+
+* **There is one collapse slot, not a queue.** `$a38c tst.b (a2); bne $a3b2`
+  means a second tile destroyed while one is still collapsing gets no animation
+  -- and, since the clear lives in the animation, **its walkability copy is
+  never cleared at all**. Nothing in the code queues a second one. That is a
+  game quirk, not a simplification of one.
+* **The type word is cleared and the hp word is not**, which is exactly the
+  `(1,1) -> (0,1)` the fixture reads and the reason the anomaly looked like a
+  contradiction: the low copy's hp went to 0, the high copy's hp was never 4 to
+  begin with.
+
+## Each player has FOUR throw states, and two of them are running smashes (Part 10e)
+
+`move.w #$51,d0` -- the first instruction of every serve parameter build --
+appears exactly **eight** times in the image, four per player. Player 2's are
+`$b426`, `$b4d6`, `$c084` and `$c118`, reached from `$c6ec` entries 3, 4, 15 and
+16; player 1's are `$fa44`, `$faf4`, `$1078c` and `$10820`, from `$10e2c`'s same
+four. **[code+trace]**
+
+They are one routine written four times with three constants swapped:
+
+| state | ST | animation gate | `world_x` | sideways step | wind-up |
+|---|---|---|---|---|---|
+| 3 | `$b3ee` | `$4754` | `p2.x - $b` | 2 | `subq.w #1,$6d22` per frame, then `-$a` at `$4742`, stamping `$6d29 = 3` |
+| 4 | `$b4a0` | `$471a` | `p2.x + 4` | 2 | `addq.w #1,$6d22` per frame, then `+$a` at `$4708`, stamping `$6d29 = 4` |
+| 15 | `$c068` | `$4602` | `p2.x - 9` | 1 | none, `$6d29 = $f` |
+| 16 | `$c0fe` | `$45da` | `p2.x + 3` | 1 | none, `$6d29 = $10` |
+
+So **3 and 4 are running smashes** -- the player slides one unit a frame toward
+the wall during the wind-up, jumps ten at one animation frame, and the disc
+leaves with twice the sideways step -- and **15 and 16 are the standing
+throws**. Each pair is left and right.
+
+`tile_damage.ndjson` frame 190 is a state-4 smash: player 2 at `x` 85 puts the
+disc at 89 with `vel_x` **4**, where a standing throw would have given 2.
+
+### And the column table is 160 bytes, not 152
+
+Recorded because it cost a frame. `$7bfe` is four blocks of forty giving 1, 2,
+3, 4 -- **160 bytes** -- and then zeros. An earlier note here said 152, which
+was a short dump, and the consequence was precise: a disc at `world_x` 151,
+which the `$9b` ceiling allows, reads index 155, and treating the table as 152
+long made `disc_cell` give up on exactly the frame `tile_damage.ndjson` destroys
+a cell (208). Outside the table the byte is 0, the same "not in the arena" value
+the player's own lookup produces.

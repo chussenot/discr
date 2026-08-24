@@ -164,23 +164,36 @@ pub const X_MAX: i16 = 0x9b;
 /// init, which is a different value in a different place.
 pub const SERVE_WORLD_Y: i16 = 0x51;
 
-/// Player 2's throw states and what each one serves.
+/// Player 2's four throw states: `(state, animation gate, x offset, step)`.
 ///
 /// ST `$c6ec`, player 2's own 32-entry state table (player 1's is `$10e2c`).
-/// Entry 15 is `$c068` and entry 16 is `$c0fe`, and the two blocks are the same
-/// code with two constants swapped: the animation cursor value the release
-/// happens on, and the X offset from the thrower.
+/// Four entries build a disc record, and they are the same code four times with
+/// three constants swapped -- the animation cursor value the release happens on,
+/// the X offset from the thrower, and the sideways step:
 ///
-/// | state | gate `player+$3a` | `world_x` | ST |
-/// |---|---|---|---|
-/// | 15 | `$4602` | `p2.x - 9` | `$c06e`, `$c07e` |
-/// | 16 | `$45da` | `p2.x + 3` | `$c104`, `$c114` |
+/// | state | ST | gate `player+$3a` | `world_x` | step | wind-up |
+/// |---|---|---|---|---|---|
+/// | 3 | `$b3ee` | `$4754` | `p2.x - $b` | 2 | `subq.w #1,$6d22` per frame, then `-$a` at `$4742` |
+/// | 4 | `$b4a0` | `$471a` | `p2.x + 4` | 2 | `addq.w #1,$6d22` per frame, then `+$a` at `$4708` |
+/// | 15 | `$c068` | `$4602` | `p2.x - 9` | 1 | none |
+/// | 16 | `$c0fe` | `$45da` | `p2.x + 3` | 1 | none |
 ///
-/// Six more `bsr $a972` sites exist inside `$abb2` (`$b462`, `$b47a`, `$b492`,
-/// `$b512`, `$b52a`, `$b542`), so there are other throw states with other
-/// parameter builds. These are the two the fixtures exercise.
+/// So **3 and 4 are running smashes** -- the player slides toward the wall
+/// during the wind-up, jumps ten units at one animation frame, and the disc
+/// leaves with twice the sideways step -- and **15 and 16 are standing throws**,
+/// left and right of each pair.
+///
+/// Player 1 has the same four, at `$fa0c`, `$fabe`, `$10770` and `$10806`; the
+/// `move.w #$51,d0` that starts every parameter build appears exactly eight
+/// times in the image, four per player. Player 1 never throws in either
+/// fixture, so its constants are not transcribed here.
 /// `// UNKNOWN: see bd discr-b6x`.
-pub const THROW_STATES: [(u8, u32, i16); 2] = [(15, 0x4602, -9), (16, 0x45da, 3)];
+pub const THROW_STATES: [(u8, u32, i16, i16); 4] = [
+    (3, 0x4754, -0x0b, 2),
+    (4, 0x471a, 0x04, 2),
+    (15, 0x4602, -0x09, 1),
+    (16, 0x45da, 0x03, 1),
+];
 
 /// The state a thrower enters on the frame the disc leaves.
 /// ST `$c0c4` / `$c158`: `move.b #$11,$6d2e`.
@@ -322,17 +335,19 @@ pub fn aim_for(hook: SteerHook, players: &[Player; 2]) -> (Option<i16>, Option<i
 /// with the observed tile events -- cells 6, 7 and 8 changed under disc impact
 /// and cell 14, in the floor bank, changed under something else (bd discr-b4q).
 ///
-/// `None` when `world_x + 4` falls off the end of the 152-byte table, which the
-/// ST would read as whatever byte follows it. `step` treats that as no impact
-/// rather than guessing.
+/// Outside the table the ST reads 0, the same "not in the arena" value the
+/// player's own lookup gives, so the cell comes out as 0 or 4. `world_x` is
+/// bounded to `0..=155` by [`X_MIN`]/[`X_MAX`] and the table is
+/// [`COLUMN_TABLE_LEN`] = 160 long, so `x + 4` is always inside it in practice.
 #[must_use]
-pub fn disc_cell(world_x: i16, world_y: i16) -> Option<usize> {
+pub fn disc_cell(world_x: i16, world_y: i16) -> usize {
     let x = world_x + DISC_COLUMN_OFFSET;
-    if !(0..COLUMN_TABLE_LEN).contains(&x) {
-        return None;
-    }
-    let column = 1 + (x / COLUMN_WIDTH) as usize;
-    Some(column + if world_y > DISC_FAR_ROW_Y { 4 } else { 0 })
+    let column = if (0..COLUMN_TABLE_LEN).contains(&x) {
+        1 + (x / COLUMN_WIDTH) as usize
+    } else {
+        0
+    };
+    column + if world_y > DISC_FAR_ROW_Y { 4 } else { 0 }
 }
 
 /// Advance one disc slot by one frame. ST `$a4ea`, one iteration.
@@ -375,6 +390,7 @@ pub fn step(
     _slot: usize,
     players: &mut [Player; 2],
     _tiles: &mut [Tile; TILE_CELLS],
+    collapse: &mut Option<tile::Collapse>,
     _events: &mut Vec<Event>,
 ) {
     // $a4f0 tst.b ($10,a5) beq / $a534 tst.b bpl: a slot the ST is not
@@ -439,9 +455,8 @@ pub fn step(
                 // f70 is exactly this: dir_kind -3 -> +1 and cell 6 destroyed
                 // on the same frame.
                 disc.dir_kind = SERVE_DIR_KIND;
-                if let Some(cell) = disc_cell(disc.world_x, disc.world_y) {
-                    impact(disc, cell, _tiles, _events);
-                }
+                let cell = disc_cell(disc.world_x, disc.world_y);
+                impact(disc, cell, _tiles, collapse, _events);
             } else {
                 // $a624: the other owner value transfers possession instead,
                 // moving four counters this crate does not model. The neg.w
@@ -515,6 +530,7 @@ pub fn serve(
     thrower: &Player,
     input: Input,
     x_offset: i16,
+    step: i16,
     events: &mut Vec<Event>,
 ) -> Option<usize> {
     // $a9a2: the first record whose +$10 is zero.
@@ -522,9 +538,10 @@ pub fn serve(
 
     let dir_kind = thrower.throw_dir_kind;
 
-    // $c0ae-$c0f0: nothing, left or right, and the step doubles unless the
-    // kind is exactly -1.
-    let step = if dir_kind == -1 { 1 } else { 2 };
+    // $c0ae-$c0f0: nothing, left or right, and the step is applied twice unless
+    // the kind is exactly -1. `step` is 1 for a standing throw and 2 for a
+    // running smash -- see THROW_STATES.
+    let step = if dir_kind == -1 { step } else { step * 2 };
     let vel_x = if input.dir.has(DirBits::LEFT) {
         -step
     } else if input.dir.has(DirBits::RIGHT) {
@@ -587,13 +604,14 @@ pub fn impact(
     disc: &DiscSlot,
     cell: usize,
     tiles: &mut [Tile; TILE_CELLS],
+    collapse: &mut Option<tile::Collapse>,
     events: &mut Vec<Event>,
 ) {
     // $a2ec/$a2f0: type == 0 skips the whole damage path.
     if !tiles[cell].walkable() {
         return;
     }
-    tile::damage(tiles, cell, disc.damage, events);
+    tile::damage(tiles, cell, disc.damage, collapse, events);
 }
 
 #[cfg(test)]
@@ -640,7 +658,14 @@ mod tests {
         let mut clamped = false;
         for _ in 0..Z_FAR {
             let (prev_x, prev_z) = (disc.world_x, disc.world_z);
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
             assert_eq!(disc.world_z, prev_z + 1, "z advances by dir_kind (+1)");
             if disc.world_x == X_MAX {
                 // $a58e: the only frame that does not integrate cleanly.
@@ -675,7 +700,14 @@ mod tests {
         let mut events = Vec::new();
 
         for _ in 0..64 {
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
             assert_eq!(disc, frozen, "an inactive record is not touched at all");
         }
         assert!(
@@ -701,14 +733,28 @@ mod tests {
         for expected_z in [
             50, 47, 44, 41, 38, 35, 32, 29, 26, 23, 20, 17, 14, 11, 8, 5, 2,
         ] {
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
             assert_eq!((disc.world_z, disc.dir_kind), (expected_z, RETURN_DIR_KIND));
         }
 
         // f70: 2 - 3 would be -1, so $a5fe clamps -- and $a618 writes +1
         // outright rather than letting the neg.w stand, which off a -3 return
         // leg would have given +3.
-        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut None,
+            &mut events,
+        );
         assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
     }
 
@@ -733,12 +779,26 @@ mod tests {
         let mut events = Vec::new();
 
         for expected_x in [19, 17, 15, 13, 11, 9, 7, 5, 3, 1] {
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
             assert_eq!((disc.world_x, disc.vel_x), (expected_x, -2), "{disc:?}");
         }
 
         // f11: the floor clamps and flips, and only then is the disc steered.
-        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut None,
+            &mut events,
+        );
         assert_eq!((disc.world_x, disc.vel_x), (0, 2));
     }
 
@@ -748,20 +808,24 @@ mod tests {
     #[test]
     fn disc_cell_matches_the_observed_impacts() {
         // f70: (67 + 4) / 40 = 1 -> column 2; y 81 > 70 -> +4 = cell 6.
-        assert_eq!(disc_cell(67, 81), Some(6));
+        assert_eq!(disc_cell(67, 81), 6);
+        // f208: x 151 -> index 155, still inside the 160-byte table -> cell 8.
+        // Reading the table as 152 bytes made this give up, and that is exactly
+        // the frame tile_damage.ndjson destroys a cell on.
+        assert_eq!(disc_cell(151, 81), 8);
         // The 4-unit offset is real: 36 is already the second column for a
         // disc, where a player at 36 is still in the first.
-        assert_eq!(disc_cell(35, 0), Some(1));
-        assert_eq!(disc_cell(36, 0), Some(2));
-        // Two banks of four, never the players' 9..16.
-        for x in 0..148 {
-            let near = disc_cell(x, DISC_FAR_ROW_Y).unwrap();
-            let far = disc_cell(x, DISC_FAR_ROW_Y + 1).unwrap();
+        assert_eq!(disc_cell(35, 0), 1);
+        assert_eq!(disc_cell(36, 0), 2);
+        // Rows of four, never the movement code's 9..16.
+        for x in X_MIN..=X_MAX {
+            let near = disc_cell(x, DISC_FAR_ROW_Y);
+            let far = disc_cell(x, DISC_FAR_ROW_Y + 1);
             assert!((1..=4).contains(&near), "x={x} -> {near}");
             assert_eq!(far, near + 4);
         }
-        // Past the end of the 152-byte table there is no answer to give.
-        assert_eq!(disc_cell(148, 81), None);
+        // Outside the arena the table reads 0, as it does for a player.
+        assert_eq!(disc_cell(160, 81), 4);
     }
 
     /// $a5fe/$a618: reaching the near bound damages the cell the disc is over
@@ -783,7 +847,14 @@ mod tests {
         };
         let mut events = Vec::new();
 
-        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut None,
+            &mut events,
+        );
         assert_eq!((disc.world_z, disc.dir_kind), (Z_NEAR, SERVE_DIR_KIND));
         assert_eq!(
             tiles[6],
@@ -822,7 +893,14 @@ mod tests {
             ..flying(0, 81)
         };
         for n in 1..=10 {
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
             assert_eq!((disc.world_x, disc.vel_x), (2 * n, 2), "{disc:?}");
             assert_eq!((disc.world_y, disc.vel_y), (81, 0), "$a7d8 is X only");
         }
@@ -830,7 +908,14 @@ mod tests {
         // f22 -> f24 under $a816: world_y climbs to the aim and stays.
         disc.hook = SteerHook::AtP2Deep;
         for expected_y in [82, 83, 83, 83] {
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
             assert_eq!(disc.world_y, expected_y, "{disc:?}");
             assert_eq!(disc.vel_y, 0, "$a640 decays vel_y before the sample");
         }
@@ -851,7 +936,14 @@ mod tests {
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut None,
+            &mut events,
+        );
         assert_eq!((disc.world_x, disc.vel_x), (45, 1));
     }
 
@@ -871,12 +963,26 @@ mod tests {
         let mut tiles = [Tile::default(); TILE_CELLS];
         let mut events = Vec::new();
 
-        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut None,
+            &mut events,
+        );
         assert_eq!((disc.world_x, disc.vel_x), (0, 2), "clamped, then negated");
         // dir_kind rides through untouched: the fixture holds flag = 1.
         assert_eq!(disc.dir_kind, SERVE_DIR_KIND);
 
-        step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut None,
+            &mut events,
+        );
         assert_eq!((disc.world_x, disc.vel_x), (2, 2), "and away it goes");
     }
 
@@ -896,7 +1002,14 @@ mod tests {
         let mut events = Vec::new();
 
         for _ in 0..8 {
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
         }
         assert_eq!((disc.world_x, disc.vel_x), (126, 2));
     }
@@ -913,7 +1026,14 @@ mod tests {
         };
         let before = disc;
         let mut tiles = [Tile::default(); TILE_CELLS];
-        step(&mut disc, 0, &mut players, &mut tiles, &mut Vec::new());
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut None,
+            &mut Vec::new(),
+        );
         assert_eq!(disc, before);
     }
 
@@ -964,7 +1084,14 @@ mod tests {
         let mut events = Vec::new();
 
         for _ in 0..96 {
-            step(&mut disc, 0, &mut players, &mut tiles, &mut events);
+            step(
+                &mut disc,
+                0,
+                &mut players,
+                &mut tiles,
+                &mut None,
+                &mut events,
+            );
             assert_eq!((disc.world_y, disc.vel_y), (81, 0), "{disc:?}");
         }
     }
@@ -1008,7 +1135,10 @@ mod tests {
             fire_edge: false,
         };
 
-        assert_eq!(serve(&mut discs, &thrower, input, -9, &mut events), Some(0));
+        assert_eq!(
+            serve(&mut discs, &thrower, input, -9, 1, &mut events),
+            Some(0)
+        );
         let d = discs[0];
         assert!(d.active);
         assert_eq!((d.world_x, d.world_y, d.world_z), (48, 81, 53));
@@ -1036,7 +1166,10 @@ mod tests {
             fire_edge: false,
         };
 
-        assert_eq!(serve(&mut discs, &thrower, input, 3, &mut events), Some(1));
+        assert_eq!(
+            serve(&mut discs, &thrower, input, 3, 1, &mut events),
+            Some(1)
+        );
         assert_eq!(
             (discs[1].world_x, discs[1].world_z, discs[1].vel_x),
             (52, 53, 2)
@@ -1062,6 +1195,7 @@ mod tests {
                     fire_edge: false,
                 },
                 0,
+                1,
                 &mut events,
             );
             assert_eq!(discs[0].vel_x, -expect, "dir_kind {dk}");
@@ -1084,6 +1218,7 @@ mod tests {
                 fire_edge: false,
             },
             0,
+            1,
             &mut events_vec(),
         );
         assert_eq!(discs[0].vel_y, -5);
@@ -1105,7 +1240,7 @@ mod tests {
         let mut disc = flying(80, aim_y());
         disc.damage = 3;
         let mut events = Vec::new();
-        impact(&disc, 9, &mut tiles, &mut events);
+        impact(&disc, 9, &mut tiles, &mut None, &mut events);
         assert_eq!(tiles[9], Tile::default());
         assert!(events.is_empty());
     }

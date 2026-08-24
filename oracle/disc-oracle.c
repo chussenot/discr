@@ -255,9 +255,31 @@ unsigned int m68k_read_memory_32(unsigned int address)
     return 0;
 }
 
+/* ---- write watch ------------------------------------------------------- */
+/* --watch LO HI reports every write that lands in [LO, HI) together with the PC
+ * that made it and the frame it happened on.  It exists because "who writes
+ * this address" is the question this project asks most often, and answering it
+ * in Hatari costs a debugger session per attempt.  Writes are reported as they
+ * happen, so a single run answers it for every address in the range at once. */
+static long watch_lo = -1, watch_hi = -1;
+static long disasm_at = -1;
+static int disasm_n;
+static long watch_reported;
+#define WATCH_REPORT_MAX 4000
+
+static void watch_write(unsigned int a, unsigned int value, int width)
+{
+    if (watch_lo < 0 || (long)a + width <= watch_lo || (long)a >= watch_hi) return;
+    if (watch_reported++ >= WATCH_REPORT_MAX) return;
+    fprintf(stderr, "watch frame %ld  pc $%06x  write.%c $%06x = $%0*x\n",
+            cur_frame, m68k_get_reg(NULL, M68K_REG_PPC),
+            width == 1 ? 'b' : width == 2 ? 'w' : 'l', a, width * 2, value);
+}
+
 void m68k_write_memory_8(unsigned int address, unsigned int value)
 {
     unsigned int a = address & ADDR_MASK;
+    watch_write(a, value, 1);
     if (a < RAM_SIZE) { ram[a] = value & 0xff; return; }
     if (is_io(a)) { io_write(a, value & 0xff, 1); return; }
     io_unstubbed("write.b", a);
@@ -266,6 +288,7 @@ void m68k_write_memory_8(unsigned int address, unsigned int value)
 void m68k_write_memory_16(unsigned int address, unsigned int value)
 {
     unsigned int a = address & ADDR_MASK;
+    watch_write(a, value, 2);
     if (a + 1 < RAM_SIZE) { ram[a] = (value >> 8) & 0xff; ram[a + 1] = value & 0xff; return; }
     if (is_io(a)) { io_write(a, value & 0xffff, 2); return; }
     io_unstubbed("write.w", a);
@@ -274,6 +297,7 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
 void m68k_write_memory_32(unsigned int address, unsigned int value)
 {
     unsigned int a = address & ADDR_MASK;
+    watch_write(a, value, 4);
     if (a + 3 < RAM_SIZE) {
         ram[a] = (value >> 24) & 0xff; ram[a + 1] = (value >> 16) & 0xff;
         ram[a + 2] = (value >> 8) & 0xff; ram[a + 3] = value & 0xff;
@@ -514,6 +538,16 @@ static void emit_frame(FILE *out, long frame)
         unsigned b = 0x7616 + i * 8;
         fprintf(out, "%s[%u,%u]", i ? "," : "", rd16(b), rd16(b + 2));
     }
+    /* Part 10e: BOTH banks, 16 cells of stride 8 each, contiguous from $7596.
+     * $7596 is the bank player 2's code and $9f5e index; $7616 is player 1's
+     * and $a24c's.  The 17-cell "grid" above predates the discovery that a bank
+     * is 16 and is kept so committed fixtures still load; its 17th entry is the
+     * first word past $7616's end. */
+    fprintf(out, "],\"banks\":[");
+    for (i = 0; i < 32; i++) {
+        unsigned b = 0x7596 + i * 8;
+        fprintf(out, "%s[%u,%u]", i ? "," : "", rd16(b), rd16(b + 2));
+    }
     fprintf(out, "],\"state_sha256\":\"%s\"", h);
     if (win_lo >= 0) {
         long a;
@@ -547,7 +581,17 @@ int main(int argc, char **argv)
     unsigned int sr;
 
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--seed") && i + 1 < argc) seed = argv[++i];
+        if (!strcmp(argv[i], "--disasm") && i + 2 < argc) {
+            disasm_at = strtol(argv[i + 1], NULL, 0);
+            disasm_n = (int)strtol(argv[i + 2], NULL, 0);
+            i += 2;
+        }
+        else if (!strcmp(argv[i], "--watch") && i + 2 < argc) {
+            watch_lo = strtol(argv[i + 1], NULL, 0);
+            watch_hi = strtol(argv[i + 2], NULL, 0);
+            i += 2;
+        }
+        else if (!strcmp(argv[i], "--seed") && i + 1 < argc) seed = argv[++i];
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atol(argv[++i]);
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) tracef = argv[++i];
@@ -572,7 +616,8 @@ int main(int argc, char **argv)
         }
         else { fprintf(stderr,
             "usage: %s --seed <f.seed> [--script <f>] [--frames N]\n"
-            "          [--trace <out.ndjson>] [--window LO HI]\n"
+            "          [--trace <out.ndjson>] [--window LO HI] [--watch LO HI]\n"
+            "          [--disasm ADDR N]\n"
             "          [--permissive] [--debug-regs]\n", argv[0]);
             return 2; }
     }
@@ -663,6 +708,21 @@ int main(int argc, char **argv)
         return 0;
     }
     trace_out = out;
+    if (disasm_at >= 0) {
+        /* Musashi's own disassembler over the seeded RAM: the quickest way to
+         * read code at an address a Ghidra import has not reached, which for a
+         * raw 1 MB image is most of it. */
+        unsigned pc = (unsigned)disasm_at;
+        int k;
+        for (k = 0; k < disasm_n; k++) {
+            char buf[256];
+            unsigned len = m68k_disassemble(buf, pc, M68K_CPU_TYPE_68000);
+            printf("$%06x  %s\n", pc, buf);
+            pc += len ? len : 2;
+        }
+        return 0;
+    }
+
     /* The seed already sits at the sampling point, so frame 0 is emitted
        directly; every later frame is caught by the hook. */
     cur_frame = 0;

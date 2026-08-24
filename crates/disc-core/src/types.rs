@@ -249,11 +249,15 @@ pub struct Player {
 /// `1 + x / 40`, so the boundaries sit at 40, 80 and 120.
 pub const COLUMN_WIDTH: i16 = 40;
 
-/// How many bytes of `$7bfe` are the column table: 152, covering world X 0..151.
+/// How many bytes of `$7bfe` are the column table: **160**, four blocks of 40
+/// giving 1, 2, 3, 4, and then zeros from index 160.
 ///
-/// It matters because the disc reads the table at `x + 4` (`$a250`), so an
-/// `x` above 147 indexes past the end -- see [`crate::disc::disc_cell`].
-pub const COLUMN_TABLE_LEN: i16 = 152;
+/// An earlier revision said 152 and was simply a short dump. It mattered: the
+/// disc reads the table at `x + 4` (`$a250`), so a disc at `world_x` 151 --
+/// which the `$9b` ceiling allows -- indexes 155, and the 152-byte reading made
+/// [`crate::disc::disc_cell`] give up exactly where `tile_damage.ndjson` frame
+/// 208 has it destroy a cell.
+pub const COLUMN_TABLE_LEN: i16 = 160;
 
 /// Which steering routine is installed in a disc's `+$12` hook.
 ///

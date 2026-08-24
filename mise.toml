@@ -28,11 +28,10 @@ rust = "latest"
 TRACE_MIN_AGREE = "99"
 GOLDEN = "tests/fixtures/golden.ndjson"
 
-# The second gate.  tests/fixtures/tile_damage.ndjson is the idle fixture, so
-# player 1 never changes state; it is the one that measures the DISC model.
-# 118 ticks with NO --resync, past the tile event at frame 70 that tile::damage
-# now causes itself, stopping on the frame-119 anomaly bd discr-b4q owns.
-# It was 10 before Part 10 and 51 before the serve landed.
+# THE WHOLE IDLE FIXTURE, all 214 ticks, no divergence: four tile events, a
+# destruction and its 49-tick collapse, three serves across three different
+# throw states, and both discs' whole flight.
+# 10 before Part 10, 51, 118, 189, 207, 214.
 TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
@@ -41,7 +40,7 @@ TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 # $c6ec that disc-core has no code for.  Before Part 10b this run stopped on
 # frame 1, because player 2 was driven with no input at all.
 FULL_MIN_AGREE = "21"
-TILE_MIN_AGREE = "118"
+TILE_MIN_AGREE = "214"
 
 # The repository's first three commits predate conventional commits (`bd init`
 # is not one of them), so cog is pointed at the range after them rather than
@@ -78,8 +77,11 @@ run = [
 ]
 
 [tasks.tracecheck-deep]
-description = "How far the disc half reaches with the player rows supplied: a measurement, not a gate"
-run = "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived --resync 'players[0]'"
+description = "Both fixtures with nothing waived: the strictest measurement, not a gate"
+run = [
+  "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN",
+  "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE",
+]
 
 [tasks.fmt]
 description = "Format the Rust workspace"

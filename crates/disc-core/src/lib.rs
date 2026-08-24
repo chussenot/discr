@@ -30,6 +30,7 @@ pub mod tile;
 
 mod types;
 
+pub use tile::Collapse;
 pub use types::{
     COLUMN_TABLE_LEN, COLUMN_WIDTH, DISC_SLOTS, DirBits, DiscSlot, Event, FACING_LEFT,
     FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE, GRID_CELL_FAR_ROW, Input, Player, PlayerId, SteerHook,
@@ -48,8 +49,12 @@ pub struct GameState {
     pub players: [Player; 2],
     /// ST `$6e3e`, 8 records of stride `$42`.
     pub discs: [DiscSlot; DISC_SLOTS],
-    /// ST `$7616`, 17 cells of stride 8.
+    /// ST `$7616`, 17 cells of stride 8. Cells 1..8 are the records a disc's
+    /// damage path writes and 9..16 the copies the movement code reads -- the
+    /// same eight tiles twice, see [`tile`].
     pub tiles: [Tile; TILE_CELLS],
+    /// ST `$779e`: the one tile collapse the game can have in flight.
+    pub collapse: Option<tile::Collapse>,
     /// ST `$6ab4` `vbl_frame_counter`, which is a *word* and wraps. Held here
     /// as a `u32` so the simulation has an unambiguous frame number; compare
     /// against the ST word as `frame as u16`.
@@ -67,6 +72,11 @@ impl GameState {
         // ST $8198: addq.w #1,$6ab4 is the VBL handler's first instruction.
         self.frame = self.frame.wrapping_add(1);
 
+        // ST $14ba4: the tile-collapse effect, BEFORE the disc loop, so a
+        // collapse the disc loop claims this tick is not advanced until the
+        // next one. See tile::Collapse.
+        tile::collapse_step(&mut self.collapse, &mut self.tiles, &mut events);
+
         // ST $a4ea: the disc update loop walks all 8 records.
         for slot in 0..DISC_SLOTS {
             disc::step(
@@ -74,6 +84,7 @@ impl GameState {
                 slot,
                 &mut self.players,
                 &mut self.tiles,
+                &mut self.collapse,
                 &mut events,
             );
         }
@@ -92,11 +103,22 @@ impl GameState {
         // Only PLAYER 2 throws here. Player 1's control routine $f104 has its
         // own $a972 call sites and its own parameter builds, none decoded.
         // // UNKNOWN: see bd discr-b6x.
-        if let Some(&(_, _, x_offset)) = disc::THROW_STATES.iter().find(|&&(state, gate, _)| {
-            self.players[1].state_index == state && self.players[1].anim_cursor == gate
-        }) {
+        if let Some(&(_, _, x_offset, step)) =
+            disc::THROW_STATES.iter().find(|&&(state, gate, _, _)| {
+                self.players[1].state_index == state && self.players[1].anim_cursor == gate
+            })
+        {
             let thrower = self.players[1];
-            if disc::serve(&mut self.discs, &thrower, inputs[1], x_offset, &mut events).is_some() {
+            if disc::serve(
+                &mut self.discs,
+                &thrower,
+                inputs[1],
+                x_offset,
+                step,
+                &mut events,
+            )
+            .is_some()
+            {
                 // $c0c4 / $c158: the thrower goes to state 17 on this frame.
                 self.players[1].state_index = disc::STATE_AFTER_THROW;
             }

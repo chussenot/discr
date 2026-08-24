@@ -11,11 +11,95 @@
 //! ```
 //!
 //! The `+$00` type word is the walkability gate the movement code `tst.w`s;
-//! [`Tile::walkable`] is that predicate. Nothing here reads or writes a cell
-//! per frame: on the ST, cells change only when a disc hits one, so
-//! [`crate::disc::step`] calls [`damage`] from inside the disc loop.
+//! [`Tile::walkable`] is that predicate.
+//!
+//! # A bank is eight tiles held twice (Part 10e)
+//!
+//! `$a3a6 lea $7656,a0; adda.w d5,a0` is the instruction that explains the
+//! whole layout. `$7656` is `$7616 + 8 * 8`, and `d5` is the struck cell's byte
+//! offset, so the destroy path takes the cell **eight further on**. Put that
+//! beside the two index formulas and it closes:
+//!
+//! ```text
+//! a disc's cell   ($a250)  = column(world_x + 4) + (4 if world_y > $46)   1..8
+//! a player's cell ($f836)  = 8 + column(world_x)  + (4 if world_y > 14)   9..16
+//! ```
+//!
+//! **Cells 1..8 and 9..16 are the same eight tiles**: 1..8 is the record the
+//! disc's damage path writes, 9..16 the copy the movement code reads. That is
+//! why the eight low cells carry hp 4 or 5 in a fresh round and the eight high
+//! ones all carry a dummy hp of 1 -- the high copy only ever needs a type.
+//!
+//! And the two are **not** kept in step. Destroying a low cell starts a
+//! collapse animation, and the high copy's type is cleared only when that
+//! animation finishes, 49 ticks later. See [`Collapse`].
 
 use crate::{Event, TILE_CELLS, TILE_TYPE_DESTROYED, Tile};
+
+/// How far on the movement code's copy of a tile is. ST `$a3a6`: `$7656` is
+/// `$7616 + 8 * 8`, so eight cells.
+pub const WALK_COPY_OFFSET: usize = 8;
+
+/// Frames a destroyed tile takes to collapse. ST: the length of the sprite
+/// frame list at `$5be4`, which `$14c42 movea.l (a0)+,a5` walks one entry per
+/// frame until `$14c72 tst.l (a0)` finds its zero terminator -- **48 entries**.
+pub const COLLAPSE_FRAMES: u16 = 48;
+
+/// The one tile collapse the ST can have in flight. ST `$779e`.
+///
+/// A **single slot**, claimed at `$a38c`-`$a390` with `tst.b (a2); bne` --
+/// so a second tile destroyed while one is already collapsing gets no
+/// animation, and *its* walkability copy is never cleared. That is a real
+/// quirk, not a simplification: nothing in the code queues a second one.
+///
+/// The life of one, read off `--watch 0x779e 0x77b0` over
+/// `tests/fixtures/tile_damage.ndjson`:
+///
+/// ```text
+/// tick  69  $a390  st $779e            claimed, busy = $ff
+///           $a3ac  $77a2 = $7686       the target: the struck cell + 8
+/// tick  70  $14c7a                     the frame cursor advances, 48 times,
+///  ..  117                             one entry of $5be4 per tick
+/// tick 117  $14c76 addq.b #2,(a6)      the list ran out: busy = $01, positive
+/// tick 118  $14bb2 subq.b #3,(a6)      -> $fe
+///           $14bb8 clr.w (a0)          THE WALKABILITY COPY IS CLEARED
+///           $14c76 addq.b #2,(a6)      -> $00, the slot is free again
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Collapse {
+    /// The cell whose type word will be cleared: the struck cell plus
+    /// [`WALK_COPY_OFFSET`]. ST `$77a2`.
+    pub cell: usize,
+    /// Animation frames still to run. ST: the distance from `$77aa` to the
+    /// terminator of the `$5be4` list.
+    pub frames_left: u16,
+}
+
+/// Advance the collapse slot by one frame, clearing the walkability copy when
+/// the animation is done. ST `$14ba4`-`$14bb8`.
+///
+/// Called **before** the disc loop, so a collapse claimed by a destruction this
+/// tick is not advanced until the next one -- which is what puts the clear 49
+/// ticks after the destroy rather than 48.
+pub fn collapse_step(
+    slot: &mut Option<Collapse>,
+    tiles: &mut [Tile; TILE_CELLS],
+    events: &mut Vec<Event>,
+) {
+    let Some(c) = slot else { return };
+    if c.frames_left > 0 {
+        c.frames_left -= 1;
+        return;
+    }
+    // $14bb8 clr.w (a0): the type only. The hp word is left alone, which is
+    // why the fixture reads (1,1) -> (0,1) and not (0,0).
+    if let Some(t) = tiles.get_mut(c.cell) {
+        t.tile_type = TILE_TYPE_DESTROYED;
+        events.push(Event::TileDestroyed { cell: c.cell });
+    }
+    *slot = None;
+}
 
 /// Apply `damage` to one cell, clamping HP at 0 and destroying the cell when
 /// it reaches 0.
@@ -37,7 +121,13 @@ use crate::{Event, TILE_CELLS, TILE_TYPE_DESTROYED, Tile};
 ///
 /// If `cell >= TILE_CELLS`. The ST indexes `($02,a0,d5.w)` unchecked; the
 /// caller is responsible for a valid cell index.
-pub fn damage(tiles: &mut [Tile; TILE_CELLS], cell: usize, damage: i16, events: &mut Vec<Event>) {
+pub fn damage(
+    tiles: &mut [Tile; TILE_CELLS],
+    cell: usize,
+    damage: i16,
+    collapse: &mut Option<Collapse>,
+    events: &mut Vec<Event>,
+) {
     let tile = &mut tiles[cell];
 
     // $a31c sub.w ($0016,a5),d6 / $a34a clr.w d6 -- clamped at 0, never negative.
@@ -48,6 +138,15 @@ pub fn damage(tiles: &mut [Tile; TILE_CELLS], cell: usize, damage: i16, events: 
         // $a354 clr.w ($00,a0,d5.w) -- HP == 0 also clears the TYPE word.
         tile.tile_type = TILE_TYPE_DESTROYED;
         events.push(Event::TileDestroyed { cell });
+        // $a388-$a3ac: the destroy path claims the single collapse slot, unless
+        // one is already running ($a38c tst.b (a2); bne), and points it at the
+        // struck cell plus eight.
+        if collapse.is_none() {
+            *collapse = Some(Collapse {
+                cell: cell + WALK_COPY_OFFSET,
+                frames_left: COLLAPSE_FRAMES,
+            });
+        }
     } else {
         events.push(Event::TileDamaged { cell, hp: tile.hp });
     }
@@ -67,7 +166,7 @@ mod tests {
     fn hit(tile_type: u16, hp: i16, dmg: i16) -> (Tile, Vec<Event>) {
         let mut tiles = grid(tile_type, hp);
         let mut events = Vec::new();
-        damage(&mut tiles, 3, dmg, &mut events);
+        damage(&mut tiles, 3, dmg, &mut None, &mut events);
         (tiles[3], events)
     }
 
@@ -153,7 +252,7 @@ mod tests {
             hp: 4,
         }; TILE_CELLS];
         let mut events = Vec::new();
-        damage(&mut tiles, 0, 3, &mut events);
+        damage(&mut tiles, 0, 3, &mut None, &mut events);
         assert_eq!(
             tiles[0],
             Tile {

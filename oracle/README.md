@@ -61,3 +61,33 @@ pre-execution.
 Joystick bits: `$01` up, `$02` down, `$04` left, `$08` right, `$80` fire.
 
 [Musashi]: https://github.com/kstenerud/Musashi
+
+## Investigation flags (Part 10)
+
+Two flags exist for reverse engineering rather than for validation, and both
+answer questions that used to cost a Hatari debugger session each.
+
+    --watch LO HI     report every write into [LO, HI) with the PC that made it
+    --disasm ADDR N   disassemble N instructions from ADDR in the seeded RAM
+
+`--watch` is the more useful of the two. "Who writes this address" is the
+question this project asks most often, and one run answers it for a whole range
+at once:
+
+    ./oracle/disc-oracle --seed seeds/diff.seed --frames 215 \
+        --trace /dev/null --watch 0x7596 0x7696
+
+    watch frame  69  pc $00a34c  write.w $007648 = $0000
+    watch frame  69  pc $00a354  write.w $007646 = $0000
+    watch frame 118  pc $014bb8  write.w $007686 = $0000
+    watch frame 169  pc $00a34c  write.w $007650 = $0001
+    watch frame 207  pc $00a34c  write.w $007658 = $0001
+
+Five writes into both tile banks across 215 frames, and the one at `$14bb8` is
+the writer bd discr-b4q had been open on since Part 8. Reports go to stderr, so
+`--trace` still works alongside; the report cap is 4000 lines.
+
+`--disasm` runs Musashi's own disassembler over the seeded image and exits
+without simulating. It is for addresses `scripts/ghidra/` has not reached --
+a raw 1 MB image is mostly unreachable from any set of seeded entry points, and
+re-importing to read twenty instructions costs ninety seconds.
