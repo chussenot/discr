@@ -63,7 +63,7 @@ TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 # turn). Reproducing the mid-frame byte needs the undecoded AI policy or a
 # fixture with a per-pass input column. See p1_walk.provenance.md.
 P1_WALK = "tests/fixtures/p1_walk.ndjson"
-P1_WALK_MIN_AGREE = "255"
+P1_WALK_MIN_AGREE = "271"
 
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
 # NOTHING resynced, every compared row of BOTH players -- and on golden it now

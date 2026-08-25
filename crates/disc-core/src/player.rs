@@ -80,8 +80,18 @@ pub const STATE_WALK_RIGHT: u8 = 2;
 /// ST state 0: idle, handled inline in `$f104` rather than through the table.
 pub const STATE_IDLE: u8 = 0;
 
-/// How low a knocked-down player sinks. ST `$1056a`: `cmpi.w #$02,$6ca6; ble`.
+/// How far a knocked-down player travels before it stops. Player 1 sinks
+/// (`$1056a cmpi.w #$02,$6ca6; ble`, then `subq.w #1`); player 2 does the same
+/// thing with both signs flipped (`$be6a cmpi.w #$45,$6d26; bge`, then
+/// `addq.w #1`). Part 11i.
 pub const STRUCK_Y_FLOOR: i16 = 2;
+/// Player 2's bound for the same move. ST `$be6a`.
+pub const STRUCK_Y_CEILING_P2: i16 = 0x45;
+/// Where a rising player stops: `$10592 cmpi.w #$19,$6ca6; bge` for player 1,
+/// `$be90 cmpi.w #$32,$6d26; ble` for player 2.
+pub const RISE_Y_CEILING: i16 = 0x19;
+/// Player 2's bound for the rise. ST `$be90`.
+pub const RISE_Y_FLOOR_P2: i16 = 0x32;
 
 /// ST state 11: knocked down and sinking (`$10554`).
 pub const STATE_STRUCK_DOWN: u8 = 0x0b;
@@ -159,6 +169,12 @@ anims! {
         "ST `$472a`, loaded at `$aed4`: player 2's running smash to the left.";
     ANIM_P2_SMASH_RIGHT = 0x46f0, [4, 4, 4, 4, 4, 4, 4, 4, 4],
         "ST `$46f0`, loaded at `$af34`: the same, to the right.";
+    ANIM_P2_STRUCK_DOWN = 0x4764, [4, 4],
+        "ST `$4764`, loaded at `$ca5e`: player 2 knocked down. Read out of the \
+         image -- two cells of four, the same shape as player 1's `$2d50`.";
+    ANIM_P2_STRUCK_UP = 0x4774, [4, 4],
+        "ST `$4774`, loaded at `$ca48`: player 2 knocked upward, mirroring \
+         player 1's `$2d60`.";
     ANIM_P2_THROW_RIGHT = 0x45ea, [4, 4, 4, 4, 4, 4],
         "ST `$45ea`, loaded at `$ae0e`: the same, stepping right. `$45f0` -- the \
          sequence the intercept commits into -- is this table's second cell.";
@@ -430,7 +446,7 @@ fn turn(player: &mut Player) {
     }
 }
 
-/// State 11, knocked down. ST `$10554`.
+/// State 11, knocked down. ST `$10554` for player 1, `$be54` for player 2.
 ///
 /// ```text
 /// $10554  move.b #$0b,$6ca9
@@ -443,10 +459,21 @@ fn turn(player: &mut Player) {
 /// So the player sinks **one row per animation cell**, not per frame, which is
 /// why `golden.ndjson` reads 18, 17, 17, 17, 17, 16, 16, 16 across frames
 /// 63-70: the `$2d50` sequence is two cells of four frames each.
-fn struck_down(player: &mut Player) {
+///
+/// Player 2's copy at `$be54` is the same six instructions with **both signs
+/// flipped** -- `cmpi.w #$45,$6d26; bge; addq.w #1` -- so it travels the other
+/// way and stops at `$45` instead of `$02`. `p1_walk` frame 256 is where that
+/// matters: player 2 goes 54 -> 55, and a shared `-1` left it at 54. Part 11i.
+fn struck_down(player: &mut Player, who: PlayerId) {
     player.facing = STATE_STRUCK_DOWN;
-    if anim_advanced(player) && player.world_y > STRUCK_Y_FLOOR {
-        player.world_y -= 1;
+    if anim_advanced(player) {
+        match who {
+            // $1056a/$10574
+            PlayerId::One if player.world_y > STRUCK_Y_FLOOR => player.world_y -= 1,
+            // $be6a/$be72
+            PlayerId::Two if player.world_y < STRUCK_Y_CEILING_P2 => player.world_y += 1,
+            _ => {}
+        }
     }
     // $10578 bra $f1c4: the plain tail, so the sequence ending lands on state 0.
     if anim_tick(player) == AnimStep::Ended {
@@ -546,10 +573,19 @@ fn run_out(player: &mut Player, who: PlayerId) {
 /// Both arms of its `cmpi.w #$19,$6ca6` add one to `$6ca6`; the `>= 25` arm
 /// (`$105a4`) then does more that is not decoded, so this models the add and
 /// stops. `// UNKNOWN: see bd discr-75o`.
-fn struck_up(player: &mut Player) {
+///
+/// Player 2's copy is `$be7a`, and it is the same mirror as state 11's:
+/// `cmpi.w #$32,$6d26; ble; subq.w #1`. Both of ITS arms subtract, and the
+/// `<= $32` arm (`$bea0`) is the one with the undecoded tail. Part 11i.
+fn struck_up(player: &mut Player, who: PlayerId) {
     player.facing = STATE_STRUCK_UP;
     if anim_advanced(player) {
-        player.world_y += 1;
+        // Unbounded on purpose: both arms of the compare step, and only the
+        // bounded arm's extra work is undecoded.
+        match who {
+            PlayerId::One => player.world_y += 1, // $1059c / $105a4
+            PlayerId::Two => player.world_y -= 1, // $be98 / $bea0
+        }
     }
     if anim_tick(player) == AnimStep::Ended {
         player.state_index = STATE_IDLE;
@@ -905,7 +941,34 @@ fn strike(
     // $ca06-$ca0e: the bounce, applied to the candidate the loop writes back.
     disc.dir_kind = disc.dir_kind.wrapping_neg();
     disc.hook = SteerHook::None;
-    z_cand + disc.dir_kind
+    let z = z_cand + disc.dir_kind;
+
+    // $ca12-$ca78: the knock-down cascade, and it tests the ALREADY-NEGATED
+    // dir_kind. The mirror of `$111da`'s, with the polarity flipped on both
+    // arms -- player 1 goes UP on a negative dir_kind and player 2 goes DOWN.
+    match player.state_index {
+        // $ca12-$ca40 -> $ca7a: interrupting a walk, a turn or a throw keeps
+        // the state and touches two fields this crate does not model ($6d4e,
+        // $6d52) -- except $ca8e, the mirror of $11256.
+        1 | 2 | 3 | 4 | 0x15 | 0x16 => {
+            if disc.dir_kind < 0 {
+                disc.dir_kind = -1;
+            }
+        }
+        // $ca42 bmi $ca5e: still travelling away from player 1 -> state 11,
+        // and the disc leaves at exactly -1 ($ca72).
+        _ if disc.dir_kind < 0 => {
+            player.state_index = STATE_STRUCK_DOWN;
+            enter_anim(player, ANIM_P2_STRUCK_DOWN);
+            disc.dir_kind = -1;
+        }
+        // $ca48: knocked the other way, and nothing is forced.
+        _ => {
+            player.state_index = STATE_STRUCK_UP;
+            enter_anim(player, ANIM_P2_STRUCK_UP);
+        }
+    }
+    z
 }
 
 /// The state a missed intercept drops into. ST `$cac6`: `move.b #$11,$6d2e` --
@@ -1301,8 +1364,8 @@ pub fn step(
     match player.state_index {
         STATE_IDLE => idle(player, who, input, own_bank),
         STATE_TURN => turn(player),
-        STATE_STRUCK_DOWN => struck_down(player),
-        STATE_STRUCK_UP => struck_up(player),
+        STATE_STRUCK_DOWN => struck_down(player, who),
+        STATE_STRUCK_UP => struck_up(player, who),
         STATE_DEAD => dead(player),
         STATE_INTERCEPT => intercept(player, input),
         STATE_STUB => stub(player, who),
@@ -1628,5 +1691,37 @@ mod tests {
             &mut events,
         );
         assert!(events.is_empty());
+    }
+
+    /// States 11 and 12 are mirrored between the two tables: `$1056a` bounds
+    /// player 1 below at `$02` and subtracts, `$be6a` bounds player 2 above at
+    /// `$45` and adds. Getting this shared was `p1_walk`'s frame-256 wall.
+    #[test]
+    fn the_knockdown_is_mirrored_between_the_players() {
+        for (who, from, want, bound) in [
+            (PlayerId::One, 18i16, 17i16, STRUCK_Y_FLOOR),
+            (PlayerId::Two, 54, 55, STRUCK_Y_CEILING_P2),
+        ] {
+            let mut p = Player {
+                world_y: from,
+                state_index: STATE_STRUCK_DOWN,
+                ..Player::default()
+            };
+            enter_anim(&mut p, ANIM_STRUCK_DOWN);
+            p.anim_shown = NO_CELL; // force anim_advanced on this pass
+            struck_down(&mut p, who);
+            assert_eq!(p.world_y, want, "{who:?} moves one row on a cell change");
+
+            // At the bound it stops, and the two bounds are on opposite sides.
+            let mut q = Player {
+                world_y: bound,
+                state_index: STATE_STRUCK_DOWN,
+                ..Player::default()
+            };
+            enter_anim(&mut q, ANIM_STRUCK_DOWN);
+            q.anim_shown = NO_CELL;
+            struck_down(&mut q, who);
+            assert_eq!(q.world_y, bound, "{who:?} stops at its own bound");
+        }
     }
 }

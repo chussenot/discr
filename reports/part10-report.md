@@ -1587,3 +1587,36 @@ Frame 256, `players[1].world_y`: player 2's own state handler, waived under
 `discr-b6x`, and every non-waived row matches on that frame. So `p1_walk`'s
 remaining gap is the AI, not the tick's shape — the first time in four parts
 that the wall is not `disc-core` misreading its own frame.
+
+---
+
+# Part 11i — player 2 gets knocked over
+
+| run | 11h | **11i** |
+|---|---|---|
+| four clean runs | clean | clean |
+| `p1_walk`, nothing waived | 255 | **271** |
+
+The frame-256 wall was player 2 being struck, and everything missing was a
+mirror of player-1 code already in the crate:
+
+* **`$ca12`-`$ca78`**, the knock-down cascade at the end of player 2's strike.
+  Same shape as `$111da`, **opposite polarity**: a negative `dir_kind` sends
+  player 1 to state 12 and player 2 to state 11. Each is knocked the way the
+  disc was already travelling, so the sign that means "away" for one means
+  "toward" for the other.
+* **states 11 and 12 were shared and are not.** `$1056a` bounds player 1 at
+  `$02` and subtracts; `$be6a` bounds player 2 at `$45` and adds. Both arms of
+  state 12 step, in opposite directions, with the bounds `$19` and `$32`.
+* **the two sequences** at `$4764` and `$4774`, read out of the image with
+  `--window 0x4760 0x4790` instead of guessed: six-byte cells, `[4, 4]` each,
+  the same shape as player 1's. The trace agrees on its own -- player 2's `anim`
+  column reads 18276 = `$4764` on the frame it enters state 11.
+
+## Where it stops now
+
+Frame 272, `players[0].facing` = `$12`. `$113e2`-`$113fe` is **player 1's
+anticipation cascade** -- the mirror of `$cb2c` -- installing steering hook
+`$a71a`, entering `$2bfe` and setting state 18. That is `discr-ovl.1`'s open
+question, now located to the instruction, and it is three ticks from the end of
+the fixture: the window, not the model, is what runs out next.

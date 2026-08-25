@@ -2385,3 +2385,57 @@ Two things fell out of reading `$a4bc`:
 
 The new wall is frame 256, `players[1].world_y` -- player 2's own state handler,
 already waived under `discr-b6x`. Every non-waived row matches on that frame.
+
+## Player 2's knock-down, and its mirror (Part 11i)
+
+`p1_walk`'s frame-256 wall was player 2 being struck. Three pieces were missing,
+and all three are mirrors of code already modelled for player 1.
+
+**The cascade, `$ca12`-`$ca78`** — the tail of player 2's strike, reached from
+`$ca0e` and called from the disc loop at `$a656`:
+
+```
+$ca12  cmpi.b #$1,$6d2e ; beq $ca7a     ; a walk/turn/throw is not knocked over
+ ..    #$2, #$15, #$16, #$3, #$4        ; six pending states, then
+$ca42  tst.w ($a,A5) ; bmi $ca5e        ; the ALREADY-NEGATED dir_kind
+$ca48  lea $4774.w,A0 ... $6d2e = #$c   ; positive -> state 12
+$ca5e  lea $4764.w,A0 ... $6d2e = #$b   ; negative -> state 11,
+$ca72  move.w #$ffff,($a,A5)            ;   and the disc leaves at exactly -1
+$ca7a  $6d4e = #$141f6 ; $6d52 = #$4    ; the interrupt arm, two fields we do
+$ca88  tst.w ($a,A5) ; bpl              ;   not model, and $11256's mirror:
+$ca8e  move.w #$ffff,($a,A5)            ;   force an outgoing disc to -1
+```
+
+Set against `$111da`, this is `$11226`/`$11210` with **the polarity flipped**:
+a negative `dir_kind` sends player 1 to state 12 and player 2 to state 11. Each
+player is knocked the way the disc was already going, so the sign that means
+"away" for one means "toward" for the other.
+
+**States 11 and 12** were shared between the tables and are not:
+
+| | player 1 | player 2 |
+|---|---|---|
+| state 11 | `$1056a cmpi.w #$02,$6ca6; ble` then `subq.w #1` | `$be6a cmpi.w #$45,$6d26; bge` then `addq.w #1` |
+| state 12 | `$10592 cmpi.w #$19; bge` then `addq.w #1` (both arms) | `$be90 cmpi.w #$32; ble` then `subq.w #1` (both arms) |
+
+Both gate the step on the animation cell changing (`cmp.l $6ce4` / `cmp.l
+$6d64`), so a player travels one row per cell, not per frame.
+
+**The two sequences**, read out of the image at `--window 0x4760 0x4790` rather
+than guessed. A cell is six bytes -- a four-byte frame-block pointer and a
+two-byte hold -- and a zero pointer terminates:
+
+```
+$4764  ptr $3a40 hold 4 | ptr $3a56 hold 4 | $4770 ptr 0     state 11
+$4774  ptr $3a6c hold 4 | ptr $3a82 hold 4 | $4780 ptr 0     state 12
+```
+
+`[4, 4]` each, the same shape as player 1's `$2d50`/`$2d60`. The trace confirms
+it independently: player 2's `anim` column reads 18276 = `$4764` on the frame it
+enters state 11.
+
+**`p1_walk` 255 -> 271.** The new wall is frame 272 and it is a different
+animal: `players[0].facing` = `$12`, because `$113e2`-`$113fe` -- **player 1's
+anticipation cascade**, the mirror of `$cb2c` -- installs steering hook `$a71a`,
+enters `$2bfe` and sets state 18. That is `discr-ovl.1` exactly, now located to
+the instruction, and three ticks from the end of this fixture.

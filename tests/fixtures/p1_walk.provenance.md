@@ -102,5 +102,9 @@ input channel's granularity was the whole of it.
 
 Part 11h took it to **255**: the collapse advance at `$96b6` runs once per
 *outer* main-loop iteration, and there are 237 of those in these 275 frames.
-The wall now is frame 256, `players[1].world_y` — player 2's own state handler,
-waived under `discr-b6x`, with every non-waived row matching on that frame.
+Part 11i took it to **271** by mirroring player 2's knock-down (`$ca12`, and
+states 11 and 12, which were shared between the tables and are not).
+
+The wall now is frame 272, `players[0].facing` — player 1's anticipation
+cascade at `$113e2`, `discr-ovl.1`. Three ticks from the end: this fixture is
+nearly spent, and the next number will have to come from a longer one.
