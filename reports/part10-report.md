@@ -1174,8 +1174,8 @@ parts. Nothing caught it because player 2 is never struck in any fixture, so a
 constant was indistinguishable from a constant.
 
 That is the shape of bug this project should expect more of: not a wrong
-计算 but a column that is *quietly measuring the wrong address*, in a place where
-the right answer happens to be constant too.
+calculation but a column that is *quietly measuring the wrong address*, in a place
+where the right answer happens to be constant too.
 
 ## Player 2's strike
 
