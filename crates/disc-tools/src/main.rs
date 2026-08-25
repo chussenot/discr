@@ -122,6 +122,17 @@ struct Cli {
     /// Without it any divergence exits 1.
     #[arg(long, value_name = "N")]
     min_agree: Option<usize>,
+    /// Print every compared field whose path starts with this, ST value against
+    /// `disc-core`'s, for each tick in the range given by `--from`/`--frames`.
+    ///
+    /// For localising a divergence rather than measuring one: a lag shows up as
+    /// a column that is right but shifted, which a first-divergence report
+    /// cannot distinguish from a wrong rule.
+    #[arg(long, value_name = "FIELD")]
+    dump: Option<String>,
+    /// Start dumping at this tick. Only meaningful with `--dump`.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    from: usize,
 }
 
 impl Cli {
@@ -798,7 +809,21 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let mut prev_ai = first.ai_6da1;
     let mut prev = first;
 
-    for expected in &rest[..ticks] {
+    for (tick, expected) in rest[..ticks].iter().enumerate() {
+        if let Some(prefix) = &cli.dump
+            && tick >= cli.from
+        {
+            let cs = checks(prev, &state);
+            let row: Vec<String> = cs
+                .iter()
+                .filter(|c| c.field.starts_with(prefix.as_str()))
+                .map(|c| {
+                    let mark = if c.expected == c.got { "" } else { " <-" };
+                    format!("{}={}/{}{}", c.field, c.expected, c.got, mark)
+                })
+                .collect();
+            println!("  tick {tick:3} in  {}", row.join("  "));
+        }
         let input = prev.input(prev_joy);
         feed_disc_inputs(&mut state, &prev.seed());
         state.tick([input, expected.ai_input(prev_ai)]);

@@ -76,11 +76,6 @@ impl GameState {
         // ST $8198: addq.w #1,$6ab4 is the VBL handler's first instruction.
         self.frame = self.frame.wrapping_add(1);
 
-        // ST $14ba4: the tile-collapse effect, BEFORE the disc loop, so a
-        // collapse the disc loop claims this tick is not advanced until the
-        // next one. See tile::Collapse.
-        tile::collapse_step(&mut self.collapse, &mut self.tiles, &mut events);
-
         // ST $a4ea: the disc update loop walks all 8 records.
         for slot in 0..DISC_SLOTS {
             disc::step(
@@ -151,6 +146,17 @@ impl GameState {
                 self.players[1].discs_out += 1;
             }
         }
+
+        // ST $14ba4: the tile-collapse effect, LAST -- it lives in the render
+        // pass, not the game update. Ordering it first (as Part 10e did) makes
+        // the 49-tick delay come out right and then destroys the cell a player
+        // is about to walk onto in the same tick, which is what p1_walk frame
+        // 143 catches: player 2 walks off cell 15 on the frame the collapse
+        // clears it, and the ST lets it.
+        //
+        // The delay still comes out right because collapse_step's own first
+        // decrement now lands on the claiming tick instead of the one after.
+        tile::collapse_step(&mut self.collapse, &mut self.tiles, &mut events);
 
         events
     }

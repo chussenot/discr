@@ -2096,3 +2096,55 @@ modifies the damage they deal.
 anticipation cascade. So a disc that crosses player 2's depth and neither is
 caught nor connects is a disc player 2 **starts tracking** -- the miss and the
 anticipation are one code path, not two.
+
+## The tile collapse runs in the render pass, after the players (Part 11c)
+
+Part 10e put `collapse_step` **first** in the tick because that made the 49-frame
+delay come out right. It is wrong, and `p1_walk` frame 143 is what catches it:
+player 2 walks off cell 15 on the very frame the collapse clears that cell's
+type, and the ST lets it. Clearing before the player update blocks the step.
+
+Both constraints hold once the **busy byte is modelled instead of a frame
+count**. `$779e` is a three-state byte and `$14bac tst.b (a6); bmi` sends a
+*negative* one to the blitter, so the claiming tick's own pass advances the
+sprite cursor and counts nothing else down:
+
+```
+claim tick   $a390 st (a2)                busy = $ff, cursor = 48 cells
+             ... the pass runs, advances the cursor, does not free anything
++48 ticks    the $5be4 list runs out
+             $14c76 addq.b #2,(a6)        busy = $01, positive
+next tick    $14bb2 subq.b #3,(a6)        busy = $fe
+             $14bb8 clr.w (a0)            THE TYPE IS CLEARED
+             $14c76 addq.b #2,(a6)        busy = $00, the slot frees
+```
+
+With the effect pass **last** in the tick and the byte modelled, the delay is
+still 49 and the walk is no longer blocked. Modelling the byte rather than a
+counter is what removed the fudge: an "extra one for the claiming tick" would
+have produced the same number and hidden the reason.
+
+## Player 2's walk probe is not the obvious expression (Part 11c)
+
+Player 1's walk probes 24 units ahead and reads `$7616` --
+`$f60e sub.w #$0018,d0` then `$f63e tst.w ($00,a1,d0.w)` with `a1 = $7616`. It is
+verified over three fixtures.
+
+Player 2's is **not** the mirror of that, and this is measured rather than
+argued. Its walk handler reads `$7596` at several sites inside `$abb2`, so
+`own_bank[grid_cell(x - 24, y)]` looks obviously right. Trying it:
+
+```
+                        near bank ($7616)   own bank ($7596)
+p1_walk                 143 ticks           99 ticks
+tile_damage, no flags   clean (214)         201 ticks
+```
+
+Both regressions are player 2 taking a step the ST does not, so with its own
+bank the probe reads *walkable* where the ST reads *blocked*. Either the probe
+distance differs from 24 or the index is not `grid_cell`'s. The near bank is
+closer and its one wrong frame is `p1_walk` 144, where a cell of player 1's floor
+collapses under the same index -- which is the sort of coincidence that makes a
+wrong rule look right for 143 frames. `// UNKNOWN: see bd discr-b6x`.
+
+Recorded because "it reads its own bank, obviously" was tried and is false.

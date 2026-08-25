@@ -344,7 +344,17 @@ fn walk(
 
     {
         let probe = (player.world_x + step_x.signum() * PROBE_AHEAD).clamp(WALK_X_MIN, WALK_X_MAX);
-        // ST $f63e / $f852: tst.w tile+$00 -- 0 = destroyed = unwalkable.
+        // ST $f63e / $f852: `tst.w tile+$00` -- 0 = destroyed = unwalkable.
+        //
+        // MEASURED, and not what it looks like. Player 2's walk handler reads
+        // $7596 (its own bank) at several sites inside $abb2, so switching this
+        // to own_bank looks obviously right -- and it is worse on two fixtures:
+        // p1_walk drops 143 -> 99 and tile_damage stops being clean, both on
+        // player 2 walking a step the ST does not. So player 2's probe is NOT
+        // `own_bank[grid_cell(x - 24, y)]`; either the distance or the index
+        // differs. The near bank is closer, and the one place it is wrong is
+        // p1_walk frame 144, where a cell of player 1's floor collapses under
+        // the same index. // UNKNOWN: see bd discr-b6x.
         if tiles[grid_cell(probe, player.world_y) as usize].walkable() {
             // ST $f658: subq.w #3,$6ca2; ST $f86c: addq.w #3,$6ca2.
             player.world_x = (player.world_x + step_x).clamp(WALK_X_MIN, WALK_X_MAX);

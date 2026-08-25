@@ -1206,3 +1206,73 @@ That took `p1_walk` from 123 to 142.
 * **Player 1's cascade is still not generalised**, so `disc-core` does not install
   `$a71a` or `$a78e` itself. No gate needs it yet: `p1_walk` installs `$a71a` only
   on frames 272-274, well past the 142 wall.
+
+---
+
+# Part 11c — instrumenting instead of inferring
+
+Part 11 left a wall it called "a one-frame lag in player 2's turn-to-walk
+timing … needs instrumenting rather than reasoning about". It was not a lag, and
+the instrument found that in one command.
+
+| run | 11 | **11c** |
+|---|---|---|
+| four clean runs | clean | clean |
+| `p1_walk`, nothing waived | 142 | **143** |
+
+One tick of gate movement, two real bugs, and one tool.
+
+## The tool
+
+`tracecheck --dump <field-prefix> --from N` prints every matching compared field
+each tick, ST value against `disc-core`'s. A first-divergence report cannot tell
+a **lag** (a column that is right but shifted) from a **wrong rule** (a column
+that stops), because it only ever shows you the first frame they differ.
+
+The dump showed the columns agreeing exactly through tick 142 and then
+`disc-core` simply not moving. Not a lag at all. Three rounds of reasoning had
+got that wrong; the tool got it right immediately, and it cost fifteen lines.
+
+## Bug one: the tile collapse ran too early in the tick
+
+Part 10e put `collapse_step` first because that made the 49-frame delay come out
+right. `p1_walk` frame 143 is what catches it: player 2 walks off cell 15 on the
+very frame the collapse clears that cell's type, and the ST lets it. Clearing
+before the player update blocks the step.
+
+Both constraints hold once the **busy byte is modelled instead of a frame
+count**. `$779e` is a three-state byte, and `$14bac tst.b (a6); bmi` sends a
+*negative* one to the blitter — so the claiming tick's own pass advances the
+sprite cursor and counts nothing else down. With the effect pass last and the
+byte modelled, the delay is still 49 and the walk is not blocked.
+
+That is the part worth keeping: an "extra one for the claiming tick" would have
+produced the same number and hidden the reason. Modelling the byte removed the
+fudge and the fudge's explanation at the same time.
+
+## Bug two, or rather: a hypothesis that looked obvious and is false
+
+Player 1's walk probes 24 units ahead in `$7616`. Player 2's walk handler reads
+`$7596` at several sites, so `own_bank[grid_cell(x - 24, y)]` looks obviously
+right. It is measurably worse:
+
+| | near bank `$7616` | own bank `$7596` |
+|---|---|---|
+| `p1_walk` | **143** | 99 |
+| `tile_damage`, no flags | **clean** | 201 |
+
+Both regressions are player 2 taking a step the ST does not, so with its own bank
+the probe reads *walkable* where the ST reads *blocked*. Either the distance is
+not 24 or the index is not `grid_cell`'s.
+
+The near bank is closer, and the single frame where it is wrong is `p1_walk` 144 —
+where a cell of *player 1's* floor collapses under the same index. That is the
+coincidence that makes a wrong rule look right for 143 frames, and it is now
+written next to the code rather than left to be rediscovered.
+
+## Honest limits
+
+* **143 of 274 on one fixture.** The wall is the probe above, and I stopped at
+  "the obvious reading is false" rather than guessing at the next one.
+* The four clean runs are unchanged and the collapse fix did not move them —
+  which is the check that it was a fix and not a trade.

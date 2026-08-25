@@ -42,13 +42,17 @@ do that. It does something else worth having.
 
 ## Expected result
 
-**142 ticks, then a divergence owned by a bead.** It was 123 until player 2's
-strike (`$c934`) was implemented, which is what frame 124 needed.
+**143 ticks, then a divergence owned by a bead.** 123 until player 2's strike
+(`$c934`) was implemented, 142 until the tile collapse moved to the end of the
+tick.
 
-The wall now is frame 143, `players[1].world_x` 125 against 128: the ST enters
-state 1 on frame 140 and makes its first −3 step on 141, and `disc-core` is one
-tick behind it. A one-frame lag in the turn-to-walk transition, which needs
-instrumenting rather than reasoning about. `// UNKNOWN: see bd discr-b6x`.
+The wall is frame 144, `players[1].world_x` 122 against 125: player 2 stops
+walking one step early because the cell its probe reads has just collapsed — in
+**player 1's** bank, on the frame the collapse clears it. Switching that probe to
+player 2's own bank looks obviously right and is measurably worse (this fixture
+drops to 99 and `tile_damage` stops being clean), so player 2's probe is neither
+`$7616[grid_cell(x - 24, y)]` nor the same expression over `$7596`.
+`// UNKNOWN: see bd discr-b6x`.
 
 Both other fixtures are clean, so this is the only one of the three that gates on
 a prefix. That is the point of adding it: a clean gate measures nothing new.

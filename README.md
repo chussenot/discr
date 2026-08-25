@@ -29,6 +29,7 @@ Both are green today, and **all four of `core-check`'s runs are clean**:
 | `tile_damage --skip-waived` | 214 of 214 |
 | `golden`, nothing waived at all | 99 of 99, both players |
 | `tile_damage`, nothing waived | 214 of 214, both players |
+| `p1_walk`, nothing waived | 143 of 274 — the one gate that is not clean, on purpose |
 
 They still gate on a **measured prefix** via `--min-agree` rather than on zero
 divergence, because that is what catches a regression: a clean run can only get

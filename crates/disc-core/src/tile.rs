@@ -68,6 +68,14 @@ pub const COLLAPSE_FRAMES: u16 = 48;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Collapse {
+    /// The ST's busy byte, `$779e` itself. `$ff` while the sprite list is still
+    /// running, `$01` for the one frame after it ends, `0` when the slot frees.
+    ///
+    /// Modelling the byte rather than a frame count is what gets the timing
+    /// right without a fudge: `$14bac tst.b (a6); bmi` sends a **negative** byte
+    /// to the blitter, so the claiming tick's own pass advances the sprite
+    /// cursor and does not count down anything else.
+    pub busy: u8,
     /// The cell whose type word will be cleared: the struck cell plus
     /// [`WALK_COPY_OFFSET`]. ST `$77a2`.
     pub cell: usize,
@@ -88,12 +96,22 @@ pub fn collapse_step(
     events: &mut Vec<Event>,
 ) {
     let Some(c) = slot else { return };
-    if c.frames_left > 0 {
-        c.frames_left -= 1;
+
+    // $14bac tst.b (a6); bmi $14c20 -- still animating.
+    if c.busy & 0x80 != 0 {
+        if c.frames_left > 0 {
+            // $14c42/$14c7a: one cell of the $5be4 list per pass.
+            c.frames_left -= 1;
+        } else {
+            // $14c72 tst.l (a0); $14c76 addq.b #2,(a6) -- the list ran out, and
+            // $ff + 2 is $01, which is positive.
+            c.busy = c.busy.wrapping_add(2);
+        }
         return;
     }
-    // $14bb8 clr.w (a0): the type only. The hp word is left alone, which is
-    // why the fixture reads (1,1) -> (0,1) and not (0,0).
+    // $14bb2 subq.b #3, then $14bb8 clr.w (a0): the type only. The hp word is
+    // left alone, which is why the fixture reads (1,1) -> (0,1) and not (0,0),
+    // and $14c76's second addq takes the byte to 0 and frees the slot.
     if let Some(t) = tiles.get_mut(c.cell) {
         t.tile_type = TILE_TYPE_DESTROYED;
         events.push(Event::TileDestroyed { cell: c.cell });
@@ -143,6 +161,8 @@ pub fn damage(
         // struck cell plus eight.
         if collapse.is_none() {
             *collapse = Some(Collapse {
+                // $a390 st (a2).
+                busy: 0xff,
                 cell: cell + WALK_COPY_OFFSET,
                 frames_left: COLLAPSE_FRAMES,
             });
