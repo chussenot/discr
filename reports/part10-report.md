@@ -1620,3 +1620,54 @@ anticipation cascade** -- the mirror of `$cb2c` -- installing steering hook
 `$a71a`, entering `$2bfe` and setting state 18. That is `discr-ovl.1`'s open
 question, now located to the instruction, and it is three ticks from the end of
 the fixture: the window, not the model, is what runs out next.
+
+---
+
+# Part 11j — all three fixtures clean
+
+| run | 11i | **11j** |
+|---|---|---|
+| four clean runs | clean | clean |
+| `p1_walk`, nothing waived | 271 | **274 -- clean** |
+
+`$112f4`-`$1147a` is player 1's anticipation cascade, the counterpart of player
+2's `$cb2c`, and it closes `discr-ovl.1` from the player-1 side: `$11334` and
+`$11372` install `$a78e`, `$113e2` installs `$a71a`. Every non-crossing and every
+body-box miss in `$10fd8` branches into it, so a disc that fails to hit a player
+is a disc that player starts tracking.
+
+The two halves differ in exactly three sign flips (the disc's direction, the
+owner byte's polarity, and which side of the player is "deep"), one bonus word
+(`$6d1c` against `$6d9a`), and four addresses. The X ladder's seven constants are
+**identical** -- X is the same direction for both players and depth is not.
+`anticipate` and `can_stand` are now one function each, taking `who`.
+
+## What actually blocked it
+
+Transcribing the cascade changed nothing: it still never fired. Its third gate
+is `$1130e tst.b ($11,a5); beq` -- the disc's owner byte -- and `disc-core` has
+no writer for that field. The note in `types.rs` said "every trace reads 0 on
+every live slot", and `p1_walk` is the trace where that stopped being true: disc
+0 reads `$ff` from frame 268. Frozen at its frame-0 seed, `aim` was `One` all
+replay and the gate rejected every disc.
+
+`disc+$11` is now fed -- **the first disc-side field this replay has ever had to
+feed**, and `tracecheck`'s banner says so. Its writer is still unlocated
+(`discr-ovl.2`).
+
+That is the four-part pattern again, in its sharpest form yet: the model was
+wrong in a way two clean fixtures could not see, and the thing that found it was
+a new fixture plus reading the code, not inference from the data.
+
+## Where it stops now
+
+Nowhere, in this fixture. Extended to 543 frames -- the oracle's own limit for
+this programme, where the game reaches unstubbed disk hardware (`write.w
+$ff8606` from PC `$162`) -- the wall is frame 276, `players[0].state_index`
+18 -> 31.
+
+That one is structural and worth stating: `$96d0 bsr $10f16` and `$96d4 bsr
+$c76c` sit **after** the repeat loop, so like the collapse advance they run once
+per outer iteration. `$10f16` recomputes `$6cb0` from x and y and then, if the
+cell under player 1 is destroyed, plays a sound and puts it in state `$1f` --
+falling. `disc-core` models neither the post-pass block nor state 31.

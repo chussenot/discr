@@ -169,6 +169,12 @@ anims! {
         "ST `$472a`, loaded at `$aed4`: player 2's running smash to the left.";
     ANIM_P2_SMASH_RIGHT = 0x46f0, [4, 4, 4, 4, 4, 4, 4, 4, 4],
         "ST `$46f0`, loaded at `$af34`: the same, to the right.";
+    ANIM_P1_INTERCEPT = 0x2bfe, [6, 6, 6, 6],
+        "ST `$2bfe`, loaded at `$113ea`: player 1 stepping across to intercept -- \
+         the same four cells of six as player 2's `$4612`.";
+    ANIM_P1_REACH     = 0x2c56, [6, 6, 4, 4, 4],
+        "ST `$2c56`, loaded at `$1137a`: player 1 reaching without moving, the \
+         same shape as player 2's `$466a`.";
     ANIM_P2_STRUCK_DOWN = 0x4764, [4, 4],
         "ST `$4764`, loaded at `$ca5e`: player 2 knocked down. Read out of the \
          image -- two cells of four, the same shape as player 1's `$2d50`.";
@@ -633,6 +639,7 @@ pub fn hit_test(
     y_cand: i16,
     z_before: i16,
     z_cand: i16,
+    own_bank: &[Tile; TILE_CELLS],
 ) -> i16 {
     // $10fd8: a player already down is not hit again.
     if player.down {
@@ -648,6 +655,8 @@ pub fn hit_test(
         z_before > player.world_y && z_cand <= player.world_y
     };
     if !crossed {
+        // $10fee/$10ff6/$11000/$11008 all branch to $112f4, the cascade.
+        anticipate(player, PlayerId::One, disc, x_cand, z_cand, own_bank);
         return z_cand;
     }
 
@@ -661,11 +670,10 @@ pub fn hit_test(
     let [b0, b1, b2, b3] = player.hit_box;
     let left = player.world_x - 8 + b0;
     let right = left + 8 + b1;
-    if x_cand < left || x_cand > right {
-        return z_cand;
-    }
     let bottom = crate::disc::PLAYER_HEIGHT_REF + b2;
-    if y_cand < bottom || y_cand > bottom + b3 {
+    // $11108/$11114/$11122 and the fourth: every miss goes to $112f4 too.
+    if x_cand < left || x_cand > right || y_cand < bottom || y_cand > bottom + b3 {
+        anticipate(player, PlayerId::One, disc, x_cand, z_cand, own_bank);
         return z_cand;
     }
 
@@ -835,7 +843,7 @@ pub fn p2_hit_test(
     };
     if !crossed {
         // $cb2c: no crossing this frame, so try to anticipate one.
-        anticipate(player, disc, x_cand, z_cand, own_bank);
+        anticipate(player, PlayerId::Two, disc, x_cand, z_cand, own_bank);
         return z_cand;
     }
 
@@ -920,7 +928,7 @@ fn strike(
         || disc.world_y > bottom + b3
     {
         // $c940 and the three after it all branch to $cb2c.
-        anticipate(player, disc, x_cand, z_cand, own_bank);
+        anticipate(player, PlayerId::Two, disc, x_cand, z_cand, own_bank);
         return z_cand;
     }
 
@@ -984,107 +992,170 @@ pub const STATE_REACH: u8 = 0x1b;
 /// The reach the bonus code 5 substitutes for [`Player::reach`]. ST `$cb5e`.
 pub const BONUS_REACH: i16 = 0x32;
 
-/// Player 2's anticipation cascade: `$cb2c`-`$cc9a`, the tail of its hit test
-/// `$c826`.
+/// The anticipation cascade: `$cb2c`-`$cc9a` for player 2, `$112f4`-`$1147a`
+/// for player 1. The tail of both hit tests, and **what installs all four
+/// steering hooks** -- bd discr-ovl.1 from both sides.
 ///
-/// This is what **installs the two player-2 steering hooks**, and therefore what
-/// bd discr-ovl.1 was asking about from the player-2 side. Three outcomes, and
-/// `--watch` over `tests/fixtures/tile_damage.ndjson` counts them: `$cb70`
-/// installs [`SteerHook::AtP2Wide`] 28 times, `$cbae` reaches (state 27) once,
-/// and `$cc1e` steps across (state 18) once.
+/// Every non-crossing and every body-box miss branches here (`$10fee`, `$10ff6`,
+/// `$11000`, `$11008`, `$11108`, `$11114`, `$11122`, ... all `-> $112f4`), so a
+/// disc that fails to hit a player is a disc that player starts tracking.
 ///
 /// ```text
-/// $cb2c  only from state 0, only a disc travelling AWAY (dir_kind > 0) and
-///        owned by the other value, and only if $6d29 != 7
-/// $cb52  d5 = own depth - reach   (or - $32 under bonus code 5)
-/// $cb6a  the disc must be at least that deep -> otherwise nothing at all
-/// $cb70  INSTALL $a7d8: start tracking it
-/// $cb78  a narrow depth window, [d5 + reach - $c, +2]; outside it, stop here
-/// $cb9e  then a ladder on the disc's X relative to $6d22 - 3, mirrored left
-///        and right, ending in one of two responses
-/// $cbae  REACH: keep $a7d8, animation $466a, state $1b
-/// $cc1e  INTERCEPT: install $a816, animation $4612, state $12
+/// player 2 ($cb2c)                      player 1 ($112f4)
+/// -----------------------------------   -----------------------------------
+/// only from state 0, facing != 7, and   the same two gates ($112f4, $112fc)
+///   a disc owned by the other value
+/// dir_kind > 0 (bmi/beq exit)           dir_kind < 0 (bpl exit)
+/// owner byte == 0 (bne exit)            owner byte != 0 (beq exit)
+/// d5 = depth - reach   ($cb52)          d5 = depth + reach   ($11316)
+///   or - $32 under bonus code 5           or + $32, on $6d1c not $6d9a
+/// exit if the disc is shallower         exit if the disc is DEEPER ($11330)
+/// INSTALL $a7d8  ($cb70)                INSTALL $a78e  ($11334)
+/// narrow window [depth-$c, depth-$a]    narrow window [depth+$a, depth+$c]
+/// REACH:     $466a, state $1b ($cbae)   REACH:     $2c56, state $1b ($11372)
+/// INTERCEPT: $4612, state $12 ($cc1e)   INTERCEPT: $2bfe, state $12 ($113e2)
+///                                                  and hook $a71a
 /// ```
 ///
-/// The choice between the two is a genuine little decision: **step across only
-/// if the cell twelve units over is somewhere you could stand** -- either it is
-/// the cell you are already on, or its type is non-zero in your own bank
-/// (`$cc02`, `$cc10`). Otherwise just reach.
+/// So the **depth axis mirrors and the X axis does not**. The ladder on the
+/// disc's X relative to `own_x - 3` is the same seven constants for both
+/// players -- `$c`/`$18` to the right, `$f`/`$22` to the left, a `$c` probe
+/// either way -- because X is the same direction for both of them and depth is
+/// not. Reading player 1's half after transcribing player 2's, that was the only
+/// surprise: three sign flips and a different bonus word, and everything else
+/// byte for byte.
 ///
-/// Not modelled: the `$6d29 != 7` guard at `$cb34` (that byte is stamped by the
-/// throw states and is never 7 in either fixture, so inventing a value for it
-/// would be worse than saying so), and `$cc3a clr.b $6d28`.
+/// The choice between the two responses is a genuine little decision: **step
+/// across only if the cell twelve units over is somewhere you could stand** --
+/// either it is the cell you are already on, or its type is non-zero in your own
+/// bank (`$cc02`/`$cc10`, `$113c6`/`$113d4`). Otherwise just reach.
+///
+/// `--watch` over `tests/fixtures/tile_damage.ndjson` counts player 2's three
+/// outcomes: `$cb70` installs [`SteerHook::AtP2Wide`] 28 times, `$cbae` reaches
+/// once, `$cc1e` steps across once. Player 1's first observed use is `p1_walk`
+/// frame 272.
+///
+/// Not modelled: `$cc3a clr.b $6d28` and its player-1 counterpart.
 /// `// UNKNOWN: see bd discr-b6x`.
 pub fn anticipate(
     player: &mut Player,
+    who: PlayerId,
     disc: &mut DiscSlot,
     x_cand: i16,
     z_cand: i16,
     own_bank: &[Tile; TILE_CELLS],
 ) {
-    // $cb2c-$cb4e: four gates, all of them exits.
-    // (Reached from p2_hit_test, or directly when the crossing test fails.)
-    if player.state_index != STATE_IDLE || disc.dir_kind <= 0 || disc.aim != PlayerId::One {
+    // $cb2c-$cb4e / $112f4-$11312: four gates, all of them exits.
+    if player.state_index != STATE_IDLE || player.facing == RACKET_FACING {
+        return;
+    }
+    // $cb3e/$cb46 vs $11306: the disc must be travelling AWAY from this player,
+    // and "away" is the opposite sign for each of them.
+    let away = match who {
+        PlayerId::One => disc.dir_kind < 0,
+        PlayerId::Two => disc.dir_kind > 0,
+    };
+    // $cb4a bne vs $1130e beq: and it must be the other player's disc.
+    let theirs = match who {
+        PlayerId::One => disc.aim != PlayerId::One,
+        PlayerId::Two => disc.aim == PlayerId::One,
+    };
+    if !away || !theirs {
         return;
     }
 
-    // $cb52-$cb6a: the tracking window's near edge.
+    // $cb52-$cb6a / $11316-$11330: the tracking window's near edge. The bonus
+    // arm reads a different word per player and neither fixture has it set.
+    // // UNKNOWN ($6d1c, player 1's bonus word): see bd discr-ovl.4.
     let reach = player.reach;
-    let mut d5 = player.world_y - reach;
-    if z_cand < d5 {
+    let (sign, near) = match who {
+        PlayerId::One => (1, player.world_y + reach),
+        PlayerId::Two => (-1, player.world_y - reach),
+    };
+    // The disc must be at least this deep, measured along each player's own
+    // sense of deep: $cb6a exits when shallower, $11330 when deeper.
+    if (z_cand - near) * sign > 0 {
         return;
     }
 
-    // $cb70: from here on the disc is tracked, whatever else happens.
-    disc.hook = SteerHook::AtP2Wide;
+    // $cb70 / $11334: from here on the disc is tracked, whatever else happens.
+    disc.hook = match who {
+        PlayerId::One => SteerHook::AtP1Wide,
+        PlayerId::Two => SteerHook::AtP2Wide,
+    };
 
-    // $cb78-$cb9a: and a narrow window inside that, two units deep.
-    d5 = d5 + reach - 0x0c;
-    if z_cand < d5 {
+    // $cb78-$cb9a / $1133c-$1135e: and a narrow window inside that, two units
+    // deep, on the near side of the player.
+    let inner = near - sign * reach + sign * 0x0c;
+    if (z_cand - inner) * sign > 0 {
         return;
     }
-    d5 += 2;
-    if z_cand > d5 {
+    if (z_cand - (inner - sign * 2)) * sign < 0 {
         return;
     }
 
-    // $cb9e-$cc9a: the X ladder, mirrored either side of $6d22 - 3.
+    // $cb9e-$cc9a / $11362-$1147a: the X ladder, mirrored either side of
+    // own_x - 3 and IDENTICAL for the two players.
     let pivot = player.world_x - 3;
     let step_across = if x_cand > pivot {
-        // $cc40: the right-hand half. Untested -- neither fixture puts a disc
-        // to player 2's right at the moment it starts tracking.
+        // $cc40 / $11404: the right-hand half. Untested for player 2 -- neither
+        // fixture puts a disc to its right at the moment it starts tracking.
         if x_cand <= pivot + 0x0c {
             false
         } else if x_cand > pivot + 0x0c + 0x18 {
             return;
         } else {
             let probe = player.world_x + 0x0c;
-            probe <= 0x98 && can_stand(player, probe, own_bank)
+            probe <= 0x98 && can_stand(player, who, probe, own_bank)
         }
     } else if x_cand == pivot {
-        // $cbaa: dead on the pivot -- reach, do not step.
+        // $cbaa / $1136e: dead on the pivot -- reach, do not step.
         false
     } else {
-        // $cbcc: the left-hand half, which is the one both fixtures take.
+        // $cbcc / $11390: the left-hand half, which is the one every observed
+        // case takes.
         if x_cand >= pivot - 0x0f {
             false
         } else if x_cand < pivot - 0x0f - 0x22 {
             return;
         } else {
             let probe = player.world_x - 0x0c;
-            probe >= 8 && can_stand(player, probe, own_bank)
+            probe >= 8 && can_stand(player, who, probe, own_bank)
         }
     };
 
     if step_across {
-        // $cc1e-$cc34.
-        disc.hook = SteerHook::AtP2Deep;
+        // $cc1e-$cc34 / $113e2-$113fe.
+        disc.hook = match who {
+            PlayerId::One => SteerHook::AtP1,
+            PlayerId::Two => SteerHook::AtP2Deep,
+        };
         player.state_index = STATE_INTERCEPT;
-        enter_anim(player, ANIM_INTERCEPT);
+        enter_anim(player, intercept_anim(who));
     } else {
-        // $cbae-$cbc4: the hook stays $a7d8.
+        // $cbae-$cbc4 / $11372-$11388: the wide hook stays installed.
         player.state_index = STATE_REACH;
-        enter_anim(player, ANIM_REACH);
+        enter_anim(player, reach_anim(who));
+    }
+}
+
+/// The `facing` value that locks a player out of anticipating. ST `$cb34
+/// cmpi.b #$7,$6d29` / `$112fc cmpi.b #$7,$6ca9`.
+pub const RACKET_FACING: u8 = 7;
+
+/// The sequence [`STATE_INTERCEPT`] enters. ST `$cc26` / `$113ea`.
+const fn intercept_anim(who: PlayerId) -> Anim {
+    match who {
+        PlayerId::One => ANIM_P1_INTERCEPT,
+        PlayerId::Two => ANIM_INTERCEPT,
+    }
+}
+
+/// The sequence [`STATE_REACH`] enters. ST `$cbb6` / `$1137a`.
+const fn reach_anim(who: PlayerId) -> Anim {
+    match who {
+        PlayerId::One => ANIM_P1_REACH,
+        PlayerId::Two => ANIM_REACH,
     }
 }
 
@@ -1154,14 +1225,20 @@ pub fn walk_probe(
 ///
 /// True when it is the cell they are already on, or when its type word is
 /// non-zero in their own bank. `$cc16` (0) means reach, `$cc1a` (-1) step.
-fn can_stand(player: &Player, probe_x: i16, own_bank: &[Tile; TILE_CELLS]) -> bool {
+fn can_stand(player: &Player, who: PlayerId, probe_x: i16, own_bank: &[Tile; TILE_CELLS]) -> bool {
     // $add2 / $ae36: the probe is rejected outright outside the arena.
     if !(8..=0x98).contains(&probe_x) {
         return false;
     }
     let mut cell = usize::from(column(probe_x)) + GRID_CELL_BASE as usize;
-    // $cbf6 / $cc6e: cmpi.w #$3a,$6d26 -- 58, not the movement code's 14.
-    if player.world_y > 0x3a {
+    // The far-row threshold, and the two sites disagree on the number the way
+    // the players' depths do: $cbf6/$cc6e test $6d26 against $3a (58) and
+    // $113ba/$11432 test $6ca6 against $e (14). Both are `greater than`.
+    let far = match who {
+        PlayerId::One => player.world_y > FAR_ROW_Y,
+        PlayerId::Two => player.world_y > 0x3a,
+    };
+    if far {
         cell += GRID_CELL_FAR_ROW as usize;
     }
     cell == player.grid_cell as usize
@@ -1225,7 +1302,7 @@ fn p2_throw_choice(player: &mut Player, input: Input, own_bank: &[Tile; TILE_CEL
     } else {
         -THROW_PROBE
     };
-    let standable = can_stand(player, player.world_x + offset, own_bank);
+    let standable = can_stand(player, PlayerId::Two, player.world_x + offset, own_bank);
 
     if standable != probe_right {
         // $ae70: step left and throw.
@@ -1253,7 +1330,7 @@ fn p2_throw_choice(player: &mut Player, input: Input, own_bank: &[Tile; TILE_CEL
 fn smash_choice(player: &mut Player, walking: u8, own_bank: &[Tile; TILE_CELLS]) {
     let left = walking == FACING_LEFT;
     let probe = if left { -SMASH_PROBE } else { SMASH_PROBE };
-    if can_stand(player, player.world_x + probe, own_bank) {
+    if can_stand(player, PlayerId::Two, player.world_x + probe, own_bank) {
         if left {
             // $aed4-$aee8.
             player.state_index = STATE_SMASH_LEFT;

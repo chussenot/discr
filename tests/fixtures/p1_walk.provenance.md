@@ -105,6 +105,8 @@ Part 11h took it to **255**: the collapse advance at `$96b6` runs once per
 Part 11i took it to **271** by mirroring player 2's knock-down (`$ca12`, and
 states 11 and 12, which were shared between the tables and are not).
 
-The wall now is frame 272, `players[0].facing` — player 1's anticipation
-cascade at `$113e2`, `discr-ovl.1`. Three ticks from the end: this fixture is
-nearly spent, and the next number will have to come from a longer one.
+Part 11j took it to **274 — all of it**, by transcribing player 1's
+anticipation cascade (`$112f4`) and, more to the point, by discovering that the
+disc's owner byte moves in this trace and had to be fed. This fixture is now
+clean, and it is the trace that proved three separate wrong models the two
+older fixtures agreed with.

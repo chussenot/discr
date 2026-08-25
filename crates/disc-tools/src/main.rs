@@ -652,6 +652,17 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
         // `player+$1a` is copied out of the animation cell, like the hit box.
         s.x_delta = w.x_delta;
     }
+
+    // `disc+$11`, the owner byte -- the FIRST disc-side field this replay has
+    // ever had to feed. p1_walk is the first trace where it moves: disc 0 reads
+    // 255 from frame 268, and `disc-core` has no writer for it, so leaving it
+    // at the frame-0 seed made player 1's anticipation cascade ($112f4, whose
+    // third gate is `tst.b ($11,a5); beq`) unreachable for the whole trace.
+    // // UNKNOWN (what writes it, and which value names which player):
+    // see bd discr-ovl.2.
+    for (s, w) in state.discs.iter_mut().zip(&want.discs) {
+        s.aim = w.aim;
+    }
 }
 
 fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool) {
@@ -864,7 +875,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     }
     println!(
-        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); and updates, the $96ba\n         \x20              main-loop pass count (Part 11f). NOTHING on the disc side."
+        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); updates and outer, the $96ba\n         \x20              pass count and the $96b6 outer-iteration count (Parts 11f, 11h);\n         \x20              and, since Part 11j, ONE disc field -- disc+$11, the owner byte,\n         \x20              whose writer is not located and which p1_walk is the first trace\n         \x20              to move (discr-ovl.2)."
     );
     println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",

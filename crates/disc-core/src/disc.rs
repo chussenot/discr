@@ -424,7 +424,7 @@ pub fn step(
     disc: &mut DiscSlot,
     _slot: usize,
     players: &mut [Player; 2],
-    _tiles: &mut [Tile; TILE_CELLS],
+    tiles: &mut [Tile; TILE_CELLS],
     collapse: &mut Option<tile::Collapse>,
     tiles_far: &mut [Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
@@ -504,7 +504,7 @@ pub fn step(
                 // on the same frame.
                 disc.dir_kind = SERVE_DIR_KIND;
                 let cell = disc_cell(disc.world_x, disc.world_y);
-                impact(disc, cell, _tiles, collapse, _events);
+                impact(disc, cell, tiles, collapse, _events);
             } else {
                 // $a624: the other owner value transfers possession instead,
                 // moving four counters this crate does not model. The neg.w
@@ -520,9 +520,9 @@ pub fn step(
     disc.vel_y -= disc.vel_y.signum();
 
     // $a652: player 1's hit test, still before the write-back at $a65e, which
-    // is why it can move the disc back to where it struck. $a656 is player 2's
-    // ($c826) and is not modelled -- it is the catch, and what installs the two
-    // player-2 steering hooks. // UNKNOWN: see bd discr-ovl.1.
+    // is why it can move the disc back to where it struck. Its anticipation
+    // tail ($112f4) is modelled too now, and it reads player 1's OWN bank at
+    // $7616 -- the near one -- where player 2's reads $7596.
     disc.world_z = crate::player::hit_test(
         &mut players[0],
         disc,
@@ -530,6 +530,7 @@ pub fn step(
         disc.world_y,
         z_before,
         disc.world_z,
+        tiles,
     );
 
     // $a656: player 2's hit test $c826. Only its anticipation tail is modelled

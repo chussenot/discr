@@ -2439,3 +2439,57 @@ animal: `players[0].facing` = `$12`, because `$113e2`-`$113fe` -- **player 1's
 anticipation cascade**, the mirror of `$cb2c` -- installs steering hook `$a71a`,
 enters `$2bfe` and sets state 18. That is `discr-ovl.1` exactly, now located to
 the instruction, and three ticks from the end of this fixture.
+
+## Player 1's anticipation cascade, and the owner byte (Part 11j)
+
+`$112f4`-`$1147a` is player 1's anticipation cascade, the tail of `$10fd8` and
+the exact counterpart of player 2's `$cb2c`. Every non-crossing and every
+body-box miss branches into it -- `$10fee`, `$10ff6`, `$11000`, `$11008`,
+`$11108`, `$11114`, `$11122` -- so a disc that fails to hit a player is a disc
+that player starts tracking. That answers `discr-ovl.1` from the player-1 side:
+`$11334` and `$11372` install `$a78e`, `$113e2` installs `$a71a`.
+
+Set side by side with `$cb2c`, **the depth axis mirrors and the X axis does
+not**:
+
+| | player 2 (`$cb2c`) | player 1 (`$112f4`) |
+|---|---|---|
+| idle + `facing != 7` | `$cb2c`, `$cb34` | `$112f4`, `$112fc` -- the same |
+| disc travelling away | `dir_kind > 0` (`bmi`/`beq`) | `dir_kind < 0` (`bpl`) |
+| owner byte | `== 0` (`bne` exits) | `!= 0` (`beq` exits) |
+| near edge | `depth - reach` (`$cb52`) | `depth + reach` (`$11316`) |
+| bonus-5 arm | `$6d9a`, `- $32` | **`$6d1c`**, `+ $32` |
+| exit when | shallower (`$cb6a`) | deeper (`$11330`) |
+| wide hook | `$a7d8` | `$a78e` |
+| narrow window | `[depth-$c, depth-$a]` | `[depth+$a, depth+$c]` |
+| the X ladder | `$c`/`$18` right, `$f`/`$22` left, `$c` probe | **identical** |
+| reach | `$466a`, state `$1b` | `$2c56`, state `$1b` |
+| intercept | `$4612`, state `$12`, hook `$a816` | `$2bfe`, state `$12`, hook `$a71a` |
+
+Three sign flips, one different bonus word, four different addresses -- and
+seven identical constants in the X ladder, because X is the same direction for
+both players and depth is not. `$2bfe` is `[6, 6, 6, 6]` and `$2c56` is
+`[6, 6, 4, 4, 4]`, matching `$4612` and `$466a` cell for cell.
+
+`can_stand` also has a per-player threshold that was hardcoded: `$113ba` and
+`$11432` test `$6ca6` against `$e`, where `$cbf6`/`$cc6e` test `$6d26` against
+`$3a`. Both are "greater than", so the polarity is *not* inverted the way the
+movement code's is.
+
+### The owner byte moves, and that was the real blocker
+
+Transcribing all of the above changed nothing at first: the cascade still never
+fired. The reason is not in the cascade at all. Its third gate is `$1130e tst.b
+($11,a5); beq` -- the disc's **owner byte** -- and `disc-core` has no writer for
+that field. `types.rs` said "every trace we have reads 0 on every live slot", and
+that stopped being true: in `p1_walk`, disc 0 reads `$ff` from frame 268 on. With
+the field frozen at its frame-0 seed, `aim` was `One` for the whole replay and
+the gate rejected every disc.
+
+So `disc+$11` joins the fed inputs -- **the first disc-side field this replay has
+ever had to feed**, and the banner `tracecheck` prints says so. What writes it is
+still open (`discr-ovl.2`), and so is which value names which player; feeding it
+is what lets the rest be measured rather than guessed.
+
+**`p1_walk` is now clean: 274 of 274 ticks, nothing waived.** All three fixtures
+are clean for the first time in the project.
