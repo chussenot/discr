@@ -130,6 +130,18 @@ static unsigned updates_since_sample;
  * different AI bytes and the sample only shows the last.  Recorded at $96c6,
  * after the dispatcher has run and while both bytes still hold what that pass
  * used. */
+/* The OUTER main-loop iteration, which is not the same thing as a pass.
+ *
+ * $96cc bpl branches back to $96be, not to $96b6 -- so the four-slot collapse
+ * advance at $96b6 (bsr $a4bc, one slot per $10 bytes from $779e) runs ONCE per
+ * outer iteration while the disc loop + dispatcher inside run 1..2 times.  And
+ * an outer iteration is not once per sample either: measured 237 of them over
+ * the 275 frames of walkleft, absent on exactly the frames that carry two
+ * passes.  Without this, disc-core steps a collapse 48 times in 48 frames and
+ * the ST takes 85.  Part 11h. */
+#define OUTER_PC 0x96b6U
+static unsigned outer_since_sample;
+
 #define PASS_INPUT_PC 0x96c6U
 #define PASS_MAX 4
 static unsigned char pass_joy[PASS_MAX], pass_ai[PASS_MAX];
@@ -144,6 +156,7 @@ void disc_instr_hook(unsigned int pc)
                 cur_frame, m68k_read_memory_32(sp), sp);
     }
     if ((pc & ADDR_MASK) == UPDATE_PASS_PC) updates_since_sample++;
+    if ((pc & ADDR_MASK) == OUTER_PC) outer_since_sample++;
     if ((pc & ADDR_MASK) == PASS_INPUT_PC && pass_n < PASS_MAX) {
         pass_joy[pass_n] = ram[0x6c58];
         pass_ai[pass_n] = ram[0x6da1];
@@ -543,14 +556,14 @@ static void emit_frame(FILE *out, long frame)
      * ($10eac).  $6d9a is the active bonus code.  Part 10. */
     fprintf(out, "{\"frame\":%ld,\"vbl_6ab4\":%u,\"joy_6c58\":%u"
                  ",\"joy_6c59\":%u,\"ai_6da1\":%u,\"mode_6da0\":%u,\"bonus_6d9a\":%d"
-                 ",\"repeat_6ab8\":%u,\"updates\":%u",
+                 ",\"repeat_6ab8\":%u,\"updates\":%u,\"outer\":%u",
             frame, rd16(0x6ab4), ram[0x6c58],
             ram[0x6c59], ram[0x6da1], ram[0x6da0], (int16_t)rd16(0x6d9a),
             /* $6ab8: the main loop at $96ba pushes this and repeats the disc
              * loop + the player dispatcher until it goes negative, so a frame
              * is $6ab8 + 1 updates.  Zero on every frame of both clean
              * fixtures; 1 on the double-step frames of p1_walk. */
-            rd16(0x6ab8), updates_since_sample);
+            rd16(0x6ab8), updates_since_sample, outer_since_sample);
     {   /* one entry per update pass, in order */
         unsigned k;
         fprintf(out, ",\"pass_joy\":[");
@@ -633,6 +646,7 @@ static void emit_frame(FILE *out, long frame)
     }
     fprintf(out, "],\"state_sha256\":\"%s\"", h);
     updates_since_sample = 0;
+    outer_since_sample = 0;
     pass_n = 0;
     if (win_lo >= 0) {
         long a;

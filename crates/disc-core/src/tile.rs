@@ -42,15 +42,20 @@ pub const WALK_COPY_OFFSET: usize = 8;
 
 /// Frames a destroyed tile takes to collapse. ST: the length of the sprite
 /// frame list at `$5be4`, which `$14c42 movea.l (a0)+,a5` walks one entry per
-/// frame until `$14c72 tst.l (a0)` finds its zero terminator -- **48 entries**.
+/// **collapse step** until `$14c72 tst.l (a0)` finds its zero terminator --
+/// **48 entries**. A step is not a frame: see [`crate::GameState::tick_frame`].
 pub const COLLAPSE_FRAMES: u16 = 48;
 
-/// The one tile collapse the ST can have in flight. ST `$779e`.
+/// The tile collapse `disc-core` models, ST `$779e`.
 ///
-/// A **single slot**, claimed at `$a38c`-`$a390` with `tst.b (a2); bne` --
-/// so a second tile destroyed while one is already collapsing gets no
-/// animation, and *its* walkability copy is never cleared. That is a real
-/// quirk, not a simplification: nothing in the code queues a second one.
+/// **RETRACTION (Part 11h): the ST has FOUR of these, not one.** `$a4bc` is
+/// `moveq #3,D6; lea $779e.w,A6; tst.b (A6); beq; jsr $14ba4; lea ($10,A6),A6;
+/// dbra D6` -- four slots at `$779e`, `$77ae`, `$77be`, `$77ce`, sixteen bytes
+/// apart. What the previous note got right is the *claim*: `$a38c`-`$a390`
+/// checks one byte and gives up, so a slot in use is not queued behind. What it
+/// got wrong is which byte, and how many there are to try. Modelling one slot is
+/// therefore correct only while no trace destroys two tiles inside 50 collapse
+/// steps -- none of the three fixtures does. `discr-pu8`.
 ///
 /// The life of one, read off `--watch 0x779e 0x77b0` over
 /// `tests/fixtures/tile_damage.ndjson`:
@@ -188,6 +193,29 @@ mod tests {
         let mut events = Vec::new();
         damage(&mut tiles, 3, dmg, &mut None, &mut events);
         (tiles[3], events)
+    }
+
+    /// The clear lands after 48 collapse STEPS, however many frames those take.
+    /// `p1_walk` destroys cell 6 at frame 188 and the ST clears cell 14 at 275,
+    /// because only 85 of those frames ran an outer main-loop iteration.
+    #[test]
+    fn the_collapse_counts_steps_not_frames() {
+        let mut tiles = grid(1, 1);
+        let mut slot = None;
+        let mut ev = Vec::new();
+        damage(&mut tiles, 3, 1, &mut slot, &mut ev);
+        let cell = slot.expect("the destroy claimed the slot").cell;
+        // 48 list entries, then one step for the terminator ($14c76 addq.b #2),
+        // then the step that finds a positive byte and clears: 50.
+        tiles[cell].tile_type = 2;
+        for n in 0..49 {
+            collapse_step(&mut slot, &mut tiles, &mut ev);
+            assert_eq!(tiles[cell].tile_type, 2, "still animating after {n}");
+            assert!(slot.is_some(), "slot still held after {n}");
+        }
+        collapse_step(&mut slot, &mut tiles, &mut ev);
+        assert_eq!(tiles[cell].tile_type, TILE_TYPE_DESTROYED, "step 50 clears");
+        assert!(slot.is_none(), "and frees the slot");
     }
 
     #[test]

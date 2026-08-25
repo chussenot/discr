@@ -1549,3 +1549,41 @@ put `p1_walk` back to 191 for one measurement before I noticed.
 Frame 238, `tiles[14].tile_type` — a collapse-timing question under multi-pass
 frames, and the first wall in three parts that is a *rule* rather than
 `disc-core`'s own shape. Filed as `discr-ezb`.
+
+---
+
+# Part 11h — the other count
+
+| run | 11g | **11h** |
+|---|---|---|
+| four clean runs | clean | clean |
+| `p1_walk`, nothing waived | 237 | **255** |
+
+`$96cc bpl` branches to `$96be`, not to `$96b6`. Everything above that target
+runs once per **outer** iteration; everything below it once per pass. The
+collapse advance, `$96b6 bsr $a4bc`, is above it.
+
+And an outer iteration is not once per sampled frame: 237 of them over
+`walkleft`'s 275 frames, missing on exactly the frames that carry two passes.
+Measured, not inferred — `--callers 0xa4bc` said so, and `--watch 0x779e 0x77b0`
+priced it: the ST takes **85 frames** to clear cell 14 after destroying cell 6 at
+frame 188, where one step per frame takes 48. That is the frame-238 wall exactly.
+
+`outer` is now a trace column and `GameState::tick_frame(passes, outer)` steps
+the collapse that many times. 237 → 255.
+
+## Two corrections, both from reading `$a4bc`
+
+* the collapse is **50 steps**, not 49 — 48 list entries, one for the
+  terminator, one for the clear. The unit test now pins that.
+* **there are four collapse slots**, `$779e`/`$77ae`/`$77be`/`$77ce`, sixteen
+  bytes apart. Part 10e's "the one tile collapse the ST can have in flight" is
+  withdrawn. `disc-core` still models one slot, which is right only while no
+  trace destroys two tiles inside 50 steps — none of the three does. `discr-pu8`.
+
+## Where it stops now
+
+Frame 256, `players[1].world_y`: player 2's own state handler, waived under
+`discr-b6x`, and every non-waived row matches on that frame. So `p1_walk`'s
+remaining gap is the AI, not the tick's shape — the first time in four parts
+that the wall is not `disc-core` misreading its own frame.

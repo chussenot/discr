@@ -184,6 +184,12 @@ struct Frame {
     /// `$6da1` as each pass consumed it. Part 11g.
     #[serde(default)]
     pass_ai: Vec<u8>,
+    /// How many iterations of the OUTER main loop ran between the previous
+    /// sample and this one -- `$96b6`, above the `$96be` repeat target, so it is
+    /// not `updates` and it is not 1. Part 11h. Defaults to 1 so a pre-11h
+    /// trace replays as it used to.
+    #[serde(default = "one")]
+    outer: u16,
     /// ST `$6da1`, the byte the one-player AI at `$d2cc` synthesises in place
     /// of player 2's joystick, consumed by `$abb2` at exactly the position
     /// `$6c59` occupies for a human. Part 10.
@@ -893,7 +899,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         // The divergence report quotes one input; the first pass's is the one a
         // reader wants, and the header says how many there were.
         let input = passes.first().map_or_else(Input::default, |p| p[0]);
-        state.tick_passes(&passes);
+        state.tick_frame(&passes, usize::from(expected.outer));
         resync(&mut state, &expected.seed(), &skip);
 
         let cs = checks(expected, &state);
@@ -1055,7 +1061,10 @@ mod tests {
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
-            state.tick_passes(&expected.passes(prev_joy, prev_ai));
+            state.tick_frame(
+                &expected.passes(prev_joy, prev_ai),
+                usize::from(expected.outer),
+            );
             resync(&mut state, &expected.seed(), &skip);
             assert!(
                 first_divergence(expected, &state).is_none(),
@@ -1084,7 +1093,10 @@ mod tests {
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
-            state.tick_passes(&expected.passes(prev_joy, prev_ai));
+            state.tick_frame(
+                &expected.passes(prev_joy, prev_ai),
+                usize::from(expected.outer),
+            );
             assert!(
                 first_divergence(expected, &state).is_none(),
                 "diverged after {matched} tick(s): {:?}",

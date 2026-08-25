@@ -187,8 +187,26 @@ impl GameState {
     /// then `$00`, and driving both passes from `$00` loses the walk step the
     /// first one made.
     ///
-    /// `tick` is the one-pass case.
+    /// `tick` is the one-pass case. This is `tick_frame` with a single collapse
+    /// step, which is what a frame with one outer main-loop iteration has.
     pub fn tick_passes(&mut self, passes: &[[Input; 2]]) -> Vec<Event> {
+        self.tick_frame(passes, 1)
+    }
+
+    /// Run one PAL VBL that contained `passes.len()` update passes and `outer`
+    /// iterations of the outer main loop.
+    ///
+    /// **They are different counts.** `$96cc bpl` branches back to `$96be`, not
+    /// to `$96b6`, so the collapse advance at `$96b6` runs once per *outer*
+    /// iteration while the disc loop and the dispatcher inside it run once per
+    /// pass. And an outer iteration is not once per sample either: measured 237
+    /// of them over the 275 sampled frames of `walkleft`, missing on exactly the
+    /// frames that carry two passes.
+    ///
+    /// The size of the error: `p1_walk` destroys cell 6 at frame 188, and one
+    /// collapse step per frame clears its walkability copy 48 frames later. The
+    /// ST takes **85**, because 38 of those frames ran no outer iteration.
+    pub fn tick_frame(&mut self, passes: &[[Input; 2]], outer: usize) -> Vec<Event> {
         let mut events = Vec::new();
 
         // ST $8198: addq.w #1,$6ab4 is the VBL handler's first instruction.
@@ -208,7 +226,12 @@ impl GameState {
         //
         // The delay still comes out right because collapse_step's own first
         // decrement now lands on the claiming tick instead of the one after.
-        tile::collapse_step(&mut self.collapse, &mut self.tiles, &mut events);
+        //
+        // Once per OUTER iteration, not once per frame and not once per pass:
+        // $96b6 bsr $a4bc is above the $96be repeat target.
+        for _ in 0..outer {
+            tile::collapse_step(&mut self.collapse, &mut self.tiles, &mut events);
+        }
 
         events
     }

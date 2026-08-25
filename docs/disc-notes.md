@@ -2332,3 +2332,56 @@ Two details worth keeping:
   tells them apart, so it is the authority on the count and the arrays supply
   only the bytes. Getting that wrong put the fixture back to 191 for one
   measurement.
+
+## A frame is not one outer iteration either (Part 11h)
+
+Part 11f split a frame into passes. There is a **second** count, and it is not
+the same one:
+
+```
+$96b6  bsr $a4bc      ; the collapse advance -- ABOVE the repeat target
+$96be  bsr $a4ea      ; the disc loop          <-- $96cc branches HERE
+$96c2  bsr $10eac     ; the player dispatcher
+$96cc  bpl $96be
+```
+
+`$96cc bpl` goes back to `$96be`, not to `$96b6`. So the collapse advance runs
+once per **outer** iteration while the disc loop and the dispatcher inside it run
+once per pass -- and an outer iteration is not once per sampled frame either.
+Measured over `walkleft`: **237 outer iterations across 275 sampled frames**,
+absent on exactly the frames that carry two passes.
+
+```
+frame  191:1/1  192:0/0  193:1/2  194:0/0  195:1/2  ...   (outer/updates)
+```
+
+The size of the error, measured with `--watch 0x779e 0x77b0`:
+
+```
+frame 188  $a390  st $779e            cell 6 destroyed, slot claimed
+frame 189  $14c7a                     47 more advances, but only on
+ ..  271                              frames that ran an outer iteration
+frame 273  $14c76 addq.b #2,(a6)      the list ran out
+frame 275  $14bb2/$14bb8              cell 14's type is cleared
+```
+
+**85 frames, not 48.** One collapse step per frame cleared cell 14 at 238, and
+`p1_walk`'s wall was exactly there. With `outer` emitted and
+`GameState::tick_frame(passes, outer)` stepping the collapse that many times:
+**237 -> 255 ticks**. The earlier collapse in the same fixture (claim 93, clear
+143) is 50 frames because that stretch runs one outer iteration per frame, which
+is why the single-slot timing looked right for two parts.
+
+Two things fell out of reading `$a4bc`:
+
+* **the collapse takes 50 steps, not 49** -- 48 list entries, one step for
+  `$14c72`'s terminator, one for the clear. The 49 in the Part 10e note counted
+  from the wrong end;
+* **RETRACTION: there are four collapse slots, not one.** `$a4bc` is
+  `moveq #3,D6 ... lea ($10,A6),A6; dbra D6` over `$779e`, `$77ae`, `$77be`,
+  `$77ce`. `disc-core` still models one, which is correct only while no trace
+  destroys two tiles inside 50 steps -- none of the three fixtures does.
+  `discr-pu8`.
+
+The new wall is frame 256, `players[1].world_y` -- player 2's own state handler,
+already waived under `discr-b6x`. Every non-waived row matches on that frame.

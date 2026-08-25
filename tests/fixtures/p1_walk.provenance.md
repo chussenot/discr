@@ -100,5 +100,7 @@ The re-minted fixture is this file. `pass_joy` / `pass_ai` record both bytes
 per frame, so 224 passes without a decoded AI policy: what the note called the
 input channel's granularity was the whole of it.
 
-The wall now is frame 238, `tiles[14].tile_type` — a collapse-timing question
-under multi-pass frames.
+Part 11h took it to **255**: the collapse advance at `$96b6` runs once per
+*outer* main-loop iteration, and there are 237 of those in these 275 frames.
+The wall now is frame 256, `players[1].world_y` — player 2's own state handler,
+waived under `discr-b6x`, with every non-waived row matching on that frame.
