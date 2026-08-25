@@ -1119,3 +1119,90 @@ follow that it reproduces the game.
 The honest summary of Part 10 is that the *disc* is finished and the *players*
 are finished for everything two traces ask of them, and that the game around
 them — rounds, scores, bonuses, the second board — has barely been looked at.
+
+---
+
+# Part 11 — a third fixture, and what it caught
+
+Two things this part is worth reading for, and neither is a number: a fixture
+found a missing enum variant, and a mirror assumption had been silently wrong for
+four parts.
+
+| run | 10k | **11** |
+|---|---|---|
+| `golden --skip-waived` | clean 99 | clean 99 |
+| `tile_damage --skip-waived` | clean 214 | clean 214 |
+| `golden`, nothing waived | clean 99 | clean 99 |
+| `tile_damage`, nothing waived | clean 214 | clean 214 |
+| **`p1_walk`, nothing waived** | — | **142** (123 before player 2's strike) |
+
+## The third fixture
+
+`tests/fixtures/p1_walk.ndjson` — 275 frames, player 1 walks left from frame 5 to
+30 and then stands still. Minted while hunting for a trace where a player
+*swings*, which it does not do. It is worth having for a different reason: **it
+is the only one of the three that is not clean.** A clean gate measures nothing
+new.
+
+What it caught immediately: **`$a78e`, a fourth steering routine** that no earlier
+trace had ever installed — player 1's shallow aim, `$6ca2 - 4`, the exact mirror
+of `$a7d8`. With it the set is symmetric, two hooks per player, and each cascade
+installs its shallow hook when it starts tracking or only reaches, and its deep
+hook when it commits to stepping across.
+
+`tracecheck`'s pointer mapping **panics** on an unrecognised hook rather than
+silently steering at nothing. That is what turned a missing variant into a loud
+failure the first time a trace installed `$a78e`, instead of a quiet mis-steer
+nobody would ever have noticed. Worth keeping in mind for the other places this
+code maps an ST value onto a Rust enum.
+
+## Two corrections
+
+**`$113e2` is not in the racket path.** It is player 1's own anticipation
+cascade, the exact mirror of player 2's `$cb2c`-`$cc9a` with three constants
+swapped — `$6cb2` for the reach, `$e` = 14 for the row threshold (each player
+probes at its own depth, 18 against 54), `$7616` for the bank. The racket path
+installs nothing. That mattered: it made discr-ovl.1's "player-1 half" look like
+an unreachable block, when it is code already decoded for player 2 and needs
+generalising rather than discovering.
+
+**The two players' energies are at different offsets.** `$11178` docks
+`player+$76` and `$c9b0` docks `player+$74`. Every other field this project has
+found is mirrored, so the emitter read `+$76` for both — and reported player 2's
+energy as a **constant 0** while its real value sat at 15 two bytes away, for four
+parts. Nothing caught it because player 2 is never struck in any fixture, so a
+constant was indistinguishable from a constant.
+
+That is the shape of bug this project should expect more of: not a wrong
+计算 but a column that is *quietly measuring the wrong address*, in a place where
+the right answer happens to be constant too.
+
+## Player 2's strike
+
+`$c934`-`$ca10`, the mirror of `$110fc`, with the owner gate **inverted** —
+`$1116e bne` against `$c9a6 beq`. Read together they say one thing: the disc's
+owner byte says whose energy is at risk. And a missed strike branches to
+`$cb2c`: the miss and the anticipation are one code path, so a disc that crosses
+player 2 and neither is caught nor connects is a disc it starts tracking.
+
+That took `p1_walk` from 123 to 142.
+
+## Honest limits
+
+* **The new wall is a one-frame lag**, not a missing rule: at `p1_walk` frame 143
+  the ST enters state 1 on 140 and first steps on 141, and `disc-core` is a tick
+  behind. That wants instrumenting, not reasoning about, and I stopped rather
+  than guess at it.
+* **A bonus fixture is not reachable from this seed at all.** No cell in
+  `diff.seed`'s near bank has bit 7 set — the hp values are 1, 4 and 5 — so no
+  input programme can produce one, and a sweep over five programmes confirmed
+  `bonus_6d9a` stays 0 across 275 frames each. It needs a new seed minted from a
+  round where a bonus has been placed, which is a Hatari session. Filed with that
+  reasoning rather than left as "try harder".
+* **The racket path is still unreached.** `fire+up`/`fire+down` *does* put player
+  1 into states 7 and 8 — that much the sweep found — but only with the player
+  standing away from the disc, so the racket box never contains it. A fixture that
+  gets both at once is a search, not a guess.
+* **Player 1's cascade is still not generalised**, so `disc-core` does not install
+  `$a71a` or `$a78e` itself. No gate needs it yet: `p1_walk` installs `$a71a` only
+  on frames 272-274, well past the 142 wall.

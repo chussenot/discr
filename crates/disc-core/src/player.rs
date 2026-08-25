@@ -817,35 +817,109 @@ pub fn p2_hit_test(
         return z_cand;
     }
 
-    // $c85a-$c87a: the owner check, then the three catch states.
-    if disc.aim == PlayerId::One {
-        // $ca96 (state 18) and $cb06 (state 27), two windows on the disc's X.
-        let caught = match player.state_index {
+    // $c85a-$c87a: only one owner value gets the catch states, and a state that
+    // is not one of the three falls through to $c87e like the other owner does.
+    let catch_window = if disc.aim == PlayerId::One {
+        match player.state_index {
+            // $ca96, the intercept's catch.
             STATE_INTERCEPT => {
                 let lo = player.world_x - CATCH_WIDTH_INTERCEPT;
-                (lo..=lo + CATCH_WIDTH_INTERCEPT).contains(&x_cand)
+                Some((lo, lo + CATCH_WIDTH_INTERCEPT))
             }
+            // $cb06, the reach's -- an asymmetric window, $10 below and $20 above.
             STATE_REACH => {
                 let lo = player.world_x - CATCH_LOW_REACH;
-                (lo..=lo + CATCH_HIGH_REACH).contains(&x_cand)
+                Some((lo, lo + CATCH_HIGH_REACH))
             }
-            // $cad0 is state 19's, and the strike path is $c934. Neither is
-            // modelled, and neither fixture reaches either.
-            _ => return z_cand,
-        };
+            // $cad0 is state 19's; no fixture reaches state 19.
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    if let Some((lo, hi)) = catch_window {
+        let caught = (lo..=hi).contains(&x_cand);
         if caught {
             // $caae / $cb1e, then $cab2 / $cb22.
             disc.active = disc.active.wrapping_add(crate::disc::ACTIVE_RETIRE_STEP);
             player.discs_out = player.discs_out.saturating_sub(1);
         } else {
-            // $cab8 / $cb28: the miss goes on to the strike, which is not
-            // modelled, but state 18's miss does set state 17 first ($cac6).
+            // $cab8 / $cb28: a missed catch goes on to the strike, and state
+            // 18's miss sets state 17 on the way ($cac6).
             if player.state_index == STATE_INTERCEPT {
                 player.state_index = STATE_AFTER_CATCH;
             }
+            return strike(player, disc, x_cand, z_cand, own_bank);
+        }
+        return z_cand;
+    }
+
+    // $c87e: states 7..10 are the racket path, not modelled. Everything else
+    // falls through to the body box.
+    if (7..=10).contains(&player.state_index) {
+        return z_cand;
+    }
+    strike(player, disc, x_cand, z_cand, own_bank)
+}
+
+/// Player 2's strike, `$c934`-`$ca10`: the mirror of [`hit_test`]'s body box.
+///
+/// Same four comparisons against the same animation-derived hit box, and the
+/// same bounce. Two asymmetries with player 1's, both real and both transcribed
+/// rather than assumed:
+///
+/// * **the owner gate is inverted.** `$1116e tst.b ($11,a5); bne` skips player
+///   1's energy when the owner byte is non-zero; `$c9a6 tst.b ($11,a5); beq`
+///   skips player 2's when it is zero. So the owner says whose energy is at
+///   risk -- 0 docks player 1, anything else docks player 2.
+/// * **the energies are at different offsets**: `$11178` reads `player+$76` and
+///   `$c9b0` reads `player+$74`. The records are otherwise mirrored, so this is
+///   a trap; emitting `+$76` for both reported player 2's energy as a constant
+///   0 for four parts of this project.
+///
+/// A miss falls through to `$cb2c`, the anticipation cascade -- so a disc that
+/// crosses player 2's depth and neither is caught nor connects is one player 2
+/// starts tracking instead.
+fn strike(
+    player: &mut Player,
+    disc: &mut DiscSlot,
+    x_cand: i16,
+    z_cand: i16,
+    own_bank: &[Tile; TILE_CELLS],
+) -> i16 {
+    // $c934-$c964: the body box, from the current animation cell.
+    let [b0, b1, b2, b3] = player.hit_box;
+    let left = player.world_x - 8 + b0;
+    let bottom = crate::disc::PLAYER_HEIGHT_REF + b2;
+    if x_cand < left
+        || x_cand > left + 8 + b1
+        || disc.world_y < bottom
+        || disc.world_y > bottom + b3
+    {
+        // $c940 and the three after it all branch to $cb2c.
+        anticipate(player, disc, x_cand, z_cand, own_bank);
+        return z_cand;
+    }
+
+    // $c968: state $1a is a case of its own. // UNKNOWN: see bd discr-b6x.
+    if player.state_index == 0x1a {
+        return z_cand;
+    }
+
+    // $c9a6-$ca02, the inverted owner gate.
+    if disc.aim != PlayerId::One {
+        player.energy -= disc.damage;
+        if player.energy < 0 {
+            player.energy = 0;
+            player.down = true;
         }
     }
-    z_cand
+
+    // $ca06-$ca0e: the bounce, applied to the candidate the loop writes back.
+    disc.dir_kind = disc.dir_kind.wrapping_neg();
+    disc.hook = SteerHook::None;
+    z_cand + disc.dir_kind
 }
 
 /// The state a missed intercept drops into. ST `$cac6`: `move.b #$11,$6d2e` --

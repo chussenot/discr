@@ -514,7 +514,12 @@ static void emit_frame(FILE *out, long frame)
                  * strike subtracts from at $11178. */
                 (int16_t)rd16(b + 0x1c), (int16_t)rd16(b + 0x1e),
                 (int16_t)rd16(b + 0x20), (int16_t)rd16(b + 0x22),
-                (int16_t)rd16(b + 0x76),
+                /* The two energies are NOT at the same offset: $11178 docks
+                 * player 1's at +$76 and $c9b0 docks player 2's at +$74. The
+                 * records are otherwise mirrored, so this one asymmetry is a
+                 * trap -- emitting +$76 for both reported player 2's as a
+                 * constant 0 for four parts. */
+                (int16_t)rd16(b + (i == 0 ? 0x76 : 0x74)),
                 /* +$12 is the depth this player can reach a disc from, read by
                  * both hit tests ($11 is p1's $6cb2 = 12, p2's $6d32 = 26).
                  * Nothing in the analysed image writes it. */

@@ -2052,3 +2052,47 @@ The row threshold differs because each player probes at its own depth: player 1'
 `world_y` is 18 and player 2's is 54. Everything else about the cascade --
 `$11340`-`$113ee` against `$cb2c`-`$cc3e` -- is instruction for instruction the
 same.
+
+## Player 2's strike, and two asymmetries in otherwise-mirrored records (Part 11b)
+
+`$c934`-`$ca10` is `$110fc`'s mirror: the same four comparisons against the same
+animation-derived hit box, the same energy dock, the same bounce. Two things
+about it are **not** mirrored, and both are traps.
+
+### The owner gate is inverted
+
+```
+$1116e  tst.b ($11,a5) ; bne $111ce     ; player 1: non-zero SKIPS the dock
+$c9a6   tst.b ($11,a5) ; beq $ca06      ; player 2: zero SKIPS it
+```
+
+Read together they say one thing: **the disc's owner byte says whose energy is at
+risk.** 0 docks player 1, anything else docks player 2. Neither routine is
+"the strike"; each is one half of it.
+
+### The two energies are at different offsets
+
+```
+$11178  move.w $6d16,d5      ; player 1's energy -- player+$76
+$c9b0   move.w $6d94,d5      ; player 2's energy -- player+$74
+```
+
+The records are mirrored in every other field this project has found, so this is
+exactly the kind of thing a mirror assumption gets wrong -- and did: the oracle
+emitted `+$76` for both players for four parts, which reported player 2's energy
+as a **constant 0** while its real value sat at 15 two bytes away. Nothing caught
+it because player 2 is never struck in any fixture, so a constant was
+indistinguishable from a constant.
+
+The bonus words are crossed in the same way and at different offsets again:
+player 1's is `$6d1c` (`+$7c`) and player 2's is `$6d9a` (`+$7a`), and **each
+player's strike reads the OTHER's** -- `$11188` reads `$6d9a` and `$c9c0` reads
+`$6d1c`. That is the right way round for a bonus that belongs to the thrower and
+modifies the damage they deal.
+
+### A missed strike is where tracking begins
+
+`$c940` and the three comparisons after it all branch to `$cb2c`, the
+anticipation cascade. So a disc that crosses player 2's depth and neither is
+caught nor connects is a disc player 2 **starts tracking** -- the miss and the
+anticipation are one code path, not two.

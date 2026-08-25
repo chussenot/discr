@@ -42,11 +42,13 @@ do that. It does something else worth having.
 
 ## Expected result
 
-**123 ticks, then a divergence owned by a bead.** At frame 124 the disc turns at
-`world_z` 53 with `dir_kind` +1 → −1 and its hook cleared, which is **player 2's
-strike** — `$c934`, the mirror of player 1's `$110fc`. Player 1's strike is
-modelled; player 2's is not, and it is transcription rather than discovery.
-`// UNKNOWN: see bd discr-b6x`.
+**142 ticks, then a divergence owned by a bead.** It was 123 until player 2's
+strike (`$c934`) was implemented, which is what frame 124 needed.
+
+The wall now is frame 143, `players[1].world_x` 125 against 128: the ST enters
+state 1 on frame 140 and makes its first −3 step on 141, and `disc-core` is one
+tick behind it. A one-frame lag in the turn-to-walk transition, which needs
+instrumenting rather than reasoning about. `// UNKNOWN: see bd discr-b6x`.
 
 Both other fixtures are clean, so this is the only one of the three that gates on
 a prefix. That is the point of adding it: a clean gate measures nothing new.
