@@ -72,6 +72,31 @@ TILE_MIN_AGREE = "214"
 # being told to ignore a rule. Everything since is compliant.
 CONVENTIONAL_SINCE = "ec61cbb"
 
+[tasks.build]
+description = "Build the workspace: disc-core and disc-tools, debug"
+run = "cargo build"
+
+[tasks.build-release]
+description = "The same, optimised. Release and debug keep separate artifacts, so the first release build after a run of debug ones rebuilds every dependency"
+run = "cargo build --release"
+
+[tasks.app]
+description = "Build and run the playable front end. NEEDS libGL/libX11/libasound"
+run = "cargo run --release -p disc-app"
+
+# disc-app is outside default-members so that a missing libGL can never break
+# core-check, and the cost of that is exactly what happened: it compiled against
+# no gate for a whole phase and rotted through every field disc-core gained --
+# Input::fire_held, DiscSlot::active going bool -> u8. This task is the cheap
+# half of the trade: run it after changing a disc-core type, and keep it out of
+# core-check so a headless box can still gate.
+[tasks.app-check]
+description = "Build, lint and test disc-app -- the crate core-check deliberately does not cover"
+run = [
+  "cargo clippy -p disc-app --all-targets -- -D warnings",
+  "cargo test -p disc-app",
+]
+
 [tasks.oracle]
 description = "Build disc-oracle (vendored Musashi; see oracle/README.md)"
 run = "make -C oracle"

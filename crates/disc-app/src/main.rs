@@ -94,6 +94,12 @@ struct Pad {
     dir: DirBits,
     /// A key-down seen since the last tick consumed one.
     fire_pending: bool,
+    /// Fire as of the last poll: a **level**, not an edge.
+    ///
+    /// The ST reads the bit both ways. The walk handlers consume it with `bclr`
+    /// and so see an edge; `$c1b4 btst #$7,(a0)` in player 2's intercept wants
+    /// it still held, so it sees a level. `Input` carries both.
+    fire_held: bool,
 }
 
 impl Pad {
@@ -119,13 +125,19 @@ impl Pad {
         if is_key_pressed(KeyCode::Space) {
             self.fire_pending = true;
         }
+        self.fire_held = is_key_down(KeyCode::Space);
     }
 
     /// Consumes one tick's worth of input, clearing the fire edge.
+    ///
+    /// Reads only fields [`Pad::poll`] set, so it stays callable outside the
+    /// macroquad runtime -- which is what the tests below need.
     fn take(&mut self) -> Input {
+        let held = self.fire_held;
         Input {
             dir: self.dir,
             fire_edge: mem::take(&mut self.fire_pending),
+            fire_held: held,
         }
     }
 }
@@ -202,7 +214,9 @@ fn draw(prev: &GameState, cur: &GameState, alpha: f32) {
     // projects them through LUTs at `$a6b2`/`$a6b6`), so depth is shown as size
     // rather than reimplemented as a projection.
     for (p, q) in prev.discs.iter().zip(&cur.discs) {
-        if !q.active {
+        // `disc+$10`'s bit 7: the ST simulates a record only while it is set,
+        // and a caught disc counts down through 3, 2, 1 with its record frozen.
+        if !q.simulated() {
             continue;
         }
         let x = ox + lerp(p.world_x, q.world_x, alpha) * s;
@@ -215,7 +229,7 @@ fn draw(prev: &GameState, cur: &GameState, alpha: f32) {
         format!(
             "frame {}  alpha {alpha:.2}  discs {}  render {:.0} fps  [arrows: move  space: fire  p1 only]",
             cur.frame,
-            cur.discs.iter().filter(|d| d.active).count(),
+            cur.discs.iter().filter(|d| d.simulated()).count(),
             get_fps(),
         )
         .as_str(),
@@ -279,6 +293,7 @@ mod tests {
                 DirBits::LEFT
             },
             fire_edge: n.is_multiple_of(7),
+            fire_held: n.is_multiple_of(7),
         };
 
         // Headless: 100 plain ticks.
