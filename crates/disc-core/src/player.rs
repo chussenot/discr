@@ -248,10 +248,11 @@ pub const fn anim_advanced(player: &Player) -> bool {
     player.anim_cell != player.anim_shown
 }
 
-/// How far ahead of the player the destination cell is probed.
+/// How far ahead of the player [`walk_probe`] looks.
 ///
-/// ST `$f60e`: `sub.w #$0018,d0`; ST `$f822`: `add.w #$0018,d0`.
-const PROBE_AHEAD: i16 = 24;
+/// ST `$f60e`: `sub.w #$0018,d0`; ST `$f822`: `add.w #$0018,d0`. Player 2's
+/// `$afee` uses the same 24.
+pub const PROBE_AHEAD: i16 = 24;
 
 /// Width of one floor column in world X units.
 ///
@@ -309,27 +310,9 @@ fn grid_cell(world_x: i16, world_y: i16) -> u16 {
 ///   stepping by 3. Same evidence: from idle X = 117 the Right run ended on
 ///   152, which is not 117 + 3n (150 + 3 = 153, clamped), and the Left run
 ///   ended on 8, which is not 117 - 3n (9 - 3 = 6, clamped).
-fn walk(
-    player: &mut Player,
-    input: Input,
-    tiles: &[Tile; TILE_CELLS],
-    own_bank: &[Tile; TILE_CELLS],
-    facing: u8,
-    held: DirBits,
-    step_x: i16,
-) {
+fn walk(player: &mut Player, input: Input, facing: u8, held: DirBits, step_x: i16) {
     // ST $f5e2 / $f7f6: the handler sets $6ca9 on entry.
     player.facing = facing;
-
-    // $b1e0-$b1f8 (and $f5ea-$f606 for player 1): a fire press inside a walk
-    // goes to the throw decision at $ad82, which sees this walk's own stamp in
-    // player+$09 and routes to the running-smash chooser for that direction.
-    // Player 1 reaches the equivalent only when its two disc counters differ,
-    // and both are 0, so it never does.
-    if input.fire_held && !input.dir.has(DirBits::DOWN) && player.discs_out != player.disc_cap {
-        smash_choice(player, facing, own_bank);
-        return;
-    }
 
     // ST $f654 / $f868: `cmpi.b #$04,(a0); bne $f7b8` -- a WHOLE-BYTE compare,
     // so anything other than exactly this direction leaves the walk. The exit
@@ -342,24 +325,13 @@ fn walk(
         return;
     }
 
-    {
-        let probe = (player.world_x + step_x.signum() * PROBE_AHEAD).clamp(WALK_X_MIN, WALK_X_MAX);
-        // ST $f63e / $f852: `tst.w tile+$00` -- 0 = destroyed = unwalkable.
-        //
-        // MEASURED, and not what it looks like. Player 2's walk handler reads
-        // $7596 (its own bank) at several sites inside $abb2, so switching this
-        // to own_bank looks obviously right -- and it is worse on two fixtures:
-        // p1_walk drops 143 -> 99 and tile_damage stops being clean, both on
-        // player 2 walking a step the ST does not. So player 2's probe is NOT
-        // `own_bank[grid_cell(x - 24, y)]`; either the distance or the index
-        // differs. The near bank is closer, and the one place it is wrong is
-        // p1_walk frame 144, where a cell of player 1's floor collapses under
-        // the same index. // UNKNOWN: see bd discr-b6x.
-        if tiles[grid_cell(probe, player.world_y) as usize].walkable() {
-            // ST $f658: subq.w #3,$6ca2; ST $f86c: addq.w #3,$6ca2.
-            player.world_x = (player.world_x + step_x).clamp(WALK_X_MIN, WALK_X_MAX);
-        }
-    }
+    // ST $f658 / $f86c: subq.w/addq.w #3, UNCONDITIONAL once the direction
+    // matches. The probe at $f60a does **not** gate it: the result goes into d2
+    // ($f64e st d2), is consumed further on, and a second lookup at $f65c runs
+    // on the NEW x. See [`walk_probe`], which computes that flag and which
+    // nothing here calls, because what reads d2 is not decoded.
+    // // UNKNOWN: see bd discr-75o.
+    player.world_x = (player.world_x + step_x).clamp(WALK_X_MIN, WALK_X_MAX);
 
     // ST $f65c onward: the cell in $6cb0 is recomputed from the new X.
     player.grid_cell = grid_cell(player.world_x, player.world_y);
@@ -1049,6 +1021,68 @@ pub fn anticipate(
     }
 }
 
+/// May this player step onto the cell `probe_x` units along? ST `$f60a`-`$f64a`
+/// for player 1 and `$afea`-`$b022` for player 2.
+///
+/// The two are the same shape and differ in exactly three constants, worth
+/// tabulating because guessing at any of them gets it wrong:
+///
+/// | | player 1 (`$f60a`) | player 2 (`$afea`) |
+/// |---|---|---|
+/// | probe distance | `-$18` = 24 | the same |
+/// | off-arena bail | `cmp.w #$8; blt` -> **blocked** | the same |
+/// | far-row test | `+4` when `$6ca6` **>** `$e` (14) | `+4` when `$6d26` **<=** `$3a` (58) |
+/// | own-cell shortcut | `cmp.w $6cb0; beq` -> walkable | `cmp.w $6d30` |
+/// | bank | `$7616` | `$7596` |
+///
+/// The far-row test's **polarity is inverted** between them, and both happen to
+/// add 4 for the depths the fixtures use -- player 1 at 18, player 2 at 54 -- so
+/// it is invisible in the data and would only bite a player at an unusual depth.
+///
+/// Two things this crate used to get wrong, both of which mattered:
+///
+/// * it **clamped** the probe into the walkable range instead of bailing, so an
+///   off-arena probe read a cell rather than blocking;
+/// * it had **no own-cell shortcut**, so a player standing on a collapsed cell
+///   could not step off it -- which is why switching to the right bank on its
+///   own made two fixtures worse instead of better.
+///
+/// **Nothing calls this**, and that is the finding. `$f64e st d2` puts the
+/// result in a flag, `$f650`'s direction compare gates the move instead, and the
+/// `subq.w #3` at `$f658` runs whatever the probe said. What consumes `d2` is
+/// further down the handler and is not decoded. This crate treated the probe as
+/// a gate for eleven parts; both committed fixtures agreed with it, because in
+/// neither does a walking player ever probe a destroyed cell.
+/// `// UNKNOWN (what reads d2): see bd discr-75o`.
+#[must_use]
+pub fn walk_probe(
+    player: &Player,
+    who: PlayerId,
+    probe_x: i16,
+    own_bank: &[Tile; TILE_CELLS],
+) -> bool {
+    // $f612 / $aff2: off the arena is blocked, not clamped.
+    if !(8..crate::COLUMN_TABLE_LEN).contains(&probe_x) {
+        return false;
+    }
+    let mut cell = usize::from(column(probe_x)) + GRID_CELL_BASE as usize;
+    let far = match who {
+        // $f624: cmpi.w #$e,$6ca6 ; ble skip.
+        PlayerId::One => player.world_y > FAR_ROW_Y,
+        // $b004: cmpi.w #$3a,$6d26 ; bgt skip -- the other way round.
+        PlayerId::Two => player.world_y <= 0x3a,
+    };
+    if far {
+        cell += GRID_CELL_FAR_ROW as usize;
+    }
+    // $f630 / $b010: the cell you are already on is always steppable.
+    if cell == player.grid_cell as usize {
+        return true;
+    }
+    // $f63e / $b01e: tst.w on that player's OWN bank.
+    own_bank.get(cell).is_some_and(|t| t.walkable())
+}
+
 /// `$cc02`/`$cc10`: is the cell over there one this player could stand on?
 ///
 /// True when it is the cell they are already on, or when its type word is
@@ -1220,7 +1254,6 @@ pub fn step(
     player: &mut Player,
     who: PlayerId,
     input: Input,
-    tiles: &[Tile; TILE_CELLS],
     own_bank: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
@@ -1247,6 +1280,20 @@ pub fn step(
 
     // ST $f108: `tst.b $6cae; bne $f5d0` -- state 0 is the inline idle path and
     // everything else dispatches through the 32-entry table at $10e2c.
+    // $b1e0-$b1f8 (and $f5ea-$f606 for player 1): a fire press inside a walk
+    // goes to the throw decision at $ad82, which sees this walk's own stamp in
+    // player+$09 and routes to the running-smash chooser for that direction.
+    // Player 1 reaches the equivalent only when its two disc counters differ,
+    // and both are 0, so it never does.
+    if matches!(player.state_index, 1 | 2)
+        && input.fire_held
+        && !input.dir.has(DirBits::DOWN)
+        && player.discs_out != player.disc_cap
+    {
+        smash_choice(player, player.state_index, own_bank);
+        return;
+    }
+
     match player.state_index {
         STATE_IDLE => idle(player, who, input, own_bank),
         STATE_TURN => turn(player),
@@ -1263,24 +1310,8 @@ pub fn step(
         // fixture's twenty-three frames in it match the sequence exactly.
         // // UNKNOWN: see bd discr-b6x.
         STATE_REACH => run_out(player, who),
-        1 => walk(
-            player,
-            input,
-            tiles,
-            own_bank,
-            FACING_LEFT,
-            DirBits::LEFT,
-            -WALK_STEP,
-        ),
-        2 => walk(
-            player,
-            input,
-            tiles,
-            own_bank,
-            FACING_RIGHT,
-            DirBits::RIGHT,
-            WALK_STEP,
-        ),
+        1 => walk(player, input, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
+        2 => walk(player, input, FACING_RIGHT, DirBits::RIGHT, WALK_STEP),
         // Tier-1 states: the handler address is known, the behaviour is not.
         // Opaque pass-through -- moving a field we cannot justify would only
         // make a trace comparison diverge on the fields these do not touch.
@@ -1325,7 +1356,7 @@ mod tests {
     }
 
     fn run(player: &mut Player, input: Input, tiles: &[Tile; TILE_CELLS]) {
-        step(player, PlayerId::One, input, tiles, tiles, &mut Vec::new());
+        step(player, PlayerId::One, input, tiles, &mut Vec::new());
     }
 
     /// The four `$6cb0` observations of the Part-4 `player_x_hunt` and
@@ -1391,8 +1422,13 @@ mod tests {
     }
 
     #[test]
-    fn a_destroyed_destination_cell_blocks_the_step() {
-        // From X = 117 walking right, the probe is 141 -> column 4 -> cell 16.
+    fn a_destroyed_destination_cell_does_not_block_the_step() {
+        // This test used to assert the opposite, and both committed fixtures
+        // agreed with it -- because in neither does a walking player ever probe
+        // a destroyed cell. $f658's `subq.w #3` is unconditional once $f650's
+        // direction compare passes; the probe's answer goes into d2 and what
+        // reads it is further down the handler. p1_walk frame 100 is the frame
+        // that tells the two models apart, and it says the player moves.
         let mut tiles = FLOOR;
         tiles[16] = Tile {
             tile_type: 0,
@@ -1400,9 +1436,50 @@ mod tests {
         };
         let mut p = walking(2, 117);
         run(&mut p, press(DirBits::RIGHT), &tiles);
-        assert_eq!(p.world_x, 117);
-        // Blocked or not, facing and the cell are still written.
-        assert_eq!((p.facing, p.grid_cell), (FACING_RIGHT, 15));
+        assert_eq!(p.world_x, 120, "the step is not gated on the probe");
+        assert_eq!((p.facing, p.grid_cell), (FACING_RIGHT, 16));
+    }
+
+    /// The probe itself, which nothing gates on but which is decoded exactly.
+    /// `$f60a`-`$f64a` against `$afea`-`$b022`: the same shape with the far-row
+    /// test's polarity inverted between the players.
+    #[test]
+    fn walk_probe_reads_each_player_own_bank_and_threshold() {
+        let mut bank = FLOOR;
+        // From X = 117 probing right, 141 -> column 4 -> +8 -> 12, +4 -> 16.
+        bank[16] = Tile {
+            tile_type: 0,
+            hp: 0,
+        };
+        let p1 = Player {
+            world_x: 117,
+            world_y: 18,
+            grid_cell: 15,
+            ..Player::default()
+        };
+        assert!(!walk_probe(&p1, PlayerId::One, 141, &bank));
+        assert!(walk_probe(&p1, PlayerId::One, 141, &FLOOR));
+
+        // $f630 / $b010: the cell you are standing on is always steppable, even
+        // destroyed -- which is what lets a player leave a collapsing tile.
+        let standing = Player {
+            grid_cell: 16,
+            ..p1
+        };
+        assert!(walk_probe(&standing, PlayerId::One, 141, &bank));
+
+        // Off the arena is blocked, not clamped ($f612 / $aff2).
+        assert!(!walk_probe(&p1, PlayerId::One, 7, &FLOOR));
+
+        // Player 2 at its own depth takes the far row through the OTHER test:
+        // $b004 adds 4 when world_y <= $3a, where $f624 adds it when > $e.
+        let p2 = Player {
+            world_x: 117,
+            world_y: 54,
+            grid_cell: 15,
+            ..Player::default()
+        };
+        assert!(!walk_probe(&p2, PlayerId::Two, 141, &bank));
     }
 
     #[test]
@@ -1427,7 +1504,6 @@ mod tests {
                 fire_edge: true,
                 fire_held: true,
             },
-            &FLOOR,
             &FLOOR,
             &mut Vec::new(),
         );
@@ -1524,7 +1600,6 @@ mod tests {
             &mut p,
             PlayerId::One,
             press(DirBits::RIGHT),
-            &FLOOR,
             &FLOOR,
             &mut events,
         );

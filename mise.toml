@@ -40,15 +40,14 @@ TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 # whose SteerHook variant did not exist until this fixture found it.
 #
 # It is the only one of the three that is not clean, which is why it is worth
-# having: a clean gate measures nothing new. 143 ticks -- 123 before player 2's
-# strike landed, 142 before the tile collapse moved to the end of the tick.
+# having: a clean gate measures nothing new. 191 ticks -- 123 before player 2's
+# strike, 142 before the collapse moved to the end of the tick, 143 before the
+# walk probe stopped gating the step (it never did on the ST; see walk_probe).
 #
-# The wall is frame 144: player 2 stops walking one step early because the cell
-# its probe reads has just collapsed in player 1's bank. Switching that probe to
-# player 2's OWN bank looks obviously right and is measurably worse -- see the
-# comment on the probe in player::walk.
+# The wall is frame 192, discs[0].world_x -- a disc rule rather than a player
+# one, and the first thing this fixture has caught that is not about player 2.
 P1_WALK = "tests/fixtures/p1_walk.ndjson"
-P1_WALK_MIN_AGREE = "143"
+P1_WALK_MIN_AGREE = "191"
 
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
 # NOTHING resynced, every compared row of BOTH players -- and on golden it now

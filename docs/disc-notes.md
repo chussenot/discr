@@ -2148,3 +2148,54 @@ collapses under the same index -- which is the sort of coincidence that makes a
 wrong rule look right for 143 frames. `// UNKNOWN: see bd discr-b6x`.
 
 Recorded because "it reads its own bank, obviously" was tried and is false.
+
+## The walk probe is not a gate (Part 11d)
+
+Both walk handlers probe 24 units ahead and look the cell up, and `disc-core`
+treated that as "may I step there". It is not. `$f60a`-`$f64a` in full:
+
+```
+$f60a  d0 = $6ca2 - $18            ; 24 ahead
+$f612  cmp.w #$8,d0 ; blt $f644    ; off the arena -> d0 = 0
+$f618  d0 = colTable[d0] + 8
+$f624  cmpi.w #$e,$6ca6 ; ble      ; +4 for the far row
+$f630  cmp.w $6cb0,d0 ; beq $f648  ; the cell you are ON is always fine
+$f638  lea $7616,a1 ; tst.w (a1,d0)
+$f64a  bne $f650
+$f64e  st d2                       ; <- the answer goes into a FLAG
+$f650  cmpi.b #$04,(a0) ; bne      ; and THIS is what gates the move
+$f658  subq.w #3,$6ca2             ; unconditional once the direction matches
+$f65c  ... a SECOND lookup, on the new x
+```
+
+So the probe sets `d2` and the step happens anyway. What reads `d2` is further
+down the handler and is not decoded -- plausibly the fall-through-a-hole path,
+given the second lookup at `$f65c` runs on the *new* position.
+
+**Both committed fixtures agreed with the wrong model for eleven parts**, because
+in neither does a walking player ever probe a destroyed cell. `p1_walk` frame 100
+is the frame that tells them apart, and it says the player moves. Removing the
+gate took that fixture from 143 ticks to 191.
+
+### The probe's own three constants, since it is decoded even if unused
+
+| | player 1 (`$f60a`) | player 2 (`$afea`) |
+|---|---|---|
+| distance | `-$18` = 24 | the same |
+| off-arena | `cmp.w #$8; blt` -> blocked | the same |
+| far row | `+4` when `$6ca6` **>** `$e` (14) | `+4` when `$6d26` **<=** `$3a` (58) |
+| own-cell shortcut | `cmp.w $6cb0; beq` | `cmp.w $6d30` |
+| bank | `$7616` | `$7596` |
+
+The far-row test's **polarity is inverted** between the two, and both add 4 at
+the depths the fixtures use -- 18 and 54 -- so the difference is invisible in the
+data and would only bite a player at an unusual depth. `crate::player::walk_probe`
+is that function, exposed and unit-tested; nothing calls it.
+
+Two things that went wrong on the way here, both worth keeping:
+
+* switching the bank alone made two fixtures **worse**, because without the
+  own-cell shortcut a player standing on a collapsed tile could not leave it.
+  Half a transcription is not a partial improvement;
+* three rounds of arithmetic on which bank and which threshold produced three
+  wrong answers. Reading `$afc2` end to end took one command.

@@ -42,17 +42,12 @@ do that. It does something else worth having.
 
 ## Expected result
 
-**143 ticks, then a divergence owned by a bead.** 123 until player 2's strike
-(`$c934`) was implemented, 142 until the tile collapse moved to the end of the
-tick.
+**191 ticks, then a divergence owned by a bead.** The history of that number is
+the fixture's whole value: 123 until player 2's strike (`$c934`) was implemented,
+142 until the tile collapse moved to the end of the tick, 143 until the walk
+probe stopped gating the step — **which it never did on the ST**, and which both
+other fixtures had agreed with for eleven parts because in neither does a walking
+player ever probe a destroyed cell.
 
-The wall is frame 144, `players[1].world_x` 122 against 125: player 2 stops
-walking one step early because the cell its probe reads has just collapsed — in
-**player 1's** bank, on the frame the collapse clears it. Switching that probe to
-player 2's own bank looks obviously right and is measurably worse (this fixture
-drops to 99 and `tile_damage` stops being clean), so player 2's probe is neither
-`$7616[grid_cell(x - 24, y)]` nor the same expression over `$7596`.
-`// UNKNOWN: see bd discr-b6x`.
-
-Both other fixtures are clean, so this is the only one of the three that gates on
-a prefix. That is the point of adding it: a clean gate measures nothing new.
+The wall is frame 192, `discs[0].world_x` 27 against 29: a disc rule, and the
+first thing this fixture has caught that is not about player 2.

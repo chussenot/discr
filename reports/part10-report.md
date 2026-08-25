@@ -1276,3 +1276,76 @@ written next to the code rather than left to be rediscovered.
   "the obvious reading is false" rather than guessing at the next one.
 * The four clean runs are unchanged and the collapse fix did not move them —
   which is the check that it was a fix and not a trade.
+
+---
+
+# Part 11d — the walk probe was never a gate
+
+| run | 11c | **11d** |
+|---|---|---|
+| four clean runs | clean | clean |
+| `p1_walk`, nothing waived | 143 | **191** |
+
+## What it was
+
+Both walk handlers probe 24 units ahead and look up the destination cell.
+`disc-core` has treated that as "may I step there" since the first player
+implementation. `$f60a`-`$f658` says otherwise:
+
+```
+$f64e  st d2                       ; the probe's answer goes into a FLAG
+$f650  cmpi.b #$04,(a0) ; bne      ; and THIS is what gates the move
+$f658  subq.w #3,$6ca2             ; unconditional once the direction matches
+$f65c  ... a SECOND lookup, on the new x
+```
+
+The probe sets `d2` and the step happens anyway. What reads `d2` is further down
+the handler and is not decoded — plausibly the fall-through-a-hole path, given
+the second lookup runs on the *new* position.
+
+**Both committed fixtures agreed with the wrong model for eleven parts**, because
+in neither does a walking player ever probe a destroyed cell. `p1_walk` frame 100
+is the frame that tells the two models apart, and it says the player moves. That
+is what a third fixture is for, and it is the second thing this one has caught
+that eleven parts of two clean fixtures could not.
+
+## Three wrong answers before one right one
+
+Worth recording, because the pattern is the lesson.
+
+The wall said "player 2 stops walking one step early". I tried, in order:
+`own_bank[grid_cell(x - 24, y)]` — measurably worse (143 → 99, and
+`tile_damage` stopped being clean); then the same with the far bank's own
+threshold — identically worse; then a full transcription *with the gate still
+in place* — still worse. Each was a guess at which of three constants was wrong,
+and the answer was that the fourth thing, the gate itself, did not exist.
+
+Reading `$afc2` end to end took one `--disasm` command. The arithmetic took three
+rounds and got three wrong answers. **The disassembler was cheaper than the
+inference every time**, and this is the fourth part in a row where that has been
+true.
+
+A related note on partial transcription: switching the bank *alone* made things
+worse, because without the own-cell shortcut a player standing on a collapsed
+tile could not leave it. Half a transcription is not a partial improvement — it
+can be a regression, and it was.
+
+## What is decoded and unused
+
+`crate::player::walk_probe` is the probe, transcribed for both players and
+unit-tested, and **nothing calls it**. Its three per-player constants are
+tabulated in `docs/disc-notes.md`; the far-row test's polarity is *inverted*
+between the players and both add 4 at the depths the fixtures use, so the
+difference is invisible in the data and would only bite a player at an unusual
+depth.
+
+Keeping it as a tested public function rather than deleting it is deliberate: the
+knowledge is real and the consumer is findable, and a `d2` whose reader turns up
+later will want exactly this.
+
+## Honest limits
+
+* **191 of 274.** The new wall is `discs[0].world_x` at frame 192 — a disc rule,
+  and the first thing this fixture has caught that is not about player 2.
+* **What reads `d2` is unknown.** If it is the fall path, then a player walking
+  onto a hole should *fall*, and nothing in `disc-core` models falling.

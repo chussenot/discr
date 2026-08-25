@@ -100,7 +100,7 @@ impl GameState {
             } else {
                 (PlayerId::Two, &far)
             };
-            player::step(p, who, input, &near, own, &mut events);
+            player::step(p, who, input, own, &mut events);
         }
 
         // ST $f1b4: `st $6d2d` -- entering the death state sets the flag on the
