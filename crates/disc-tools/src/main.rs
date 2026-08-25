@@ -178,6 +178,12 @@ struct Frame {
     /// Part 11f. Defaults to 1 so a pre-Part-11f trace replays as it used to.
     #[serde(default = "one")]
     updates: u16,
+    /// `$6c58` as each pass consumed it, in order. Part 11g.
+    #[serde(default)]
+    pass_joy: Vec<u8>,
+    /// `$6da1` as each pass consumed it. Part 11g.
+    #[serde(default)]
+    pass_ai: Vec<u8>,
     /// ST `$6da1`, the byte the one-player AI at `$d2cc` synthesises in place
     /// of player 2's joystick, consumed by `$abb2` at exactly the position
     /// `$6c59` occupies for a human. Part 10.
@@ -332,38 +338,53 @@ fn steer_hook(raw: u32) -> disc_core::SteerHook {
 // ---------------------------------------------------------------------------
 
 impl Frame {
-    /// Player-1 input for the tick this record is about to be consumed by.
+    /// The inputs for each of this frame's update passes, in order.
     ///
-    /// `prev` is the previous record's `$6c58`, which is what makes the fire
-    /// bit an edge rather than a level.
-    fn input(&self, prev: u8) -> Input {
-        Input {
-            dir: DirBits(self.joy_6c58 & JOY_DIR_MASK),
-            fire_edge: self.joy_6c58 & JOY_FIRE_BIT != 0 && prev & JOY_FIRE_BIT == 0,
-            fire_held: self.joy_6c58 & JOY_FIRE_BIT != 0,
+    /// A frame holds `updates` passes and **each has its own pair of joystick
+    /// bytes**, because `$d2cc` rewrites `$6da1` inside the repeat loop. The
+    /// fire edge is computed across the flattened pass sequence, not per frame,
+    /// since that is the sequence the ST saw.
+    ///
+    /// A trace recorded before Part 11g has no per-pass columns; it falls back to
+    /// one pass carrying the frame's own bytes, which is what those traces did.
+    fn passes(&self, prev_joy: u8, prev_ai: u8) -> Vec<[Input; 2]> {
+        // `updates` is the authority on how many passes ran -- an EMPTY
+        // pass array means "zero passes this frame" on a Part-11g trace and
+        // "no such column" on an older one, and only `updates` tells them
+        // apart. The bytes come from the arrays where they exist and from the
+        // frame's own sample where they do not.
+        let n = usize::from(self.updates);
+        let mut out = Vec::with_capacity(n);
+        let (mut pj, mut pa) = (prev_joy, prev_ai);
+        for k in 0..n {
+            let j = self.pass_joy.get(k).copied().unwrap_or(self.joy_6c58);
+            let a = self.pass_ai.get(k).copied().unwrap_or(self.ai_6da1);
+            out.push([
+                Input {
+                    dir: DirBits(j & JOY_DIR_MASK),
+                    fire_edge: j & JOY_FIRE_BIT != 0 && pj & JOY_FIRE_BIT == 0,
+                    fire_held: j & JOY_FIRE_BIT != 0,
+                },
+                Input {
+                    dir: DirBits(a & JOY_DIR_MASK),
+                    fire_edge: a & JOY_FIRE_BIT != 0 && pa & JOY_FIRE_BIT == 0,
+                    fire_held: a & JOY_FIRE_BIT != 0,
+                },
+            ]);
+            pj = j;
+            pa = a;
         }
+        out
     }
 
-    /// Player 2's input for a tick, from the AI's byte at `$6da1`.
-    ///
-    /// **This is read from the frame the tick is predicting, not from the one
-    /// it starts at**, and the asymmetry with [`Frame::input`] is real. `$6c58`
-    /// is written by the IKBD interrupt handler asynchronously, so it is
-    /// already settled when the VBL is entered and the sample at frame N is the
-    /// byte frame N's work will consume. `$6da1` is written *inside* the VBL,
-    /// by `$d2cc` at `$10ec6`, immediately before `$abb2` at `$10ece` consumes
-    /// it -- so the byte a tick uses only becomes visible at the *next*
-    /// sampling point.
-    ///
-    /// Measured, not assumed: at `tile_damage.ndjson` frame 51 the sampled byte
-    /// is `$81` (fire + up) and the disc served on frame 52 has `vel_y` 0, which
-    /// the up bit would have made -5; frame 52's byte is `$80`, which serves 0.
-    fn ai_input(&self, prev: u8) -> Input {
-        Input {
-            dir: DirBits(self.ai_6da1 & JOY_DIR_MASK),
-            fire_edge: self.ai_6da1 & JOY_FIRE_BIT != 0 && prev & JOY_FIRE_BIT == 0,
-            fire_held: self.ai_6da1 & JOY_FIRE_BIT != 0,
-        }
+    /// The last pass's bytes, which is what the next frame's edges compare
+    /// against.
+    fn last_bytes(&self, prev_joy: u8, prev_ai: u8) -> (u8, u8) {
+        // A frame with no passes consumed nothing, so the previous bytes stand.
+        (
+            self.pass_joy.last().copied().unwrap_or(prev_joy),
+            self.pass_ai.last().copied().unwrap_or(prev_ai),
+        )
     }
 
     /// Build the `GameState` this record describes.
@@ -865,12 +886,14 @@ fn run(cli: &Cli) -> Result<bool, String> {
                 .collect();
             println!("  tick {tick:3} in  {}", row.join("  "));
         }
-        let input = prev.input(prev_joy);
         feed_disc_inputs(&mut state, &prev.seed());
-        // The pass count describes the tick that PRODUCES the next sample, so
-        // like the AI byte it comes from the frame being predicted.
-        state.updates = expected.updates;
-        state.tick([input, expected.ai_input(prev_ai)]);
+        // The passes belong to the tick that PRODUCES the next sample, so they
+        // come from the frame being predicted.
+        let passes = expected.passes(prev_joy, prev_ai);
+        // The divergence report quotes one input; the first pass's is the one a
+        // reader wants, and the header says how many there were.
+        let input = passes.first().map_or_else(Input::default, |p| p[0]);
+        state.tick_passes(&passes);
         resync(&mut state, &expected.seed(), &skip);
 
         let cs = checks(expected, &state);
@@ -881,8 +904,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
             return Ok(gated(cli.min_agree, matched));
         }
 
-        prev_joy = prev.joy_6c58;
-        prev_ai = expected.ai_6da1;
+        (prev_joy, prev_ai) = expected.last_bytes(prev_joy, prev_ai);
         prev = expected;
     }
 
@@ -958,12 +980,30 @@ mod tests {
     fn fire_is_an_edge_not_a_level() {
         let mut f: Frame = serde_json::from_str(F0.lines().next().unwrap()).unwrap();
         f.joy_6c58 = 0x84;
-        assert!(f.input(0x00).fire_edge, "0 -> 1 on bit 7 is an edge");
-        assert!(
-            !f.input(0x80).fire_edge,
-            "held fire is consumed, not an edge"
-        );
-        assert_eq!(f.input(0x00).dir, DirBits::LEFT, "$04 is Left");
+        f.updates = 1;
+        f.pass_joy.clear();
+        f.pass_ai.clear();
+        let p1 = |prev| f.passes(prev, 0)[0][0];
+        assert!(p1(0x00).fire_edge, "0 -> 1 on bit 7 is an edge");
+        assert!(!p1(0x80).fire_edge, "held fire is consumed, not an edge");
+        assert!(p1(0x80).fire_held, "...but it is still HELD");
+        assert_eq!(p1(0x00).dir, DirBits::LEFT, "$04 is Left");
+    }
+
+    /// The edge is computed across the flattened pass sequence, because that is
+    /// the sequence the ST saw: `$d2cc` rewrites `$6da1` once per pass.
+    #[test]
+    fn fire_edges_run_across_passes_not_frames() {
+        let mut f: Frame = serde_json::from_str(F0.lines().next().unwrap()).unwrap();
+        f.updates = 2;
+        f.pass_ai = vec![0x80, 0x80];
+        f.pass_joy = vec![0x00, 0x80];
+        let p = f.passes(0x00, 0x00);
+        assert_eq!(p.len(), 2, "two passes");
+        assert!(p[0][1].fire_edge, "player 2's first pass is the edge");
+        assert!(!p[1][1].fire_edge, "the second pass is the same press held");
+        assert!(!p[0][0].fire_edge, "player 1 had not pressed yet");
+        assert!(p[1][0].fire_edge, "and its edge lands on the second pass");
     }
 
     #[test]
@@ -1010,19 +1050,19 @@ mod tests {
         let skip = |field: &str| WAIVED.iter().any(|(p, _)| field.starts_with(p));
         let mut state = f[0].seed();
         let mut prev_joy = f[0].joy_6c58;
+        let mut prev_ai = f[0].ai_6da1;
 
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
-            state.updates = expected.updates;
-            state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
+            state.tick_passes(&expected.passes(prev_joy, prev_ai));
             resync(&mut state, &expected.seed(), &skip);
             assert!(
                 first_divergence(expected, &state).is_none(),
                 "diverged after {matched} tick(s): {:?}",
                 first_divergence(expected, &state).map(|d| d.field)
             );
-            prev_joy = prev.joy_6c58;
+            (prev_joy, prev_ai) = expected.last_bytes(prev_joy, prev_ai);
         }
         assert_eq!(f.len() - 1, 99, "the fixture is 100 frames");
     }
@@ -1039,18 +1079,18 @@ mod tests {
         let f = golden();
         let mut state = f[0].seed();
         let mut prev_joy = f[0].joy_6c58;
+        let mut prev_ai = f[0].ai_6da1;
 
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
-            state.updates = expected.updates;
-            state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
+            state.tick_passes(&expected.passes(prev_joy, prev_ai));
             assert!(
                 first_divergence(expected, &state).is_none(),
                 "diverged after {matched} tick(s): {:?}",
                 first_divergence(expected, &state).map(|d| d.field)
             );
-            prev_joy = prev.joy_6c58;
+            (prev_joy, prev_ai) = expected.last_bytes(prev_joy, prev_ai);
         }
     }
 

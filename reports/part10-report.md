@@ -1497,3 +1497,55 @@ was a fix and not a trade.
   against it are `disc-core` against the oracle, not against the machine. That
   distinction is now in its provenance in those words.
 * **The new wall is frame 224**, `players[1].world_x`.
+
+---
+
+# Part 11g — each pass carries its own inputs
+
+| run | 11f | **11g** |
+|---|---|---|
+| four clean runs | clean | clean |
+| `p1_walk`, nothing waived | 223 | **237** |
+
+Part 11f made a frame hold 0, 1 or 2 update passes; it still drove every pass
+from the frame's single sampled joystick byte. That is wrong, and the loop says
+why:
+
+```
+$96be  bsr $a4ea      ; the disc loop
+$96c2  bsr $10eac     ; -> $10ec6 bsr $d2cc   REWRITES $6da1
+                      ;    $10ece bsr $abb2   consumes it
+$96cc  bpl $96be      ; and round again
+```
+
+`$d2cc` runs *inside* the repeat, so two passes see two different AI bytes. The
+oracle now records both at `$96c6`:
+
+```
+frame 224   updates 2   pass_ai [$08, $00]   sampled ai_6da1 $00
+```
+
+`$08` then `$00` — and driving both from the sampled `$00` drops the walk step
+the first pass made. That was the frame-224 wall exactly.
+
+## What changed
+
+* the oracle emits `pass_joy` / `pass_ai`, one byte per pass;
+* `GameState::tick_passes(&[[Input; 2]])` takes one input pair per pass;
+  `tick` is the one-pass case, so nothing else moved;
+* `Frame::passes()` flattens them and computes the **fire edge across the pass
+  sequence**, not per frame — two passes of `$80` are one edge and one held
+  pass, because that is what the ST saw.
+
+## The one trap, written down
+
+An empty `pass_ai` means two different things: "zero passes this frame" on an
+11g trace, and "no such column" on an older one. `updates` is the authority on
+the count; the arrays only supply bytes. Reading the count off the array length
+put `p1_walk` back to 191 for one measurement before I noticed.
+
+## Where it stops now
+
+Frame 238, `tiles[14].tile_type` — a collapse-timing question under multi-pass
+frames, and the first wall in three parts that is a *rule* rather than
+`disc-core`'s own shape. Filed as `discr-ezb`.

@@ -60,7 +60,9 @@ pub struct GameState {
     pub tiles_far: [Tile; TILE_CELLS],
     /// ST `$779e`: the one tile collapse the game can have in flight.
     pub collapse: Option<tile::Collapse>,
-    /// **How many update passes this tick performs.**
+    /// **Retired in Part 11g**: the number of passes is `passes.len()`, and each
+    /// pass carries its own input, because `$10ec6 bsr $d2cc` rewrites `$6da1`
+    /// inside the repeat loop. Kept only as documentation of what a frame is.
     ///
     /// The main loop at `$96ba` pushes it and loops:
     ///
@@ -88,7 +90,7 @@ pub struct GameState {
     /// and it survived eleven parts because both clean fixtures happen to run
     /// exactly one pass per frame.
     ///
-    /// A fed input: what paces the main loop is not modelled.
+    /// What paces the main loop is not modelled.
     /// `// UNKNOWN: see bd discr-ovl.7`.
     pub updates: u16,
     /// ST `$6ab4` `vbl_frame_counter`, which is a *word* and wraps. Held here
@@ -169,15 +171,32 @@ impl GameState {
     /// `inputs` is indexed by [`PlayerId::index`]. See the module docs for the
     /// frame order and the ST sites it mirrors.
     pub fn tick(&mut self, inputs: [Input; 2]) -> Vec<Event> {
+        self.tick_passes(&[inputs])
+    }
+
+    /// Run one PAL VBL that contained `passes.len()` update passes.
+    ///
+    /// A frame is **not** one update: `$96ba`-`$96cc` sits in the main loop, the
+    /// sampling point is the VBL, and between two samples the loop completes
+    /// however many passes it got round to -- 0, 1 or 2 in the traces we have.
+    ///
+    /// Each pass carries **its own inputs**, because `$10ec6 bsr $d2cc` rewrites
+    /// `$6da1` and `$10ece bsr $abb2` consumes it, both inside that loop. With
+    /// two passes in one frame there are two different AI bytes, and a trace that
+    /// samples once per frame only shows the last: `p1_walk` frame 224 used `$08`
+    /// then `$00`, and driving both passes from `$00` loses the walk step the
+    /// first one made.
+    ///
+    /// `tick` is the one-pass case.
+    pub fn tick_passes(&mut self, passes: &[[Input; 2]]) -> Vec<Event> {
         let mut events = Vec::new();
 
         // ST $8198: addq.w #1,$6ab4 is the VBL handler's first instruction.
         self.frame = self.frame.wrapping_add(1);
 
-        // ST $96be-$96c6, however many times the main loop got round to it.
-        // See GameState::updates.
-        for _ in 0..self.updates {
-            self.update(inputs, &mut events);
+        // ST $96be-$96c6, once per pass.
+        for inputs in passes {
+            self.update(*inputs, &mut events);
         }
 
         // ST $14ba4: the tile-collapse effect, LAST -- it lives in the render

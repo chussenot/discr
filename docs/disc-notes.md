@@ -2296,3 +2296,39 @@ is a fed input like the rest.
 
 `$6ab8` is emitted too, as `repeat_6ab8`, but it is explanatory: it accounts for
 the 2s and not for the 0s.
+
+## Each update pass consumes its own joystick bytes (Part 11g)
+
+Part 11f established that a sampled frame holds 0, 1 or 2 update passes. The
+inputs are per **pass**, not per frame, and the reason is inside the loop:
+
+```
+$96be  bsr $a4ea      ; the disc loop
+$96c2  bsr $10eac     ; -> $10ec6 bsr $d2cc   REWRITES $6da1
+                      ;    $10ece bsr $abb2   consumes it
+$96cc  bpl $96be      ; and round again
+```
+
+So with two passes there are **two different AI bytes**, and a trace that samples
+once per frame only records the last. `p1_walk` frame 224, measured by recording
+both bytes at `$96c6` on every pass:
+
+```
+frame 224   updates 2   pass_ai [$08, $00]   sampled ai_6da1 $00
+```
+
+Driving both passes from `$00` loses the walk step the first one made, which is
+exactly the frame-224 wall. The oracle emits `pass_joy` and `pass_ai` now,
+`GameState::tick_passes` takes one input pair per pass, and `tick` is the
+one-pass case. That took `p1_walk` from 223 ticks to 237.
+
+Two details worth keeping:
+
+* **the fire edge runs across the flattened pass sequence**, not per frame,
+  because that is the sequence the ST saw. Two passes of `$80` are one edge and
+  one held frame, not two edges;
+* **an empty `pass_ai` means two different things** -- "zero passes this frame"
+  on a Part-11g trace, and "no such column" on an older one. Only `updates`
+  tells them apart, so it is the authority on the count and the arrays supply
+  only the bytes. Getting that wrong put the fixture back to 191 for one
+  measurement.

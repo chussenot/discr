@@ -123,6 +123,18 @@ static long callers_reported;
 #define UPDATE_PASS_PC 0xa4eaU
 static unsigned updates_since_sample;
 
+/* The two joystick bytes as each pass actually consumed them.
+ *
+ * $10ec6 bsr $d2cc REWRITES $6da1 and $10ece bsr $abb2 consumes it, both inside
+ * the repeat loop -- so with two passes in one sampled frame there are two
+ * different AI bytes and the sample only shows the last.  Recorded at $96c6,
+ * after the dispatcher has run and while both bytes still hold what that pass
+ * used. */
+#define PASS_INPUT_PC 0x96c6U
+#define PASS_MAX 4
+static unsigned char pass_joy[PASS_MAX], pass_ai[PASS_MAX];
+static unsigned pass_n;
+
 void disc_instr_hook(unsigned int pc)
 {
     if (callers_at >= 0 && (long)(pc & ADDR_MASK) == callers_at
@@ -132,6 +144,11 @@ void disc_instr_hook(unsigned int pc)
                 cur_frame, m68k_read_memory_32(sp), sp);
     }
     if ((pc & ADDR_MASK) == UPDATE_PASS_PC) updates_since_sample++;
+    if ((pc & ADDR_MASK) == PASS_INPUT_PC && pass_n < PASS_MAX) {
+        pass_joy[pass_n] = ram[0x6c58];
+        pass_ai[pass_n] = ram[0x6da1];
+        pass_n++;
+    }
     if (sample_armed && (pc & ADDR_MASK) == VBL_HANDLER) {
         emit_frame(trace_out, cur_frame);
         sample_armed = 0;
@@ -534,6 +551,14 @@ static void emit_frame(FILE *out, long frame)
              * is $6ab8 + 1 updates.  Zero on every frame of both clean
              * fixtures; 1 on the double-step frames of p1_walk. */
             rd16(0x6ab8), updates_since_sample);
+    {   /* one entry per update pass, in order */
+        unsigned k;
+        fprintf(out, ",\"pass_joy\":[");
+        for (k = 0; k < pass_n; k++) fprintf(out, "%s%u", k ? "," : "", pass_joy[k]);
+        fprintf(out, "],\"pass_ai\":[");
+        for (k = 0; k < pass_n; k++) fprintf(out, "%s%u", k ? "," : "", pass_ai[k]);
+        fprintf(out, "]");
+    }
     fprintf(out, ",\"player\":[");
     for (i = 0; i < 2; i++) {
         unsigned b = 0x6ca0 + i * 0x80;
@@ -608,6 +633,7 @@ static void emit_frame(FILE *out, long frame)
     }
     fprintf(out, "],\"state_sha256\":\"%s\"", h);
     updates_since_sample = 0;
+    pass_n = 0;
     if (win_lo >= 0) {
         long a;
         fprintf(out, ",\"win_lo\":%ld,\"mem\":\"", win_lo);

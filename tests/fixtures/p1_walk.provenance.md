@@ -60,30 +60,45 @@ probe stopped gating the step — **which it never did on the ST**, and which bo
 other fixtures had agreed with for eleven parts because in neither does a walking
 player ever probe a destroyed cell.
 
-**223 ticks** as of Part 11f, which resolved the frame-192 wall: it was not a
-disc rule and not an oracle artefact but `disc-core`'s own shape — one tick was
-one update, and a sampled frame holds 0, 1 or 2 of them.
+**237 ticks** as of Part 11g. The frame-192 wall was `disc-core`'s own shape
+twice over: one tick was one update, and a sampled frame holds 0, 1 or 2 of them
+(Part 11f) — and each pass consumes its **own** joystick bytes, because `$d2cc`
+rewrites `$6da1` inside the repeat loop (Part 11g). Frame 224 used `$08` then
+`$00`, and driving both passes from the sampled `$00` loses the walk step the
+first one made.
 
-The wall now is frame 224, `players[1].world_x` — and it is attributed, not
-just located (bd discr-hif). It is **not** a missing `world_x` writer: the
-`--watch 0x6d22` list from Part 10i is fully transcribed (`$b038`, `$b24e`,
-`$c1d0`, the `$abc6` idle-path delta and `$ae84`'s state-16 sidestep are all in
-`player.rs`). It is the input channel's granularity. `$10ec6 bsr $d2cc` writes
-the AI byte and `$10ece` consumes it **once per `$96be`-`$96cc` main-loop
-pass**, while `ai_6da1` is sampled once per VBL — so a 2-update tick holds two
-consumed bytes and the trace records only the second. Frame 223 -> 224 is the
-one tick in this fixture where the two differ *and* it moves `world_x`: pass A
-consumed `$08` (state 2 steps +3 at `$b24e`, x 83 -> 86), pass B consumed `$00`
-(the walk exits to the turn — state 20 with `player+$09` still 2 at the sample,
-which is exactly what the trace shows). `tracecheck` feeds the destination
-sample to every pass, so it misses the step; feeding the *previous* sample
-instead breaks tick 218 (`04 -> 00`, x stays 80: there both passes consumed the
-new byte). No rule over the sampled bytes satisfies both — the mid-frame byte
-is the AI policy's output, and its test routines and `$cea6` sensor pass are
-undecoded. Passing 224 therefore needs either the policy or a re-minted
-fixture with a per-pass input column, which needs the gitignored seed.
+### The frame-224 wall, and the note that predicted its answer
 
-With `--skip-waived` (player 2's rows resynced from the trace) the run reaches
-**237** and diverges on `tiles[14].tile_type` at frame 238 — disc-core destroys
-the tile on a frame the ST does not — which is the first wall that is not
-player 2's.
+Kept verbatim because it asked for exactly what Part 11g then built, and
+because a question answered is worth more on the page than deleted:
+
+> The wall now is frame 224, `players[1].world_x` — and it is attributed, not
+> just located (bd discr-hif). It is **not** a missing `world_x` writer: the
+> `--watch 0x6d22` list from Part 10i is fully transcribed (`$b038`, `$b24e`,
+> `$c1d0`, the `$abc6` idle-path delta and `$ae84`'s state-16 sidestep are all in
+> `player.rs`). It is the input channel's granularity. `$10ec6 bsr $d2cc` writes
+> the AI byte and `$10ece` consumes it **once per `$96be`-`$96cc` main-loop
+> pass**, while `ai_6da1` is sampled once per VBL — so a 2-update tick holds two
+> consumed bytes and the trace records only the second. Frame 223 -> 224 is the
+> one tick in this fixture where the two differ *and* it moves `world_x`: pass A
+> consumed `$08` (state 2 steps +3 at `$b24e`, x 83 -> 86), pass B consumed `$00`
+> (the walk exits to the turn — state 20 with `player+$09` still 2 at the sample,
+> which is exactly what the trace shows). `tracecheck` feeds the destination
+> sample to every pass, so it misses the step; feeding the *previous* sample
+> instead breaks tick 218 (`04 -> 00`, x stays 80: there both passes consumed the
+> new byte). No rule over the sampled bytes satisfies both — the mid-frame byte
+> is the AI policy's output, and its test routines and `$cea6` sensor pass are
+> undecoded. Passing 224 therefore needs either the policy or a re-minted
+> fixture with a per-pass input column, which needs the gitignored seed.
+>
+> With `--skip-waived` (player 2's rows resynced from the trace) the run reaches
+> **237** and diverges on `tiles[14].tile_type` at frame 238 — disc-core destroys
+> the tile on a frame the ST does not — which is the first wall that is not
+> player 2's.
+
+The re-minted fixture is this file. `pass_joy` / `pass_ai` record both bytes
+per frame, so 224 passes without a decoded AI policy: what the note called the
+input channel's granularity was the whole of it.
+
+The wall now is frame 238, `tiles[14].tile_type` — a collapse-timing question
+under multi-pass frames.
