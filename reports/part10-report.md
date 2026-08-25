@@ -1349,3 +1349,78 @@ later will want exactly this.
   and the first thing this fixture has caught that is not about player 2.
 * **What reads `d2` is unknown.** If it is the fall path, then a player walking
   onto a hole should *fall*, and nothing in `disc-core` models falling.
+
+---
+
+# Part 11e — the wall was not a rule, and a fixture's window was overclaimed
+
+No gate moved. What changed is that the number means something different, and a
+claim I made two parts ago was wrong.
+
+| run | |
+|---|---|
+| four clean runs | clean |
+| `p1_walk`, nothing waived | 191 — **unchanged, and now for a defensible reason** |
+
+## Counting instead of guessing
+
+I said last part I would read before inferring, and the first thing worth
+counting was how often the ST's disc loop actually runs:
+
+```
+golden       100 frames   exactly one write to disc+$00 per frame, always
+tile_damage  215 frames   exactly one per frame, always
+p1_walk      275 frames   one per frame for 191 frames, then TWO on alternate
+                          frames from 192 -- 37 such frames
+```
+
+`$6ab4` advances by exactly 1 on every frame of all three, so this is **two
+iterations inside one VBL**, not a dropped or doubled frame. The boundary is
+exact: the same run stopped at 191 frames shows the pattern not at all.
+
+So `p1_walk`'s wall — `discs[0].world_x` 27 against 29 at frame 192 — **is not a
+missing disc rule.** It is the first frame the ST steps the disc twice, against a
+`disc-core` that steps once per tick by construction. 191 is the last frame that
+behaves like the two validated fixtures, and that is a much better reason to stop
+there than "the next rule is missing".
+
+## The claim I got wrong
+
+`p1_walk`'s provenance said its 275 frames were inside a window of 275 tier-1
+frames. That figure is real but it was measured **for the idle programme**, which
+is what `tile_damage` relies on. It does not transfer to a different input, and
+nothing has ever compared the `walkleft` programme against Hatari because no
+Hatari reference for it exists.
+
+I inherited a validated window rather than measuring one, and wrote it down as
+though I had. Corrected: the provenance now says which programme the 275 was
+measured for, that 0–191 behaves like both validated fixtures, and that 192
+onward is **not evidence about the game** until a Hatari run of this programme
+exists.
+
+Two readings of the double step, with opposite consequences — the game has a
+catch-up mechanism `disc-core` must model, or the oracle has drifted. Filed as
+discr-ovl.7 with the experiment that separates them.
+
+## A tool fix that this cost
+
+`--watch` stopped reporting silently at its 4000-line cap, which produced an
+empty result mid-investigation and sent me looking for a deleted input script that
+was never deleted. It announces the truncation now. A measurement tool that stops
+measuring without saying so is worse than one that refuses.
+
+Also worth recording: I wrote a shell loop to compare the three fixtures, it
+returned "0 frames" for all three, and I nearly believed it over an earlier
+verbatim run that said 37. The loop was wrong. Three explicit commands took
+thirty seconds and settled it — the same lesson as the last four parts, one level
+up: **the cheap direct measurement beats the clever indirect one.**
+
+## Honest limits
+
+* **`p1_walk` is 191 useful frames, not 274.** The other 83 are real oracle
+  output and may be real game behaviour, but nothing validates them.
+* **`$a4ea` is entered through a pointer** — zero absolute references, and
+  `$a4e8` is an `rts` — so "what calls the disc loop twice" needs the indirect
+  caller, which is not found.
+* **Two of the three fixtures remain fully clean**, and this part did not touch
+  them.

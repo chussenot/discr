@@ -2199,3 +2199,46 @@ Two things that went wrong on the way here, both worth keeping:
   Half a transcription is not a partial improvement;
 * three rounds of arithmetic on which bank and which threshold produced three
   wrong answers. Reading `$afc2` end to end took one command.
+
+## The disc loop runs twice per frame in one fixture, and only past frame 191 (Part 11e)
+
+Counting `$a65e`'s writes to `disc+$00` per frame, across all three fixtures:
+
+```
+golden       100 frames   exactly one write per frame, always
+tile_damage  215 frames   exactly one write per frame, always
+p1_walk      275 frames   one per frame for 191 frames, then TWO on alternate
+                          frames from 192 -- 37 such frames
+```
+
+`$6ab4` still advances by exactly 1 on every frame of all three, so this is **two
+iterations inside one VBL**, not a dropped or doubled frame. And the boundary is
+exact: `p1_walk` run for only its first 191 frames shows the pattern not at all.
+
+That reframes the `p1_walk` gate. Its wall at frame 192 -- `discs[0].world_x` 27
+against 29 -- is not a missing disc rule. It is the first frame on which the ST
+steps the disc twice and `disc-core`, which steps once per tick by construction,
+steps once. **191 is the last frame that behaves like the two validated
+fixtures**, which is a better reason to stop there than a missing rule.
+
+Two readings, with opposite consequences:
+
+* **the game double-steps** -- a catch-up or rate mechanism -- in which case
+  `disc-core` must model it and the trace is faithful;
+* **the oracle has drifted** from the real machine, in which case `p1_walk` past
+  191 is not evidence about the game at all.
+
+The experiment that separates them is a Hatari reference for this input
+programme run through `scripts/oracle_diff.py`. None exists: the 275-frame tier-1
+figure this fixture's provenance claimed was measured for the **idle** programme
+and does not transfer to a different input. That claim has been corrected.
+
+`$a4ea` has **zero** absolute references and `$a4e8` is an `rts`, so the disc loop
+is its own routine entered through a pointer. Finding the indirect caller would
+also answer this. bd discr-ovl.7.
+
+### The watch cap now says when it truncates
+
+`--watch` stopped reporting silently at 4000 lines, which cost a confusing empty
+result mid-investigation. It says so now. A measurement tool that stops measuring
+without telling you is worse than one that refuses.

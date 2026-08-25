@@ -44,8 +44,12 @@ TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 # strike, 142 before the collapse moved to the end of the tick, 143 before the
 # walk probe stopped gating the step (it never did on the ST; see walk_probe).
 #
-# The wall is frame 192, discs[0].world_x -- a disc rule rather than a player
-# one, and the first thing this fixture has caught that is not about player 2.
+# The wall is frame 192, and it is NOT a missing rule: 192 is exactly the first
+# frame on which the ST's disc loop runs TWICE, which neither validated fixture
+# ever does at any point. 191 is the last frame that behaves like them, and this
+# fixture's window past that is unvalidated -- see its provenance and
+# bd discr-ovl.7. Do not raise this number without a Hatari reference for the
+# walkleft programme.
 P1_WALK = "tests/fixtures/p1_walk.ndjson"
 P1_WALK_MIN_AGREE = "191"
 

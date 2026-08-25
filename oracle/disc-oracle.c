@@ -270,6 +270,13 @@ static long watch_reported;
 static void watch_write(unsigned int a, unsigned int value, int width)
 {
     if (watch_lo < 0 || (long)a + width <= watch_lo || (long)a >= watch_hi) return;
+    if (watch_reported == WATCH_REPORT_MAX) {
+        /* Say so rather than truncating in silence: a measurement tool that
+         * stops reporting without telling you is worse than one that refuses. */
+        fprintf(stderr, "watch: report cap %d reached at frame %ld -- narrow the "
+                        "range or raise WATCH_REPORT_MAX\n",
+                WATCH_REPORT_MAX, cur_frame);
+    }
     if (watch_reported++ >= WATCH_REPORT_MAX) return;
     fprintf(stderr, "watch frame %ld  pc $%06x  write.%c $%06x = $%0*x\n",
             cur_frame, m68k_get_reg(NULL, M68K_REG_PPC),
