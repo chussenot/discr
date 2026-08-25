@@ -44,14 +44,16 @@ TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 # strike, 142 before the collapse moved to the end of the tick, 143 before the
 # walk probe stopped gating the step (it never did on the ST; see walk_probe).
 #
-# The wall is frame 192, and it is NOT a missing rule: 192 is exactly the first
-# frame on which the ST's disc loop runs TWICE, which neither validated fixture
-# ever does at any point. 191 is the last frame that behaves like them, and this
-# fixture's window past that is unvalidated -- see its provenance and
-# bd discr-ovl.7. Do not raise this number without a Hatari reference for the
-# walkleft programme.
+# 223 ticks. The frame-192 wall turned out to be disc-core's own shape: the game
+# update lives in the MAIN LOOP, not the VBL, so a sampled frame contains 0, 1 or
+# 2 update passes and the oracle emits the count. Both clean fixtures run exactly
+# one pass per frame, which is why "one tick is one update" survived eleven parts.
+#
+# This fixture is still not independently validated against Hatari for its own
+# input programme -- see its provenance -- so raising this number is measuring
+# disc-core against the oracle, not against the machine.
 P1_WALK = "tests/fixtures/p1_walk.ndjson"
-P1_WALK_MIN_AGREE = "191"
+P1_WALK_MIN_AGREE = "223"
 
 # The third gate, and the strictest thing this repo measures: NOTHING waived and
 # NOTHING resynced, every compared row of BOTH players -- and on golden it now

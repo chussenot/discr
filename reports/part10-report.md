@@ -1424,3 +1424,76 @@ up: **the cheap direct measurement beats the clever indirect one.**
   caller, which is not found.
 * **Two of the three fixtures remain fully clean**, and this part did not touch
   them.
+
+---
+
+# Part 11f — a frame is not one update
+
+| run | 11e | **11f** |
+|---|---|---|
+| four clean runs | clean | clean |
+| `p1_walk`, nothing waived | 191 | **223** |
+
+`discr-ovl.7` closed, and the answer was reading (a): **the game double-steps and
+the oracle was faithful all along.**
+
+## The tool, again
+
+A static search for pointers to `$a4ea` found none — and that search was the
+wrong question twice over. "`$a4ea` has zero references" only means zero
+references *in the code Ghidra disassembled*, and a caller it never reached looks
+exactly like a caller that does not exist. I wrote that as a finding last part;
+it was an artefact.
+
+`--callers ADDR` — report the return address every time execution reaches an
+address — named `$96be` in one command. Third measurement tool this phase, and
+the third time it beat inference outright.
+
+## What it found
+
+```
+$96ba  move.w $6ab8,-(a7)     ; push a repeat count
+$96be  bsr $a4ea              ; the disc loop
+$96c2  bsr $10eac             ; the player control dispatcher
+$96c6  bsr $9c52
+$96ca  subq.w #1,(a7)
+$96cc  bpl $96be              ; again while it is still >= 0
+```
+
+One pass is `$6ab8 + 1` updates — but the decisive part is that **`$96ba` is in
+the main loop, not in the VBL handler**, and the sampling point is the VBL. So
+between two samples the main loop completes however many passes it got round to:
+
+```
+golden       1 pass on every one of its 99 ticks
+tile_damage  1 pass on every one of its 214
+p1_walk      1 on 200 ticks, 2 on 37, and 0 on 37
+```
+
+**"One tick is one update" was a model of the sampling, not of the game.** It
+survived eleven parts because both clean fixtures happen to run exactly one pass
+per frame — the same reason the walk-probe gate survived eleven parts, and the
+same reason the two energies looked mirrored. Three separate wrong models, all
+invisible to two fixtures that never exercise the difference.
+
+That is the argument for the third fixture, made three times now. It has cost
+one overclaimed provenance and found three model errors.
+
+## The fix
+
+The oracle emits the pass count as an `updates` column; `GameState::tick` runs
+`update()` that many times. `$6ab8` is emitted too but is explanatory — it
+accounts for the 2s and not for the 0s.
+
+`p1_walk` 191 → 223, both clean fixtures unchanged, which is the check that this
+was a fix and not a trade.
+
+## Honest limits
+
+* **What paces the main loop is not modelled**, so `updates` is a fed input like
+  the animation cursor. Seven fed fields now.
+* **`p1_walk` is still not independently validated against Hatari** for its own
+  input programme. Its "suspicious region" is explained, but numbers measured
+  against it are `disc-core` against the oracle, not against the machine. That
+  distinction is now in its provenance in those words.
+* **The new wall is frame 224**, `players[1].world_x`.

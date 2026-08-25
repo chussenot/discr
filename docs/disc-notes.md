@@ -2242,3 +2242,57 @@ also answer this. bd discr-ovl.7.
 `--watch` stopped reporting silently at 4000 lines, which cost a confusing empty
 result mid-investigation. It says so now. A measurement tool that stops measuring
 without telling you is worse than one that refuses.
+
+## The game update is in the MAIN LOOP, not the VBL (Part 11f)
+
+This is the correction that resolves bd discr-ovl.7, and it is about the shape of
+a frame rather than any single rule.
+
+`--callers 0xa4ea` -- a new oracle flag that reports the return address every
+time execution reaches an address -- named the call site in one command, after a
+static search for pointers to `$a4ea` found none. (That search was also the wrong
+question: "`$a4ea` has zero references" only means zero references *in the code
+Ghidra disassembled*, and a caller it never reached looks identical to a caller
+that does not exist.)
+
+The caller is `$96be`, and its surroundings are the whole answer:
+
+```
+$96b6  bsr $a4bc
+$96ba  move.w $6ab8,-(a7)     ; push a repeat count
+$96be  bsr $a4ea              ; the disc loop
+$96c2  bsr $10eac             ; the player control dispatcher
+$96c6  bsr $9c52
+$96ca  subq.w #1,(a7)
+$96cc  bpl $96be              ; and again while it is still >= 0
+$96ce  addq.l #2,a7
+$96d0  bsr $10f16
+```
+
+Two things follow, and the second is the one that matters:
+
+* one pass of that loop is **`$6ab8 + 1` updates**;
+* **`$96ba` is in the main loop, not in the VBL handler** -- and the sampling
+  point is the VBL (`PC == $8198`). So between two samples the main loop
+  completes however many passes it got round to.
+
+Measured, by counting entries to `$a4ea` between samples:
+
+```
+golden       1 pass on every one of its 99 ticks
+tile_damage  1 pass on every one of its 214
+p1_walk      1 on 200 ticks, 2 on 37, and 0 on 37
+```
+
+So **"one tick is one update" was a model of the sampling, not of the game**, and
+it survived eleven parts because both clean fixtures happen to run exactly one
+pass per frame. The oracle was faithful the whole time; `disc-core` was the wrong
+shape.
+
+The oracle emits the count as an `updates` column and `GameState::tick` runs
+`update()` that many times, which took `p1_walk` from 191 ticks to 223 with both
+clean fixtures unchanged. What paces the main loop is not modelled, so `updates`
+is a fed input like the rest.
+
+`$6ab8` is emitted too, as `repeat_6ab8`, but it is explanatory: it accounts for
+the 2s and not for the 0s.

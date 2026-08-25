@@ -20,13 +20,14 @@ other two never reach.
   ever compared the `walkleft` programme against Hatari, because no Hatari
   reference for it exists.
   What is measurable without one is this. Across `golden` (100 frames) and
-  `tile_damage` (215), the ST's disc loop writes `disc+$00` **exactly once per
-  frame, always**. In this fixture it does the same for 191 frames and then
-  starts running **twice on alternate frames** from 192 onward — 37 such frames
-  in 275. So frames 0–191 behave like both validated fixtures and frames 192+ do
-  something neither has ever done, and until a Hatari run of this programme
-  exists **192 onward is not evidence about the game**.
-  See bd discr-ovl.7.
+  `tile_damage` (215) the game's update pass runs **exactly once per sampled
+  frame, always**. In this fixture it runs once on 200 frames, **twice on 37 and
+  not at all on 37** — because the update lives in the main loop rather than the
+  VBL, and the sampling point is the VBL. That was resolved in Part 11f and is
+  not an oracle artefact: `updates` is a column now and `disc-core` replays it.
+  So this fixture no longer has a "suspicious region"; what it still lacks is an
+  independent Hatari comparison for **its own** input programme. Numbers measured
+  against it are `disc-core` against the oracle, not against the machine.
 
 ## Why it exists, and what it is named for
 
@@ -59,8 +60,8 @@ probe stopped gating the step — **which it never did on the ST**, and which bo
 other fixtures had agreed with for eleven parts because in neither does a walking
 player ever probe a destroyed cell.
 
-The wall is frame 192, `discs[0].world_x` 27 against 29 — and it is **not** a
-disc rule. Frame 192 is exactly the first frame on which the ST's disc loop runs
-twice, and `disc-core` steps once per tick by construction. So the gate at 191 is
-the last frame inside the region that behaves like the two validated fixtures,
-which is a better reason to stop there than "the next rule is missing".
+**223 ticks** as of Part 11f, which resolved the frame-192 wall: it was not a
+disc rule and not an oracle artefact but `disc-core`'s own shape — one tick was
+one update, and a sampled frame holds 0, 1 or 2 of them.
+
+The wall now is frame 224, `players[1].world_x`.

@@ -59,6 +59,37 @@ pub struct GameState {
     pub tiles_far: [Tile; TILE_CELLS],
     /// ST `$779e`: the one tile collapse the game can have in flight.
     pub collapse: Option<tile::Collapse>,
+    /// **How many update passes this tick performs.**
+    ///
+    /// The main loop at `$96ba` pushes it and loops:
+    ///
+    /// ```text
+    /// $96ba  move.w $6ab8,-(a7)     ; the repeat count
+    /// $96be  bsr $a4ea              ; the disc loop
+    /// $96c2  bsr $10eac             ; the player control dispatcher
+    /// $96c6  bsr $9c52
+    /// $96ca  subq.w #1,(a7)
+    /// $96cc  bpl $96be              ; again while it is still >= 0
+    /// ```
+    ///
+    /// so one pass of that loop is `$6ab8 + 1` updates -- but `$96ba` sits in the
+    /// **main loop, not in the VBL handler**, and the sampling point is the VBL.
+    /// Between two samples the main loop may therefore complete **0, 1 or 2**
+    /// passes depending on what else the frame had to do. Measured:
+    ///
+    /// ```text
+    /// golden       1 pass on every one of its 99 ticks
+    /// tile_damage  1 pass on every one of its 214
+    /// p1_walk      1 on 200 ticks, 2 on 37, and 0 on 37
+    /// ```
+    ///
+    /// "One tick is one update" was a model of the *sampling*, not of the game,
+    /// and it survived eleven parts because both clean fixtures happen to run
+    /// exactly one pass per frame.
+    ///
+    /// A fed input: what paces the main loop is not modelled.
+    /// `// UNKNOWN: see bd discr-ovl.7`.
+    pub updates: u16,
     /// ST `$6ab4` `vbl_frame_counter`, which is a *word* and wraps. Held here
     /// as a `u32` so the simulation has an unambiguous frame number; compare
     /// against the ST word as `frame as u16`.
@@ -66,16 +97,9 @@ pub struct GameState {
 }
 
 impl GameState {
-    /// Run one PAL VBL and return everything observable that happened.
-    ///
-    /// `inputs` is indexed by [`PlayerId::index`]. See the module docs for the
-    /// frame order and the ST sites it mirrors.
-    pub fn tick(&mut self, inputs: [Input; 2]) -> Vec<Event> {
-        let mut events = Vec::new();
-
-        // ST $8198: addq.w #1,$6ab4 is the VBL handler's first instruction.
-        self.frame = self.frame.wrapping_add(1);
-
+    /// One pass of `$96be`-`$96c6`: the disc loop, the player dispatcher and
+    /// player 2's throw. Run `$6ab8 + 1` times per frame by [`Self::tick`].
+    fn update(&mut self, inputs: [Input; 2], events: &mut Vec<Event>) {
         // ST $a4ea: the disc update loop walks all 8 records.
         for slot in 0..DISC_SLOTS {
             disc::step(
@@ -85,7 +109,7 @@ impl GameState {
                 &mut self.tiles,
                 &mut self.collapse,
                 &mut self.tiles_far,
-                &mut events,
+                events,
             );
         }
 
@@ -100,7 +124,7 @@ impl GameState {
             } else {
                 (PlayerId::Two, &far)
             };
-            player::step(p, who, input, own, &mut events);
+            player::step(p, who, input, own, events);
         }
 
         // ST $f1b4: `st $6d2d` -- entering the death state sets the flag on the
@@ -130,21 +154,29 @@ impl GameState {
             })
         {
             let thrower = self.players[1];
-            if disc::serve(
-                &mut self.discs,
-                &thrower,
-                inputs[1],
-                x_offset,
-                step,
-                &mut events,
-            )
-            .is_some()
-            {
+            if disc::serve(&mut self.discs, &thrower, inputs[1], x_offset, step, events).is_some() {
                 // $c0c4 / $c158: the thrower goes to state 17 on this frame.
                 self.players[1].state_index = disc::STATE_AFTER_THROW;
                 // $a9aa: addq.w #$01,$6d8a.
                 self.players[1].discs_out += 1;
             }
+        }
+    }
+
+    /// Run one PAL VBL and return everything observable that happened.
+    ///
+    /// `inputs` is indexed by [`PlayerId::index`]. See the module docs for the
+    /// frame order and the ST sites it mirrors.
+    pub fn tick(&mut self, inputs: [Input; 2]) -> Vec<Event> {
+        let mut events = Vec::new();
+
+        // ST $8198: addq.w #1,$6ab4 is the VBL handler's first instruction.
+        self.frame = self.frame.wrapping_add(1);
+
+        // ST $96be-$96c6, however many times the main loop got round to it.
+        // See GameState::updates.
+        for _ in 0..self.updates {
+            self.update(inputs, &mut events);
         }
 
         // ST $14ba4: the tile-collapse effect, LAST -- it lives in the render

@@ -62,6 +62,12 @@ const SCHEMA_COMPARED: usize = 18;
 const SCHEMA_WAIVED: usize = 17;
 /// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
+/// serde default for [`Frame::updates`]: a trace recorded before Part 11f has no
+/// column, and every such trace ran exactly one pass per frame.
+const fn one() -> u16 {
+    1
+}
+
 /// The trace a bare invocation replays: the committed golden fixture, which is
 /// the one `mise run core-check` gates on first and the only one guaranteed to
 /// be present in a clean clone.
@@ -168,6 +174,10 @@ struct Frame {
     vbl_6ab4: u16,
     /// ST `$6c58`, player 1's decoded joystick byte.
     joy_6c58: u8,
+    /// How many update passes ran between the previous sample and this one.
+    /// Part 11f. Defaults to 1 so a pre-Part-11f trace replays as it used to.
+    #[serde(default = "one")]
+    updates: u16,
     /// ST `$6da1`, the byte the one-player AI at `$d2cc` synthesises in place
     /// of player 2's joystick, consumed by `$abb2` at exactly the position
     /// `$6c59` occupies for a human. Part 10.
@@ -333,6 +343,7 @@ impl Frame {
     fn seed(&self) -> GameState {
         let mut st = GameState {
             frame: u32::from(self.vbl_6ab4),
+            updates: self.updates,
             ..GameState::default()
         };
         for (i, (p, t)) in st.players.iter_mut().zip(&self.player).enumerate() {
@@ -567,6 +578,7 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
     // what disc-core has to get right is the eight fields of the disc record it
     // then builds. `player+$6e` and `+$70` have no writer in the analysed image
     // at all (discr-qqt), so they come from the trace too.
+
     for (s, w) in state.players.iter_mut().zip(&want.players) {
         s.anim_cursor = w.anim_cursor;
         s.throw_dir_kind = w.throw_dir_kind;
@@ -826,6 +838,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
         }
         let input = prev.input(prev_joy);
         feed_disc_inputs(&mut state, &prev.seed());
+        // The pass count describes the tick that PRODUCES the next sample, so
+        // like the AI byte it comes from the frame being predicted.
+        state.updates = expected.updates;
         state.tick([input, expected.ai_input(prev_ai)]);
         resync(&mut state, &expected.seed(), &skip);
 
@@ -965,6 +980,7 @@ mod tests {
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
+            state.updates = expected.updates;
             state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
             resync(&mut state, &expected.seed(), &skip);
             assert!(
@@ -993,6 +1009,7 @@ mod tests {
         for (matched, w) in f.windows(2).enumerate() {
             let (prev, expected) = (&w[0], &w[1]);
             feed_disc_inputs(&mut state, &prev.seed());
+            state.updates = expected.updates;
             state.tick([prev.input(prev_joy), expected.ai_input(prev.ai_6da1)]);
             assert!(
                 first_divergence(expected, &state).is_none(),

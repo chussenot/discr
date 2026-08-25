@@ -97,13 +97,41 @@ static void tima_reload(void)
  * DOES fire before each instruction, so the frame is emitted from in there.
  * m68k_end_timeslice() then hands control back -- it does not stop the
  * current instruction, but by that point we have already sampled. */
+#define WATCH_REPORT_MAX 4000
+
 static int sample_armed = 0, sampled = 0;
 static long cur_frame = 0;
 static FILE *trace_out = NULL;
 static void emit_frame(FILE *out, long frame);
 
+/* --callers ADDR reports, every time execution reaches ADDR, the longword on
+ * top of the stack -- which for a bsr/jsr is the return address.  It answers
+ * "who calls this, and how often" for a routine no static reference points at,
+ * which is a routine reached through a pointer or from code the Ghidra import
+ * never disassembled.  Those two look identical to `xref`. */
+static long callers_at = -1;
+static long callers_reported;
+
+/* How many times the game's update pass ($a4ea, the disc loop, which $96be
+ * calls once per pass) has run since the last sample.
+ *
+ * This exists because "one tick == one VBL" is a model of the SAMPLING, not of
+ * the update. $96ba-$96cc sits in the MAIN LOOP, not in the VBL handler, and
+ * between two samples it may complete 0, 1 or 2 passes depending on what else
+ * the frame had to do -- measured: 0 then 2 on alternate frames of the walkleft
+ * programme from frame 191, while $6ab4 still advances by exactly 1. */
+#define UPDATE_PASS_PC 0xa4eaU
+static unsigned updates_since_sample;
+
 void disc_instr_hook(unsigned int pc)
 {
+    if (callers_at >= 0 && (long)(pc & ADDR_MASK) == callers_at
+        && callers_reported++ < WATCH_REPORT_MAX) {
+        unsigned sp = m68k_get_reg(NULL, M68K_REG_SP) & ADDR_MASK;
+        fprintf(stderr, "caller frame %ld  ret $%06x  (sp $%06x)\n",
+                cur_frame, m68k_read_memory_32(sp), sp);
+    }
+    if ((pc & ADDR_MASK) == UPDATE_PASS_PC) updates_since_sample++;
     if (sample_armed && (pc & ADDR_MASK) == VBL_HANDLER) {
         emit_frame(trace_out, cur_frame);
         sample_armed = 0;
@@ -265,7 +293,6 @@ static long watch_lo = -1, watch_hi = -1;
 static long disasm_at = -1;
 static int disasm_n;
 static long watch_reported;
-#define WATCH_REPORT_MAX 4000
 
 static void watch_write(unsigned int a, unsigned int value, int width)
 {
@@ -498,9 +525,15 @@ static void emit_frame(FILE *out, long frame)
      * ($d2cc) synthesises in its place, and $6da0 selects between them
      * ($10eac).  $6d9a is the active bonus code.  Part 10. */
     fprintf(out, "{\"frame\":%ld,\"vbl_6ab4\":%u,\"joy_6c58\":%u"
-                 ",\"joy_6c59\":%u,\"ai_6da1\":%u,\"mode_6da0\":%u,\"bonus_6d9a\":%d",
+                 ",\"joy_6c59\":%u,\"ai_6da1\":%u,\"mode_6da0\":%u,\"bonus_6d9a\":%d"
+                 ",\"repeat_6ab8\":%u,\"updates\":%u",
             frame, rd16(0x6ab4), ram[0x6c58],
-            ram[0x6c59], ram[0x6da1], ram[0x6da0], (int16_t)rd16(0x6d9a));
+            ram[0x6c59], ram[0x6da1], ram[0x6da0], (int16_t)rd16(0x6d9a),
+            /* $6ab8: the main loop at $96ba pushes this and repeats the disc
+             * loop + the player dispatcher until it goes negative, so a frame
+             * is $6ab8 + 1 updates.  Zero on every frame of both clean
+             * fixtures; 1 on the double-step frames of p1_walk. */
+            rd16(0x6ab8), updates_since_sample);
     fprintf(out, ",\"player\":[");
     for (i = 0; i < 2; i++) {
         unsigned b = 0x6ca0 + i * 0x80;
@@ -570,6 +603,7 @@ static void emit_frame(FILE *out, long frame)
         fprintf(out, "%s[%u,%u]", i ? "," : "", rd16(b), rd16(b + 2));
     }
     fprintf(out, "],\"state_sha256\":\"%s\"", h);
+    updates_since_sample = 0;
     if (win_lo >= 0) {
         long a;
         fprintf(out, ",\"win_lo\":%ld,\"mem\":\"", win_lo);
@@ -602,7 +636,11 @@ int main(int argc, char **argv)
     unsigned int sr;
 
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--disasm") && i + 2 < argc) {
+        if (!strcmp(argv[i], "--callers") && i + 1 < argc) {
+            callers_at = strtol(argv[i + 1], NULL, 0);
+            i += 1;
+        }
+        else if (!strcmp(argv[i], "--disasm") && i + 2 < argc) {
             disasm_at = strtol(argv[i + 1], NULL, 0);
             disasm_n = (int)strtol(argv[i + 2], NULL, 0);
             i += 2;
@@ -638,7 +676,7 @@ int main(int argc, char **argv)
         else { fprintf(stderr,
             "usage: %s --seed <f.seed> [--script <f>] [--frames N]\n"
             "          [--trace <out.ndjson>] [--window LO HI] [--watch LO HI]\n"
-            "          [--disasm ADDR N]\n"
+            "          [--disasm ADDR N] [--callers ADDR]\n"
             "          [--permissive] [--debug-regs]\n", argv[0]);
             return 2; }
     }
