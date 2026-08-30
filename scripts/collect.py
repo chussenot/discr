@@ -23,8 +23,26 @@ Design notes (all of these were established empirically -- see KNOWN_ISSUES.md):
 import argparse, atexit, hashlib, json, os, re, signal, socket, struct, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEF_DISK = os.path.join(ROOT, "Disc (1990)(Loriciel)[cr Exo-7].st")
-DEF_TOS = os.path.join(ROOT, "emutos-512k-1.4", "etos512us.img")
+
+
+def _find_asset(*candidates):
+    """First existing candidate, else the first one (the canonical home, so
+    error messages name the path scripts/fetch_assets.sh would fill)."""
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return candidates[0]
+
+
+# Both emulator inputs are gitignored and live in tmp/ (scripts/fetch_assets.sh
+# downloads them there); a copy at the repo root -- their old home -- still wins
+# if tmp/ is empty.
+DEF_DISK = _find_asset(
+    os.path.join(ROOT, "tmp", "Disc (1990)(Loriciel)[cr Exo-7].st"),
+    os.path.join(ROOT, "Disc (1990)(Loriciel)[cr Exo-7].st"))
+DEF_TOS = _find_asset(
+    os.path.join(ROOT, "tmp", "emutos-512k-1.4", "etos512us.img"),
+    os.path.join(ROOT, "emutos-512k-1.4", "etos512us.img"))
 
 # Game state lives below $8000 (the code uses 68000 short absolute
 # addressing), but a scenario can widen this to check that assumption.
@@ -204,6 +222,12 @@ class Hatari:
 
     # ---- lifecycle -------------------------------------------------------
     def start(self):
+        for what, path in (("disk image", self.disk), ("TOS ROM", self.tos)):
+            if not os.path.exists(path):
+                raise SystemExit(
+                    "collect: missing %s: %s\n"
+                    "collect: run scripts/fetch_assets.sh to download it"
+                    % (what, path))
         os.makedirs(os.path.dirname(self.logpath) or ".", exist_ok=True)
         os.makedirs(self.shotdir, exist_ok=True)
         env = dict(os.environ)
