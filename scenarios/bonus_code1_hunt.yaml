@@ -1,0 +1,83 @@
+name: bonus_code1_hunt
+mode: challenge
+# discr-z8m: reach a live CHALLENGE round and sustain a rally, the same
+# proven pattern as scenarios/bonus_hunt.yaml (which caught the $6e3a/$6d9a
+# writer in reports/part12-bonus.md). This YAML alone reproduces that half
+# of the recipe; it is NOT the code-1/3 hunt by itself.
+#
+# The actual improvement (reports/part12-z8m.md) is a PC breakpoint on the
+# mint instruction's own next-PC -- $9d58 for code 1, $9d84 for code 3 --
+# armed :once :trace :file (no polling, catches the write the instant it
+# lands, unlike a value-watch on $6e3a, which is blind to a reroll landing
+# on a code the byte already holds). collect.py's scenario DSL only
+# supports value-watches ({watch: "$addr"}), not raw PC-condition
+# breakpoints, so that half lives in tmp/hunt_attempt.py /
+# tmp/hunt_catch_trace.py (not committed, scratch, reproducible from the
+# addresses in the report) rather than here. Use THIS file to reach a live
+# round for any further static/manual poking; use the tmp/ driver to
+# actually hunt code 1/3.
+#
+# IMPORTANT: use a FRESH boot for the code-1/3 hunt, not a cached savestate.
+# Measured this session: $9d0c's own leading test (`cmp.b #1,$6ca0; beq
+# $9d8a`) takes a completely different, non-random path when $6ca0==1 (sets
+# $6e3a=$0a directly, a code the pickup table has no row for, and never
+# touches the $6e3c countdown at all) -- a resumed savestate cache can land
+# stuck there indefinitely ($6e3c pinned at exactly 20 for 26,000+ VBLs in
+# one such session, tmp/diag_match_state.py). A fresh boot's own
+# boot-to-menu timing is also the genuine source of entropy for $6ab5 (see
+# reports/part12-rng.md) that makes each attempt an independent PRNG draw --
+# a reloaded savestate + identical script replay is fully deterministic and
+# reproduces the SAME roll every time, not a new one.
+#
+# A CHALLENGE round is short: measured ~150-900 live VBLs before the screen
+# goes dark and reloads into a fresh round (score reset to 00-00, tiles
+# reset to full HP) -- there is nothing further to catch once in_match()
+# goes false, so stop driving input and let the attempt end there rather
+# than trying to recover into a new round (Space/Fire taps during an
+# ALREADY-live round risk interfering with it; see the report's "bugs
+# found" section for the input-during-trace pitfall this generalizes).
+settle: 30
+steps:
+  - {watch: "$6e3a"}
+  - {watch: "$6d9a"}
+  - {screenshot: pre}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 80}
+  - {screenshot: post}
+  - {unwatch: true}
