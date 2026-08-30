@@ -46,16 +46,43 @@ pub const WALK_COPY_OFFSET: usize = 8;
 /// **48 entries**. A step is not a frame: see [`crate::GameState::tick_frame`].
 pub const COLLAPSE_FRAMES: u16 = 48;
 
-/// The tile collapse `disc-core` models, ST `$779e`.
+/// Number of collapse slots the ST has in flight at once. `$a386 moveq #3,D6`
+/// -- four `dbf` iterations over `$779e`/`$77ae`/`$77be`/`$77ce`, `$10` bytes
+/// apart. Part 11h retraction, `discr-pu8`.
+pub const COLLAPSE_SLOTS: usize = 4;
+
+/// One of the four tile-collapse slots `disc-core` now models, ST `$779e`.
 ///
-/// **RETRACTION (Part 11h): the ST has FOUR of these, not one.** `$a4bc` is
-/// `moveq #3,D6; lea $779e.w,A6; tst.b (A6); beq; jsr $14ba4; lea ($10,A6),A6;
-/// dbra D6` -- four slots at `$779e`, `$77ae`, `$77be`, `$77ce`, sixteen bytes
-/// apart. What the previous note got right is the *claim*: `$a38c`-`$a390`
-/// checks one byte and gives up, so a slot in use is not queued behind. What it
-/// got wrong is which byte, and how many there are to try. Modelling one slot is
-/// therefore correct only while no trace destroys two tiles inside 50 collapse
-/// steps -- none of the three fixtures does. `discr-pu8`.
+/// **Part 11h retraction, closed (`discr-pu8`): the ST has FOUR of these, not
+/// one.** The claim loop -- `$a386 moveq #3,D6; $a388 lea $779e.w,A2; $a38c
+/// tst.b (A2); $a38e bne.b $a3b2 (busy, try the next); $a390 st (A2) (claim);
+/// ...init...; $a3b2 lea ($10,A2),A2; $a3b6 dbf D6w,$a38c` -- is confirmed
+/// byte-for-byte against the disassembly (`sub_a354`, Ghidra project
+/// `tmp/ghidra_proj`): four slots at `$779e`, `$77ae`, `$77be`, `$77ce`,
+/// sixteen (`$10`) bytes apart, `moveq #3,D6` giving exactly four `dbf`
+/// iterations. **The `$a38c` claim-scan question this bead asked is answered:
+/// it scans all four for the first free one (`tst.b`/`bne` on each), claims
+/// that one (`st`) and stops -- it does not queue behind a busy slot, and does
+/// not merely test `$779e`.** If all four read busy, the `dbf` exhausts and
+/// falls through unclaimed: a destruction that finds no free slot drops its
+/// collapse animation silently, which [`damage`] models by doing nothing.
+///
+/// UNVERIFIED IN THIS PROJECT SNAPSHOT: the earlier note's citation of `$a4bc`
+/// for the *advance* loop (the one that walks all four slots once per outer
+/// iteration and `jsr`s the per-slot advance at `$14ba4`, called from `$96b6`)
+/// could not be re-confirmed here -- `$a4bc` falls in a span with no Ghidra
+/// function and zero xrefs to `$14ba4` in this batch-analysed copy, so either
+/// that region needs auto-analysis re-run or the address was transcribed from
+/// interactive analysis this snapshot does not carry. Not treated as a
+/// retraction: the claim-side addresses above (`$a386`-`$a3b6`, containing the
+/// previously-cited `$a38c`-`$a390`) match exactly, and [`collapse_step`]
+/// below (the advance) is unchanged in its per-slot logic -- only the number
+/// of slots it now runs over.
+///
+/// Modelling one slot was correct only while no trace destroyed two tiles
+/// inside 50 collapse steps -- none of the three fixtures does, so landing
+/// four slots is behavior-preserving on all three; see
+/// `reports/part12-tiles.md` for what a two-collapse trace would need.
 ///
 /// The life of one, read off `--watch 0x779e 0x77b0` over
 /// `tests/fixtures/tile_damage.ndjson`:
@@ -89,39 +116,45 @@ pub struct Collapse {
     pub frames_left: u16,
 }
 
-/// Advance the collapse slot by one frame, clearing the walkability copy when
-/// the animation is done. ST `$14ba4`-`$14bb8`.
+/// Advance every collapse slot by one frame, clearing the walkability copy
+/// when a slot's animation is done. ST `$14ba4`-`$14bb8`, run for all four
+/// slots by the advance loop `$96b6` calls once per outer iteration (`moveq
+/// #3,D6; tst.b (A6); beq (skip a free slot); jsr $14ba4; lea ($10,A6),A6;
+/// dbra D6`) -- same stride and slot order as the claim loop in [`damage`].
 ///
 /// Called **before** the disc loop, so a collapse claimed by a destruction this
 /// tick is not advanced until the next one -- which is what puts the clear 49
 /// ticks after the destroy rather than 48.
 pub fn collapse_step(
-    slot: &mut Option<Collapse>,
+    slots: &mut [Option<Collapse>; COLLAPSE_SLOTS],
     tiles: &mut [Tile; TILE_CELLS],
     events: &mut Vec<Event>,
 ) {
-    let Some(c) = slot else { return };
+    for slot in slots.iter_mut() {
+        let Some(c) = slot else { continue };
 
-    // $14bac tst.b (a6); bmi $14c20 -- still animating.
-    if c.busy & 0x80 != 0 {
-        if c.frames_left > 0 {
-            // $14c42/$14c7a: one cell of the $5be4 list per pass.
-            c.frames_left -= 1;
-        } else {
-            // $14c72 tst.l (a0); $14c76 addq.b #2,(a6) -- the list ran out, and
-            // $ff + 2 is $01, which is positive.
-            c.busy = c.busy.wrapping_add(2);
+        // $14bac tst.b (a6); bmi $14c20 -- still animating.
+        if c.busy & 0x80 != 0 {
+            if c.frames_left > 0 {
+                // $14c42/$14c7a: one cell of the $5be4 list per pass.
+                c.frames_left -= 1;
+            } else {
+                // $14c72 tst.l (a0); $14c76 addq.b #2,(a6) -- the list ran
+                // out, and $ff + 2 is $01, which is positive.
+                c.busy = c.busy.wrapping_add(2);
+            }
+            continue;
         }
-        return;
+        // $14bb2 subq.b #3, then $14bb8 clr.w (a0): the type only. The hp
+        // word is left alone, which is why the fixture reads (1,1) -> (0,1)
+        // and not (0,0), and $14c76's second addq takes the byte to 0 and
+        // frees the slot.
+        if let Some(t) = tiles.get_mut(c.cell) {
+            t.tile_type = TILE_TYPE_DESTROYED;
+            events.push(Event::TileDestroyed { cell: c.cell });
+        }
+        *slot = None;
     }
-    // $14bb2 subq.b #3, then $14bb8 clr.w (a0): the type only. The hp word is
-    // left alone, which is why the fixture reads (1,1) -> (0,1) and not (0,0),
-    // and $14c76's second addq takes the byte to 0 and frees the slot.
-    if let Some(t) = tiles.get_mut(c.cell) {
-        t.tile_type = TILE_TYPE_DESTROYED;
-        events.push(Event::TileDestroyed { cell: c.cell });
-    }
-    *slot = None;
 }
 
 /// Apply `damage` to one cell, clamping HP at 0 and destroying the cell when
@@ -148,7 +181,7 @@ pub fn damage(
     tiles: &mut [Tile; TILE_CELLS],
     cell: usize,
     damage: i16,
-    collapse: &mut Option<Collapse>,
+    collapse: &mut [Option<Collapse>; COLLAPSE_SLOTS],
     events: &mut Vec<Event>,
 ) {
     let tile = &mut tiles[cell];
@@ -161,11 +194,15 @@ pub fn damage(
         // $a354 clr.w ($00,a0,d5.w) -- HP == 0 also clears the TYPE word.
         tile.tile_type = TILE_TYPE_DESTROYED;
         events.push(Event::TileDestroyed { cell });
-        // $a388-$a3ac: the destroy path claims the single collapse slot, unless
-        // one is already running ($a38c tst.b (a2); bne), and points it at the
-        // struck cell plus eight.
-        if collapse.is_none() {
-            *collapse = Some(Collapse {
+        // $a386-$a3b6: the destroy path scans all four slots in order
+        // ($779e/$77ae/$77be/$77ce) for the first free one ($a38c tst.b (a2);
+        // $a38e bne -- busy, try the next), claims it ($a390 st (a2)) and
+        // points it at the struck cell plus eight. If the `dbf` exhausts all
+        // four without finding one free, the ST falls through unclaimed --
+        // the destroy's collapse animation is silently dropped, which is what
+        // finding no `None` slot below models.
+        if let Some(slot) = collapse.iter_mut().find(|s| s.is_none()) {
+            *slot = Some(Collapse {
                 // $a390 st (a2).
                 busy: 0xff,
                 cell: cell + WALK_COPY_OFFSET,
@@ -191,7 +228,13 @@ mod tests {
     fn hit(tile_type: u16, hp: i16, dmg: i16) -> (Tile, Vec<Event>) {
         let mut tiles = grid(tile_type, hp);
         let mut events = Vec::new();
-        damage(&mut tiles, 3, dmg, &mut None, &mut events);
+        damage(
+            &mut tiles,
+            3,
+            dmg,
+            &mut [None, None, None, None],
+            &mut events,
+        );
         (tiles[3], events)
     }
 
@@ -201,21 +244,92 @@ mod tests {
     #[test]
     fn the_collapse_counts_steps_not_frames() {
         let mut tiles = grid(1, 1);
-        let mut slot = None;
+        let mut slots = [None, None, None, None];
         let mut ev = Vec::new();
-        damage(&mut tiles, 3, 1, &mut slot, &mut ev);
-        let cell = slot.expect("the destroy claimed the slot").cell;
+        damage(&mut tiles, 3, 1, &mut slots, &mut ev);
+        let cell = slots[0]
+            .expect("the destroy claimed the first free slot")
+            .cell;
         // 48 list entries, then one step for the terminator ($14c76 addq.b #2),
         // then the step that finds a positive byte and clears: 50.
         tiles[cell].tile_type = 2;
         for n in 0..49 {
-            collapse_step(&mut slot, &mut tiles, &mut ev);
+            collapse_step(&mut slots, &mut tiles, &mut ev);
             assert_eq!(tiles[cell].tile_type, 2, "still animating after {n}");
-            assert!(slot.is_some(), "slot still held after {n}");
+            assert!(slots[0].is_some(), "slot still held after {n}");
         }
-        collapse_step(&mut slot, &mut tiles, &mut ev);
+        collapse_step(&mut slots, &mut tiles, &mut ev);
         assert_eq!(tiles[cell].tile_type, TILE_TYPE_DESTROYED, "step 50 clears");
-        assert!(slot.is_none(), "and frees the slot");
+        assert!(slots[0].is_none(), "and frees the slot");
+    }
+
+    /// A destroy that finds all four slots busy drops its animation silently
+    /// -- the ST's `dbf` exhausts without claiming ($a3b6). It still clears
+    /// the struck cell's own type word ($a354), which does not depend on the
+    /// collapse slot at all.
+    #[test]
+    fn a_fifth_destroy_with_all_slots_busy_drops_its_collapse() {
+        let mut tiles = grid(1, 1);
+        let mut slots = [
+            Some(Collapse {
+                busy: 0xff,
+                cell: 0,
+                frames_left: 1,
+            }),
+            Some(Collapse {
+                busy: 0xff,
+                cell: 1,
+                frames_left: 1,
+            }),
+            Some(Collapse {
+                busy: 0xff,
+                cell: 2,
+                frames_left: 1,
+            }),
+            Some(Collapse {
+                busy: 0xff,
+                cell: 4,
+                frames_left: 1,
+            }),
+        ];
+        let mut ev = Vec::new();
+        damage(&mut tiles, 3, 1, &mut slots, &mut ev);
+        assert_eq!(tiles[3].tile_type, TILE_TYPE_DESTROYED, "cell 3 still dies");
+        assert_eq!(ev, vec![Event::TileDestroyed { cell: 3 }]);
+        assert!(
+            slots.iter().all(|s| s.is_some()),
+            "no slot was claimed -- all four were already busy"
+        );
+    }
+
+    /// The claim scans in slot order and takes the first free one, not
+    /// necessarily slot 0 -- matching `$a386`'s `tst.b`/`bne` walk.
+    #[test]
+    fn the_claim_takes_the_first_free_slot_in_order() {
+        let mut tiles = grid(1, 1);
+        let mut slots = [
+            Some(Collapse {
+                busy: 0xff,
+                cell: 0,
+                frames_left: 1,
+            }),
+            None,
+            Some(Collapse {
+                busy: 0xff,
+                cell: 2,
+                frames_left: 1,
+            }),
+            None,
+        ];
+        let mut ev = Vec::new();
+        damage(&mut tiles, 3, 1, &mut slots, &mut ev);
+        assert!(slots[0].is_some(), "slot 0 untouched");
+        assert_eq!(
+            slots[1].expect("slot 1 was the first free one").cell,
+            3 + WALK_COPY_OFFSET
+        );
+        assert!(slots[2].is_some(), "slot 2 untouched");
+        assert!(slots[3].is_none(), "slot 3 never reached");
     }
 
     #[test]
@@ -300,7 +414,7 @@ mod tests {
             hp: 4,
         }; TILE_CELLS];
         let mut events = Vec::new();
-        damage(&mut tiles, 0, 3, &mut None, &mut events);
+        damage(&mut tiles, 0, 3, &mut [None, None, None, None], &mut events);
         assert_eq!(
             tiles[0],
             Tile {

@@ -30,7 +30,7 @@ pub mod tile;
 
 mod types;
 
-pub use tile::Collapse;
+pub use tile::{COLLAPSE_SLOTS, Collapse};
 pub use types::{
     COLUMN_TABLE_LEN, COLUMN_WIDTH, DISC_SLOTS, DirBits, DiscSlot, Event, FACING_LEFT,
     FACING_RIGHT, FAR_ROW_Y, GRID_CELL_BASE, GRID_CELL_FAR_ROW, Input, Player, PlayerId, SteerHook,
@@ -58,8 +58,9 @@ pub struct GameState {
     /// damages and `$cc0a` tests for walkability. Held separately because
     /// `tiles` mirrors `$7616` and the two are independent boards.
     pub tiles_far: [Tile; TILE_CELLS],
-    /// ST `$779e`: the one tile collapse the game can have in flight.
-    pub collapse: Option<tile::Collapse>,
+    /// ST `$779e`/`$77ae`/`$77be`/`$77ce`: the four tile collapses the game
+    /// can have in flight at once (Part 11h retraction, `discr-pu8`).
+    pub collapse: [Option<tile::Collapse>; COLLAPSE_SLOTS],
     /// **Retired in Part 11g**: the number of passes is `passes.len()`, and each
     /// pass carries its own input, because `$10ec6 bsr $d2cc` rewrites `$6da1`
     /// inside the repeat loop. Kept only as documentation of what a frame is.
