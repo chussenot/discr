@@ -638,7 +638,9 @@ static void emit_frame(FILE *out, long frame)
     }
     /* Part 10e: BOTH banks, 16 cells of stride 8 each, contiguous from $7596.
      * $7596 is the bank player 2's code and $9f5e index; $7616 is player 1's
-     * and $a24c's. */
+     * and $a24c's. Carried since Part 10e; Part 12 (discr-ovl.3) is the first
+     * to compare the first 16 pairs ($7596's) against disc-core's tiles_far --
+     * see crates/disc-tools/src/main.rs's checks(). */
     fprintf(out, "],\"banks\":[");
     for (i = 0; i < 32; i++) {
         unsigned b = 0x7596 + i * 8;

@@ -3088,3 +3088,127 @@ proven and cheap to re-run; it has just not yet been lucky. See
 model yet for a bit-7-carrying cell, so its plain damage subtraction gives
 `132 -> 129` instead of the ST's `132 -> 4`. That gap is discr-ovl.4/z8m's
 open half, not a new bug.
+
+## Part 12 (farbank) -- the coordinated PlayerId flip, and the far bank compared
+
+Two beads, landed together because the second depends on the first's polarity
+being real-player-consistent rather than internally-consistent-and-backwards:
+**discr-ovl.8** (flip `disc.aim`'s convention to match the real polarity Part
+12/owner pinned) and **discr-ovl.3** (compare the far wall's second tile grid,
+open since Part 10 -- "There are TWO 16-cell tile banks", above). Every claim
+below ties to an ST address, a Ghidra citation already in this file, or a
+measured `tracecheck`/oracle run in this worktree.
+
+### discr-ovl.8: `PlayerId::One` now means real player 1, everywhere
+
+Part 12 (owner) pinned raw `disc+$11` == 0 to PLAYER 2's disc and 0xFF to
+PLAYER 1's, and left `main.rs`'s feed mapping unflipped because `disc-core`'s
+OWN internal `disc.aim == PlayerId::One` checks (`disc.rs`'s wall match arms,
+`player.rs`'s owner-gated docks and catch window, and `anticipate`'s "is this
+still my own disc" test) were written under the opposite, self-consistent
+convention: raw 0 <-> `PlayerId::One`. Flipping the feed alone desynced the
+two sides of a comparison that had never faced each other before (`aim` is
+fed every tick, never compared) and regressed `p1_walk` 274 -> 10.
+
+The fix is exactly what Part 12 (owner) filed discr-ovl.8 to do: flip the feed
+AND every internal `disc.aim ==`/`!=` `PlayerId::One`/`Two` comparison in the
+same commit, so the two sides agree on what `PlayerId::One` names -- real
+player 1 -- consistently with every OTHER `PlayerId` use in the crate (the
+`who` parameter to `anticipate`/`hit_test`/`p2_hit_test`, `PlayerId::index()`,
+the per-player animation tables). The inventory, found by grepping the enum
+and following the compiler's own logic errors where the flip changed a type:
+
+| site | before | after | why |
+|---|---|---|---|
+| `main.rs` `seed()`, the feed | `Some(0) => One` | `Some(0) => Two` | raw 0 is real player 2 |
+| `disc.rs::step`, the retire-check holder | `if aim==One {1} else {0}` | `aim.index()` | the hand inversion this line used, to land on the real holder despite the old internal convention, is what the flip lets go -- `PlayerId::index()` now IS the real holder |
+| `disc.rs::step`, near wall force-or-transfer | `if aim==One` | `if aim==Two` | raw 0 (real player 2's serve) is what forces `dir_kind`+damages the near grid |
+| `disc.rs::serve`, the served disc's `aim` | `PlayerId::One` | `PlayerId::Two` | every serve is unconditionally owner 0 (`$a9bc`), real player 2's |
+| `player.rs::hit_test`, player 1's dock | `if aim==One` | `if aim==Two` | raw 0 docks player 1 (`$1116e`) |
+| `player.rs::p2_hit_test`, the catch window | `if aim==One` | `if aim==Two` | raw 0 (still player 2's own serve) is what opens player 2's catch states |
+| `player.rs::strike`, player 2's dock | `if aim!=One` | `if aim!=Two` | raw non-zero docks player 2 (`$c9a6`) |
+| `player.rs::anticipate`, `theirs` | `match who {One => aim!=One, Two => aim==One}` | `disc.aim == who` | the two hand-tuned arms were compensating for the same mismatch `holder` was; once `aim` and `who` share a convention the gate collapses to one comparison |
+| `disc.rs::step`, far wall force-or-transfer (new) | not modelled | `if aim==One` | raw 0xFF (real player 1) is what forces `dir_kind` and damages the far grid -- discr-ovl.3's other half |
+
+Every site above that pre-existed is a **literal swap of the `PlayerId::One`/
+`Two` compared against `disc.aim`**, nothing more -- the polarity change is
+entirely at the boundary and at each comparison, never in the surrounding
+logic, which is why the fixture numbers hold exactly rather than needing new
+tolerance. Verified against all nine tracecheck gates, unchanged from their
+pre-flip numbers (`golden`/`tile_damage` 99/214 both modes, `p1_walk` 274,
+`handover` 21 bare / 222 skip-waived, `bonus` 150 skip-waived / 22 bare) --
+`handover.ndjson` is the fixture that actually exercises both raw values on
+the same disc slot (frames 259 and 339), so it is the trace that would have
+caught a wrong flip, the way the lone tracecheck-only attempt was caught by
+`p1_walk` regressing to 10. `docs/state-schema.md`'s `discs[n].aim` row is
+updated with the closure; the row itself stays `waived:discr-ovl.2` (fed, not
+compared) since `disc-core` still has no writer for the field or the four
+possession counters it steers (discr-st8).
+
+### discr-ovl.3: the far bank, compared
+
+The far bank ($7596, `disc_core::GameState::tiles_far`) has existed in
+`disc-core` since the four-slot collapse work, and the oracle has emitted it
+(`banks`, both bank's 16 cells each) since Part 10e -- but nothing ever
+compared it: `tracecheck`'s `checks()` had no `tiles_far[n]` rows, and
+`scripts/oracle_diff.py`'s labeller fell through to "unlabelled" for
+`$7596..$7616` even though the differ's window ($6a00-$76a0) already covered
+those bytes.
+
+Both gaps are closed the same way the near bank's own rows work: `checks()`
+gains `tiles_far[n].tile_type`/`tiles_far[n].hp`, gated on the trace actually
+carrying `banks` (`not_in_trace` reports the two rows by name on an older
+trace, the same shape `discs[n].damage` already uses for a pre-Part-10
+trace); `oracle_diff.py`'s `label_for` gains a `$7596..$7616` case. Since the
+column and the seeding already existed, `disc::step`'s far-wall branch is the
+only genuinely new code: `$a5d6`/`$9f5e` mirrors the near wall's
+`$a618`/`$a24c` exactly (the cell-index formula, `disc_cell`, is shared --
+"$9f5e is $a24c instruction-for-instruction" already established above, and
+the substitution touches only the bank base and `$6d9a`/`$6d1c`, not the
+column read), forcing `dir_kind` to `FAR_WALL_DIR_KIND` (`-1`, the mirror of
+[`SERVE_DIR_KIND`]) and calling `impact()` against `tiles_far` instead of
+`tiles`.
+
+`tests/fixtures/farbank.ndjson` (295 idle frames, a fresh CHALLENGE seed,
+`tests/fixtures/farbank.provenance.md` has the full recipe) confirms the
+seeded bank against a live trace for 34 ticks -- both banks' cell 7 loses its
+bonus flag (bit 7) in lockstep at frame 35, the same placer
+(`$9b28`/`$9b32`, "SETS BIT 7, near bank ... and the far bank, same slot",
+above) already named for the near bank, and `disc-core` has no model for bit
+7 on either bank (the same discr-dc0/discr-ovl.4 gap `bonus.ndjson` already
+gates around), so it diverges there -- reported on the near bank's
+pre-existing `tiles[7].hp` row since schema order checks it first, not
+because the far bank disagreed any earlier. `FARBANK_MIN_AGREE = 34` in
+`mise.toml`, both bare and `--skip-waived` (this capture's player 2 rows do
+not diverge before tick 34 either).
+
+**What the fixture does not reach, and what was tried**: a genuine far-wall
+DAMAGE hit needs a disc already owned by real player 1 to cross `$7596`'s
+wall a SECOND time, which needs player 1 to reflect it (body-box bounce)
+before it reaches the near wall and transfers back unconditionally. Multiple
+idle captures (three fresh seeds) all show the same disc transferring out and
+back with no interruption; a scripted attempt landed player 1 within single
+digits of the disc's X at the crossing frame with no bounce resulting,
+suggesting either the body-box test wants more than X overlap at one sampled
+frame or the real collision resolves inside a multi-pass tick a single-sample
+trace cannot see (Part 11f/11g's "0, 1 or 2 passes a frame" applies here
+too); every attempt also hit the same hard ceiling, an unstubbed floppy/PSG
+access around frame 460-500 consistent with a round-transition disk load the
+oracle's stub list was never built to cover. The far-wall damage branch is
+therefore modelled from the disassembly and code-reviewed against the
+near-wall branch it mirrors, but **untested by any committed fixture** --
+the same shape as discr-ovl.1's player-1 racket path (`$11030`-`$110a8`,
+closed as "decoded, not fixture-exercised" since neither player ever swings
+in either fixture). Full attempt log and recipe for whoever picks this up:
+`tests/fixtures/farbank.provenance.md`.
+
+Files: `crates/disc-core/src/disc.rs` (the flip's `disc.rs` sites, the
+far-wall branch, `FAR_WALL_DIR_KIND`, a new unit test mirroring the near-wall
+one), `crates/disc-core/src/player.rs` (the flip's four sites),
+`crates/disc-tools/src/main.rs` (the feed flip, `tiles_far[n]` compared
+rows, `SCHEMA_COMPARED`/`SCHEMA_WAIVED`), `docs/state-schema.md` (two rows
+moved Waived -> Compared, both owner-polarity and far-bank prose updated),
+`scripts/oracle_diff.py` (the far-bank label), `oracle/disc-oracle.c`
+(comment only), `mise.toml` (`FARBANK*`, wired into `core-check`/
+`tracecheck`), `tests/fixtures/farbank.ndjson` + `.provenance.md`. Full gate
+table and the flip's own regression history: `reports/part12-farbank.md`.
