@@ -52,6 +52,14 @@ TILE_DAMAGE = "tests/fixtures/tile_damage.ndjson"
 # This fixture is still not independently validated against Hatari for its own
 # input programme -- see its provenance -- so raising this number is measuring
 # disc-core against the oracle, not against the machine.
+#
+# Still 223: the frame-224 wall is attributed (bd discr-hif), not movable from
+# committed evidence. Every $6d22 writer is transcribed; what diverges is the
+# INPUT -- $10ec6/$10ece write and consume the AI byte once per main-loop pass,
+# ai_6da1 is sampled once per VBL, and 223 -> 224 is the one 2-pass tick whose
+# passes consumed different bytes ($08 walks +3 at $b24e, then $00 exits to the
+# turn). Reproducing the mid-frame byte needs the undecoded AI policy or a
+# fixture with a per-pass input column. See p1_walk.provenance.md.
 P1_WALK = "tests/fixtures/p1_walk.ndjson"
 P1_WALK_MIN_AGREE = "223"
 
