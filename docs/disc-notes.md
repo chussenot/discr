@@ -2821,3 +2821,80 @@ and idle's shared fire+Down / fire+available-disc branch -- an aerial throw
 commit) and `$aae8` (the column/parabola calculation state 5's Left/Right
 branch runs while rising, and the `$1334a` hook both 14 and 24 install before
 handing off to state 31).
+
+## Player 2's AI policy: the table is fully decoded, two of twenty rows are implemented (Part 12, discr-b6x)
+
+Full detail and every command in `reports/part12-ai.md`. Summary, in the
+same voice:
+
+`$d2cc` (the writer of `$6da1`, Part 10) walks a 20-entry priority table at
+`$efa8` once a frame: `priority:u8, threshold:u8, test:fn, action:fn,
+identity:fn`, 14 bytes each, terminated by an all-zero 21st row at `$f0c0`.
+Ghidra's `dis`/`dec` cannot read this table at all -- it is data, and
+`getInstructionAt` failing silently falls back to `getInstructionAfter`,
+which is how the first attempt printed a confident wrong answer starting at
+`$f104`. The fix was a raw byte read of `discram.bin` (file offset == ST
+address, checked against `$d2cc`'s own opcode bytes) -- every table row and
+raw table (`$1556`/`$155e`/`$15fe`) below came from that, not from the
+disassembler.
+
+**The dispatch mechanism is fully decoded.** A row's reaction roll (`$d2f8`-
+`$d308`: `$6c5d += $6ab5`, fail if the running total exceeds the row's
+threshold) runs *before* its test, for every row whose priority exceeds the
+currently latched one -- so `$6c5d`'s own evolution depends on which rows
+were eligible, which depends on the latch, which is the outcome of earlier
+rolls. A `u8` roll can never exceed a threshold of 255, and exactly two of
+the twenty rows carry threshold 255 (priority 50, the escape at `$e0d8`; and
+priority 30, the avoid at `$e158`) -- those two, and only those two, do not
+depend on `$6c5d` at all. They share an identity pointer (`$e290`), so the
+ST treats them as one latch: once either fires the other cannot preempt it
+until the maneuver ends on its own. The "plan" mini-VM their shared action
+(`$e214`) and step executor (`$e30a`) compile into is fully decoded too: a
+buffer at `$6dac` holds a step (a function pointer plus its parameters), run
+once a frame by the identity, that walks player 2 toward a target
+`(world_x, world_y)` and ends the maneuver when player 2's own state enters
+one of four values or the target is reached within a small tolerance box.
+
+**Those two rows are implemented**, in `crates/disc-core/src/ai.rs`
+(`Ai::p2_policy`) -- entry 0's escape (floor cell destroyed under player 2,
+looked up via three raw tables at `$1556`/`$155e`/`$15fe`) and entry 1's
+avoid (an active disc in a box built from player 2's own hit box, side-
+stepped via the same floor-cell check `$d062`/`$e2d0` use independently at
+two addresses, falling back to entry 0's escape table exactly as the ST
+falls through from `$e1e4`/`$e202` into `$e112`).
+
+**Why not all twenty**: the other eighteen rows all carry threshold < 255,
+so whether they fire depends on `$6c5d` -- a byte no fixture feeds, shared
+with at least three call sites outside `$d2cc` entirely, and (argued in the
+report) not reconstructable after the fact even from a fixture with a known
+starting value, because its own increments are coupled to the AI's latch
+history all the way back to a reset this project has never observed. That is
+the actual wall, address-cited, not a shortage of transcription time.
+
+**Measured, not assumed**: `cargo test -p disc-core --lib ai::agreement --
+nocapture` compares `Ai::p2_policy` against `ai_6da1`/`pass_ai` directly from
+the three committed fixtures (only on single-pass ticks -- Part 11f/11g's
+own granularity wall applies here too). Golden 18/99, tile_damage 61/214,
+p1_walk 22/200 -- both simpler fixtures never trigger rows 0/1 at all, so
+their number is exactly the fraction of ticks whose own byte is already 0
+(everything else in these traces comes from the eighteen undecoded rows).
+`p1_walk` does trigger row 1 once, correctly, for most of its run; the
+exception is four ticks right where player 2 enters state 11 (knocked down,
+`$ca12`) -- this module keeps steering (nothing in `$e158`'s or `$e30a`'s own
+exclusion lists names state 11), but the ST's own byte there (`$06`) is not
+what a fresh steer computes either (`$04`), and is not silence. Left open
+rather than papered over with a guessed fifth exclusion state.
+
+**Also corrected in the same phase**: this section originally would have
+cited `discr-ovl.2` ("every trace reads owner 0") as the reason rows 2-4
+can never fire -- that closed mid-phase (`reports/part12-owner.md`,
+`tests/fixtures/handover.ndjson`), and `p1_walk.ndjson` itself already has
+`disc[0].own` flip nonzero at frame 220. The narrower, still-true claim: in
+every case on hand, ownership turns nonzero at the same far-wall bounce that
+flips `dir_kind` negative, and a negative `dir_kind` is exactly what
+`$cea6`'s own candidate scan excludes -- so rows 2-4 still don't fire here,
+but not for the reason first drafted.
+
+The waiver (discr-b6x) stays open. `Ai` is not wired into `GameState::tick`;
+feeding `$6da1` from it today would fail `core-check` in exactly the frames
+above.

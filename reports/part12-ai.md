@@ -399,7 +399,7 @@ world_y, candidate_x - 8-or-8)` and succeed exactly when the resulting
 floor cell's HP is nonzero — the same "is this cell still there" check as
 `$e2d0`, at yet another address.
 
-## Rows 2–5: `aim`-gated, and why 2–4 can never fire
+## Rows 2–5: `aim`-gated, and why 2–4 still don't fire here
 
 Rows 2, 3 and 4's tests all open the same way:
 
@@ -415,19 +415,32 @@ $d6b4  cmpa.l #0,a5 ; beq fail
 $d6bc  tst.b  $11(a5) ; bne fail    ; owner must be ZERO
 ```
 
-`disc+$11` is `docs/state-schema.md`'s still-open discr-ovl.2: "every trace
-reads 0 on every live slot — no trace has ever seen a disc change hands."
-That is not a gap in three fixtures; it is presently true of *every* trace
-this project has ever recorded. So **rows 2, 3 and 4 are provably dead code
-against every trace this project can produce today** — not merely unfired
-in these three, but structurally unreachable until something (a fourth
-fixture, or a live Hatari capture of a caught/re-served disc) makes
-`disc+$11` move. Row 5, needing the opposite, is not excluded this way —
-and given how often the observed `$6da1` bytes are simple direction bits
-with no fire bit (Part 10's "ten joystick bit patterns"), row 5 (priority
-12, threshold 230 — a ~90% roll) is the most likely single source of most
-of them. Its test (own `world_y` vs. the sensed disc's `world_z`, offset by
-a literal 12, then a fixed reach of 30) is fully read above; its action
+**This section originally claimed `disc+$11` reads 0 on every trace this
+project has, citing discr-ovl.2 as open — that closed underneath this phase**
+(bd, and `reports/part12-owner.md`, both from a fleet round this phase
+merged mid-work): `p1_walk.ndjson` itself, one of this phase's own three
+fixtures, has `disc[0].own` flip 0 → 255 at frame 220, and a second fixture
+(`tests/fixtures/handover.ndjson`) now catches both directions. So "every
+trace reads 0" is retracted; rows 2–4's gate is not permanently dead code.
+
+What *is* still true, checked directly against `p1_walk.ndjson`: every frame
+where `own` reads 255 is a frame where that same disc's `dir_kind` (`disc+
+$0a`) has just flipped negative — `own` turns nonzero exactly at the far-wall
+bounce (`part12-owner.md`'s own finding), and a negative `dir_kind` is
+exactly what `$cea6`'s candidate scan excludes (`$cec0 tst.w $a(a2); bmi
+next`, above). So in this specific fixture rows 2–4 still do not fire — not
+because the owner byte never moves, but because by the time it does, the
+sensor pass has already dropped that disc from consideration for an
+unrelated reason. That is a narrower, correct claim, not the sweeping one
+this section opened with; whether it holds in general (a disc owned while
+still travelling forward) is untested by any fixture on hand.
+
+Row 5, needing owner == 0, is not excluded this way — and given how often
+the observed `$6da1` bytes are simple direction bits with no fire bit
+(Part 10's "ten joystick bit patterns"), row 5 (priority 12, threshold 230 —
+a ~90% roll) is the most likely single source of most of them. Its test (own
+`world_y` vs. the sensed disc's `world_z`, offset by a literal 12, then a
+fixed reach of 30) is fully read above; its action
 (`$d6da`) writes a plan step through `$e30a` too, indexed off `$15fe` by a
 value (`d4`) this phase did not trace back to its source, so the row is not
 implemented.
@@ -524,9 +537,12 @@ leverage:
    (round start, `$aa50`; a serve; a state transition) — the argument above
    rules out reconstruction from the *existing* fixtures, not from a
    fixture built to capture it.
-3. **A live disc-ownership capture** (discr-ovl.2) would settle whether rows
-   2–4 are truly permanently dead or just dead against every fixture on
-   disk today.
+3. **A fixture with a disc that is owned (`disc+$11` nonzero) while its
+   `dir_kind` is still non-negative** — `discr-ovl.2` closed with
+   `handover.ndjson` and confirmed `p1_walk.ndjson` already had the flip, but
+   in both, ownership and a negative `dir_kind` arrive together (the
+   far-wall bounce), so whether `$cea6` can ever hand rows 2–4 an owned
+   disc is still untested, not settled.
 
 ## Files
 
