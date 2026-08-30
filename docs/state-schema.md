@@ -55,6 +55,8 @@ tag or index.
 | `discs[n].active` | `u8` | `disc+$10` | compared |
 | `tiles_far[n].tile_type` | `u16` | `far_tile+$00` (`$7596+n*8`) | compared |
 | `tiles_far[n].hp` | `i16` | `far_tile+$02` | compared |
+| `players[0].discs_out` | `i16` | `player+$6a` (`$6d0a`) | compared |
+| `players[0].disc_cap` | `i16` | `player+$6c` (`$6d0c`) | compared |
 
 20 compared fields.
 
@@ -140,6 +142,17 @@ Notes on individual rows:
   on a disc's first arrival (the transfer arm, `$a5e2`), the same
   modelled-but-fixture-unexercised shape as discr-ovl.1's player-1 racket
   path. See `reports/part12-farbank.md`.
+* `players[0].discs_out` / `players[0].disc_cap` -- **added in discr-st8
+  (Part 12/round).** `player+$6a`/`+$6c`, how many discs this player has in
+  play and the cap on that count. Three writers, all in `disc-core` now:
+  serve bumps the thrower's `discs_out` (`GameState::update`, `$a9aa`); a
+  catch decrements the catcher's (`player::hit_test`/`p2_hit_test`,
+  `$caae`/`$cb1e`); and the wall transfer moves BOTH fields for BOTH players
+  in lockstep (`crate::round::transfer_at_far_wall`/`transfer_at_near_wall`,
+  called from `disc::step`, `$a5ea`-`$a5fa` far wall / `$a62c`-`$a63c` near
+  wall). `tests/fixtures/p1_walk.ndjson` reaches the far-wall transfer live
+  (frame 220) within its own `--min-agree 274` gate. Full chain:
+  `reports/part12-round.md`.
 
 ## Waived and excluded
 
@@ -150,7 +163,7 @@ Notes on individual rows:
 | `discs[n].aim` | `PlayerId` | `disc+$11` | waived:discr-ovl.2 |
 | `players[n].anim_cursor` | `u32` | `player+$3a` | waived:discr-75o |
 | `players[n].throw_dir_kind` / `throw_damage` | `i16` | `player+$6e` / `+$70` | waived:discr-qqt |
-| -- (round init, score, win) | -- | `$aa50`, `$6d8a` | waived:discr-st8 |
+| -- (round init, round-over threshold, win/loss) | -- | `$aa50`, `$6c83`, `$6ca0`, `player+$72` | waived:discr-st8 |
 | -- (player state semantics) | -- | `$10e2c` entries 5,11,14,19,20,21,23,24,27,31 | waived:discr-75o |
 | -- (player states 16, 17) | -- | `$10e2c` entries 16, 17 | waived:discr-rf9 |
 | -- (what places a bonus on a cell) | -- | `tile+$02` bit 7, and `$6e3a` | waived:discr-ovl.4 |
@@ -159,17 +172,19 @@ Notes on individual rows:
 | `players[n].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` | waived:discr-75o |
 | `players[n].reach` | `i16` | `player+$12` | waived:discr-b6x |
 | `players[n].x_delta` | `i16` | `player+$1a` | waived:discr-75o |
-| `players[n].disc_cap` | `i16` | `player+$6c` | waived:discr-b6x |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
 | -- (disc sub-record pointers) | -- | `disc+$1a`, `disc+$3e` | excluded:pointer |
 | -- (tile trailing long) | -- | `tile+$04` | excluded:always-zero |
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
-20 waived or excluded rows: 15 waived against a filed unknown, 5 excluded by
-scope. **Two of the seventeen waived rows before Part 12 came off**: the far
+19 waived or excluded rows: 14 waived against a filed unknown, 5 excluded by
+scope. **Three of the seventeen waived rows before Part 12 came off**: the far
 wall's tile grid and the far bank's 16 cells, both `waived:discr-ovl.3`, moved
-up to the Compared table above as `tiles_far[n].tile_type`/`tiles_far[n].hp`.
+up to the Compared table above as `tiles_far[n].tile_type`/`tiles_far[n].hp`;
+and `players[n].disc_cap`'s standalone waiver row is gone (discr-st8, Part
+12/round), folded into the compared `players[0].disc_cap` and the general
+`players[1].*` waiver, the same way `discs_out` never had a row of its own.
 Before that, the count had been unchanged from before Part 10, which was
 already close to the honest number: five waivers were resolved and five new
 ones filed from what the answers exposed -- a second tile grid, the bonus
@@ -179,7 +194,7 @@ one row moved from `excluded:rendering` to `waived:discr-75o`, because
 rendering detail. What changed is not how many unknowns there are but where
 they sit: six of them used to stand between the disc model and the fixture,
 and now one does.
-`reports/part10-report.md` has the before-and-after gate numbers. With the 15
+`reports/part10-report.md` has the before-and-after gate numbers. With the 22
 compared rows above, that is the whole table, and
 `tracecheck`'s header prints these three numbers so a drift between tool and
 file is visible on every run.
@@ -214,16 +229,18 @@ Why each waiver or exclusion:
   `$6d8a--`/`$6d8c--`/`$6d0c++`/`$6d0a++` (far wall) and its mirror (near wall)
   read live at `$a5d0`-`$a63c`. Full chain in `reports/part12-owner.md`. The row
   stays **waived, not compared**: the field is fed every tick because
-  `disc-core` still has no WRITER for it (or for the four possession counters
-  it steers -- that gap is discr-st8's), not because the polarity is unknown
-  any more. **discr-ovl.8 (Part 12) is CLOSED**: the feed mapping in
-  `main.rs`'s `seed()` and every internal `disc.aim == PlayerId::One`/`Two`
-  check in `disc.rs`/`player.rs` were flipped together in one commit, so
-  `PlayerId::One` now names real player 1 consistently everywhere `disc.aim`
-  is read, including here -- not the self-consistent-but-backwards internal
-  convention `main.rs`'s comment used to cite as the reason this arm alone
-  couldn't be flipped. All nine tracecheck gates hold unchanged; see
-  `reports/part12-farbank.md`. `tracecheck` feeds `active` in every tick, the way it feeds
+  `disc-core` still has no WRITER for the owner byte itself (the four
+  possession counters it steers gained their writers in discr-st8, Part
+  12/round -- see `players[0].discs_out`/`disc_cap` above), not because the
+  polarity is unknown any more. **discr-ovl.8 (Part 12) is CLOSED**: the feed
+  mapping in `main.rs`'s `seed()` and every internal `disc.aim ==
+  PlayerId::One`/`Two` check in `disc.rs`/`player.rs` were flipped together in
+  one commit, so `PlayerId::One` now names real player 1 consistently
+  everywhere `disc.aim` is read, including here -- not the
+  self-consistent-but-backwards internal convention `main.rs`'s comment used
+  to cite as the reason this arm alone couldn't be flipped. All nine
+  tracecheck gates held unchanged; see `reports/part12-farbank.md`.
+  `tracecheck` feeds `active` in every tick, the way it feeds
   `$6c58`, and says so in its header. **discr-ovl.1's player-2 half is
   closed**; its player-1 half, the racket path at `$11030`-`$110a8`, is
   untested because neither player ever swings in either fixture.
@@ -245,8 +262,18 @@ Why each waiver or exclusion:
   Note the timing, because a replay gets it wrong by default: `$6da1` is written
   and consumed inside one VBL (`$10ec6` then `$10ece`), so the byte a tick uses
   is the one visible at the *next* sampling point, not the current one.
-* Round, scoring and win (**discr-st8**): unchanged. `GameState::default()` is
-  all zeroes, deliberately not `$aa50`'s round-init state.
+* Round, scoring and win (**discr-st8**, Part 12/round, narrowed): the four
+  possession counters have their own writer now (`players[0].discs_out`/
+  `disc_cap` above) and came OFF this waiver. What is left is round init,
+  the round-over threshold and win/loss, decoded from the static image only
+  (`$aa50`'s disc-array reset; `$6c83`, a global per-round death tally;
+  `$6ca0`, the mode byte gating its threshold at 1 death for training or 2
+  otherwise; and `player+$72`, a previously undocumented field the round
+  loop compares between the two players to mark the loser DOWN and the
+  winner's own `round_over`). None of it is live-verified -- no fixture on
+  hand crosses a round transition, the FDC boundary -- and none of it is
+  implemented: `GameState::default()` is still all zeroes, deliberately not
+  `$aa50`'s round-init state. Full chain: `reports/part12-round.md`.
 * Player state semantics (**discr-75o**, **discr-rf9**): **narrowed twice.**
   Seven states are modelled -- 0 (the idle path inlined in `$f104`, not a table
   entry: `$10e2c`'s entry 0 is null), 1 and 2 (the walks), 20 (the turn

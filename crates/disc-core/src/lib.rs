@@ -27,6 +27,7 @@
 pub mod ai;
 pub mod disc;
 pub mod player;
+pub mod round;
 pub mod tile;
 
 mod types;

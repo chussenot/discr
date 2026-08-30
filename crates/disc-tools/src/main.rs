@@ -56,16 +56,18 @@ use clap::Parser;
 use disc_core::{DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, TILE_CELLS, Tile};
 use serde::Deserialize;
 
-/// `docs/state-schema.md`, "Compared fields": 20 rows marked `compared`.
+/// `docs/state-schema.md`, "Compared fields": 22 rows marked `compared`.
 ///
-/// 18 through Part 10, +2 in Part 12 (discr-ovl.3): `tiles_far[n].tile_type`
-/// and `tiles_far[n].hp`, the far bank's two former waived rows, now compared.
-const SCHEMA_COMPARED: usize = 20;
-/// `docs/state-schema.md`, "Waived and excluded": 15 rows marked `waived:`.
+/// 18 through Part 10, +2 in Part 12 (discr-ovl.3, the far bank's
+/// `tiles_far[n].tile_type`/`.hp`), +2 in Part 12 (discr-st8,
+/// `players[0].discs_out`/`.disc_cap`).
+const SCHEMA_COMPARED: usize = 22;
+/// `docs/state-schema.md`, "Waived and excluded": 14 rows marked `waived:`.
 ///
-/// 17 through Part 10, -2 in Part 12 (discr-ovl.3): the far bank's two rows
-/// moved to compared, above.
-const SCHEMA_WAIVED: usize = 15;
+/// 17 through Part 10, -2 in Part 12 (discr-ovl.3: the far bank's rows moved
+/// to compared), -1 in Part 12 (discr-st8: `disc_cap`'s standalone row folded
+/// into compared/players[1].*).
+const SCHEMA_WAIVED: usize = 14;
 /// `docs/state-schema.md`, "Waived and excluded": 5 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
 /// serde default for [`Frame::updates`]: a trace recorded before Part 11f has no
@@ -105,9 +107,14 @@ fn not_in_trace(f: &Frame) -> Vec<&'static str> {
 /// The `waived:` rows of `docs/state-schema.md` that name a field path this
 /// tool builds a [`Check`] for, as `(field-path prefix, bead)`.
 ///
-/// The other eleven waived rows are `--` rows: ST behaviour `disc-core` does
+/// Nine of the other waived rows are `--` rows: ST behaviour `disc-core` does
 /// not model at all, with no field of its own to resync. They shorten the run
-/// (see `reports/core-report.md`) but there is nothing here to skip.
+/// (see `reports/core-report.md`) but there is nothing here to skip. The
+/// remaining named rows (`discs[n].aim`, `anim_cursor`, `throw_dir_kind`/
+/// `throw_damage`, `hit_box`, `reach`, `x_delta`) resync only via `--resync`,
+/// naming their own path explicitly -- `players[0].discs_out`/`disc_cap`
+/// came off this list entirely in discr-st8 (Part 12/round): both are
+/// compared now, not waived.
 const WAIVED: [(&str, &str); 1] = [("players[1].", "discr-b6x")];
 
 /// ST `$6c58` direction bits (`$01` up, `$02` down, `$04` left, `$08` right).
@@ -605,6 +612,23 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
             e.energy.into(),
             g.energy.into(),
         );
+        // discr-st8 (Part 12/round): player+$6a/+$6c, the outstanding-disc
+        // count and its cap. Serve and catch already write discs_out
+        // (GameState::update, player::hit_test/p2_hit_test); the wall
+        // transfer (crate::round::transfer_at_far_wall/transfer_at_near_wall,
+        // called from disc::step) is what makes both fields track the whole
+        // trace rather than just the serve/catch subset -- see
+        // reports/part12-round.md.
+        push(
+            format!("players[{n}].discs_out"),
+            e.discs_out.into(),
+            g.discs_out.into(),
+        );
+        push(
+            format!("players[{n}].disc_cap"),
+            e.disc_cap.into(),
+            g.disc_cap.into(),
+        );
     }
 
     for (n, (e, g)) in expected.disc.iter().zip(&got.discs).enumerate() {
@@ -722,10 +746,13 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
         // `disc+$12` -- which changed 30 times across the two fixtures -- for
         // this constant.
         s.reach = w.reach;
-        // `player+$6c` is never written anywhere in the analysed image either.
-        s.disc_cap = w.disc_cap;
         // `player+$1a` is copied out of the animation cell, like the hit box.
         s.x_delta = w.x_delta;
+        // `player+$6a`/`+$6c` (`discs_out`/`disc_cap`) came OFF this list in
+        // discr-st8 (Part 12/round): serve, catch and now the wall transfer
+        // (`crate::round::transfer_at_far_wall`/`transfer_at_near_wall`,
+        // called from `disc::step`) are all disc-core writes, so both fields
+        // are compared rather than fed -- see `reports/part12-round.md`.
     }
 
     // `disc+$11`, the owner byte -- the FIRST disc-side field this replay has
@@ -734,9 +761,13 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
     // at the frame-0 seed made player 1's anticipation cascade ($112f4, whose
     // third gate is `tst.b ($11,a5); beq`) unreachable for the whole trace.
     // Part 12 named which real player owns which raw value (see `seed()`
-    // above and reports/part12-owner.md); disc-core still has no WRITER for
-    // the four possession counters the ST moves alongside it, which is why
-    // this stays fed rather than compared. See bd discr-ovl.2.
+    // above and reports/part12-owner.md); discr-st8 (Part 12/round) gave the
+    // four possession counters the byte steers their own writer, but the
+    // byte itself still has none (a transfer moves the counters without
+    // flipping `aim` -- that would need the coordinated PlayerId polarity
+    // fix, discr-ovl.8, which this crate's `aim`/wall-arm comparisons are
+    // written against the OPPOSITE convention of, see disc.rs's module
+    // docs), so it stays fed rather than compared. See bd discr-ovl.2.
     for (s, w) in state.discs.iter_mut().zip(&want.discs) {
         s.aim = w.aim;
     }
@@ -765,6 +796,12 @@ fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool)
         }
         if skip(&format!("players[{n}].energy")) {
             s.energy = w.energy;
+        }
+        if skip(&format!("players[{n}].discs_out")) {
+            s.discs_out = w.discs_out;
+        }
+        if skip(&format!("players[{n}].disc_cap")) {
+            s.disc_cap = w.disc_cap;
         }
     }
     for n in 0..DISC_SLOTS {
@@ -952,7 +989,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     }
     println!(
-        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); updates and outer, the $96ba\n         \x20              pass count and the $96b6 outer-iteration count (Parts 11f, 11h);\n         \x20              and disc+$11, the owner byte -- polarity settled Part 12 (0 = player\n         \x20              2's disc, 0xFF = player 1's; reports/part12-owner.md), but disc-core\n         \x20              still has no WRITER for it or the four possession counters it\n         \x20              steers, so it stays fed rather than compared (discr-ovl.2)."
+        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6e/$70, three per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); updates and outer, the $96ba\n         \x20              pass count and the $96b6 outer-iteration count (Parts 11f, 11h);\n         \x20              and disc+$11, the owner byte -- polarity settled Part 12 (0 = player\n         \x20              2's disc, 0xFF = player 1's; reports/part12-owner.md). The four\n         \x20              possession counters it steers have their own writer now\n         \x20              (discr-st8, Part 12/round) and are compared, not fed; the owner\n         \x20              byte itself still has none, so it stays fed (discr-ovl.2)."
     );
     println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",
@@ -1129,8 +1166,10 @@ mod tests {
             // 17th pair compared a non-tile and is no longer a check at all.
             // A second TILE_CELLS * 2 in Part 12 (discr-ovl.3): golden.ndjson
             // carries `banks` (Part 10e emitted it long before this bead used
-            // it), so the far bank's 16 cells are compared too.
-            1 + 2 * 6 + DISC_SLOTS * 9 + TILE_CELLS * 2 + TILE_CELLS * 2,
+            // it), so the far bank's 16 cells are compared too. And discr-st8
+            // (Part 12/round) added discs_out/disc_cap per player, so 8 per
+            // player rather than 6.
+            1 + 2 * 8 + DISC_SLOTS * 9 + TILE_CELLS * 2 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
     }

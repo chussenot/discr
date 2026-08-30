@@ -139,14 +139,17 @@ pub const Z_NEAR: i16 = 0;
 /// The far bound on `world_z`. ST `$a5ba`: `cmp.w #$4f,d2`.
 ///
 /// Reaching it clears the hook, negates `dir_kind` and clamps `world_z` to 79.
-/// **Retracted (Part 12, discr-ovl.3)**: this note used to say no trace
-/// reaches it, citing a deepest observed `world_z` of 54. `tests/fixtures/
-/// handover.ndjson` frame 259 does: disc 1 reaches exactly 79 and its owner
-/// byte flips 0 -> 255 in the same tick (`$a5e2`'s transfer arm, taken because
-/// owner arrived at 0). `tests/fixtures/farbank.ndjson` is a dedicated second
-/// capture of the same bank. Neither trace reaches the OTHER arm (`$a5d6`,
-/// owner arriving non-zero, which damages the far grid at `$9f5e`) -- see
-/// [`step`]'s far-wall branch and bd discr-ovl.3.
+/// **Retracted (Part 12)**: this note used to say no trace reaches it,
+/// citing a deepest observed `world_z` of 54. Three fixtures now do:
+/// `tests/fixtures/handover.ndjson` frame 259 and `tests/fixtures/
+/// p1_walk.ndjson` frame 220 (the disc reaches exactly 79 and its owner
+/// byte flips 0 -> 255 in the same tick -- `$a5e2`'s transfer arm, taken
+/// because owner arrived at 0), plus `tests/fixtures/farbank.ndjson`, a
+/// dedicated capture of the far bank. No trace reaches the OTHER arm
+/// (`$a5d6`, owner arriving non-zero, which damages the far grid at
+/// `$9f5e`) -- see [`step`]'s far-wall branch and bd discr-ovl.3. The old
+/// claim was about the traces on hand at the time, not a property of the
+/// bound.
 ///
 /// It is emphatically *not* where the old "dwell at 54" came from. That was
 /// `disc+$10` losing bit 7; see [`crate::DiscSlot::active`].
@@ -430,25 +433,32 @@ pub fn disc_cell(world_x: i16, world_y: i16) -> usize {
 /// 5. `$a640` -- `vel_y` decays one step toward zero.
 ///
 /// Two more ST behaviours live inside the wall bounds themselves, both now
-/// modelled (Part 12, discr-ovl.8/discr-ovl.3):
+/// modelled (Part 12: discr-ovl.8, discr-ovl.3, discr-st8):
 ///
 /// * **the near wall** (`$a612`/`$a618`/`$a624`) additionally forces
-///   `dir_kind` to [`SERVE_DIR_KIND`] and calls the near grid's damage
-///   routine (`$a24c`, [`disc_cell`] + [`impact`]) for one value of
-///   `disc.aim`; the other value is the transfer path -- four possession
-///   counters this crate does not model (`// UNKNOWN: see bd discr-st8`) --
-///   and the bound here only negates `dir_kind`, matching what `$a602`'s
-///   unconditional `neg.w` already does before the owner test overwrites it.
+///   `dir_kind` to [`SERVE_DIR_KIND`] and, per `disc.aim`, either calls the
+///   near grid's damage routine (`$a24c`, [`disc_cell`] + [`impact`]) or
+///   takes the transfer arm, which moves the four possession counters
+///   ([`crate::round::transfer_at_near_wall`], discr-st8) and only negates
+///   `dir_kind`, matching what `$a602`'s unconditional `neg.w` already does
+///   before the owner test overwrites it.
 /// * **the far wall** (`$a5d0`/`$a5d6`/`$a5e2`) is the mirror: forces
-///   [`FAR_WALL_DIR_KIND`] and calls the far grid's (`$9f5e`, the *same*
-///   [`disc_cell`] against `tiles_far`) for the *other* value of `disc.aim`
-///   -- the polarity is real-player-consistent since discr-ovl.8's flip, so
-///   the near wall's value and the far wall's are opposites of each other,
-///   not independently chosen. **Untested by any committed fixture**: every
-///   trace that reaches the far wall does so with a disc still on its first
-///   arrival (the transfer arm), matching discr-ovl.1's player-1 racket path
-///   as a modelled-from-the-disassembly, fixture-unexercised gap. See
-///   [`Z_FAR`] and `tests/fixtures/farbank.provenance.md`.
+///   [`FAR_WALL_DIR_KIND`], damages the far grid for the *other* value of
+///   `disc.aim` (`$9f5e`, the *same* [`disc_cell`] against `tiles_far`,
+///   discr-ovl.3), and its transfer arm moves the counters the other way
+///   ([`crate::round::transfer_at_far_wall`]). The polarity is
+///   real-player-consistent since discr-ovl.8's flip (raw owner 0 is player
+///   2's disc, 0xFF player 1's -- `reports/part12-owner.md`), so the two
+///   walls' owner tests are opposites of each other, not independently
+///   chosen. In the ST both transfer arms are additionally gated on
+///   `$6ca0.b != 1` (the game-mode byte: training gates the transfer off,
+///   `reports/part12-round.md`) -- not modelled; no committed trace crosses
+///   a wall bound in training with the transfer-owner value. **Untested by
+///   any committed fixture**: the far wall's damage arm -- every trace that
+///   reaches it does so on a disc's first arrival (the transfer arm),
+///   matching discr-ovl.1's player-1 racket path as a
+///   modelled-from-the-disassembly, fixture-unexercised gap. See [`Z_FAR`]
+///   and `tests/fixtures/farbank.provenance.md`.
 ///
 /// * the two hit tests at `$a652`/`$a656` are what install hooks and retire
 ///   discs. Hook installation is decoded and modelled --
@@ -549,10 +559,16 @@ pub fn step(
                 let cell = disc_cell(disc.world_x, disc.world_y);
                 impact(disc, cell, tiles_far, collapse, _events);
             } else {
-                // $a5e2: owner arriving at 0 transfers possession instead,
-                // moving four counters this crate does not model. The neg.w
-                // from $a5c0 stands. // UNKNOWN: see bd discr-st8.
+                // $a5e2-$a5fa: owner arriving at 0 (real player 2's disc)
+                // transfers possession instead: the four counters move from
+                // player 2's ledger to player 1's
+                // (crate::round::transfer_at_far_wall, discr-st8;
+                // p1_walk.ndjson frame 220 exercises this live). The neg.w
+                // from $a5c0 stands. The ST gates the transfer on $6ca0.b !=
+                // 1 (training) -- not modelled, see the module docs.
+                crate::round::transfer_at_far_wall(players);
                 disc.dir_kind = disc.dir_kind.wrapping_neg();
+            }
             }
         }
         next if next < Z_NEAR => {
@@ -568,9 +584,14 @@ pub fn step(
                 let cell = disc_cell(disc.world_x, disc.world_y);
                 impact(disc, cell, tiles, collapse, _events);
             } else {
-                // $a624: owner arriving non-zero transfers possession
-                // instead, moving four counters this crate does not model.
-                // The neg.w from $a602 stands. // UNKNOWN: see bd discr-st8.
+                // $a624-$a63c: the other owner value transfers possession
+                // instead, the exact mirror of the far wall's transfer:
+                // owner := 0, possession moves from player 1's own ledger
+                // back to player 2's (discr-st8, reports/part12-round.md).
+                // The neg.w from $a602 stands. Also gated on $6ca0.b != 1 in
+                // the ST (training) -- not modelled, see the far wall's
+                // comment above and the module docs.
+                crate::round::transfer_at_near_wall(players);
                 disc.dir_kind = disc.dir_kind.wrapping_neg();
             }
         }
