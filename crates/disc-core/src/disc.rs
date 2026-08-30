@@ -44,10 +44,15 @@
 //!
 //! # What this module still does NOT decide
 //!
-//! * **what installs a hook** -- the two hit tests `$10fd8` and `$c826` do, off
-//!   a cascade of range checks against each player's position and reach. Not
-//!   decoded, so [`DiscSlot::hook`] is an input here, the way `state_index` is
-//!   an input to [`crate::player::step`]. `// UNKNOWN: see bd discr-ovl.1`.
+//! * **what installs a hook** -- decoded (Part 10f/11/11j, bd discr-ovl.1
+//!   CLOSED): the two hit tests' anticipation-cascade tails, `$cb2c`-`$cc9a`
+//!   for player 2 and `$112f4`-`$1147a` for player 1, off a mirrored cascade of
+//!   range checks against each player's position and reach --
+//!   [`crate::player::anticipate`] implements both halves and installs all
+//!   four hooks itself. [`DiscSlot::hook`] is still reseeded from the trace
+//!   every tick in `tracecheck`'s replay harness (same as `state_index`), but
+//!   that is now a **comparison**, not a feed: `disc-core` produces the value
+//!   from its own state, the way it produces `state_index`.
 //! * **what retires a disc** -- what takes `disc+$10` off `$ff`.
 //!   `// UNKNOWN: see bd discr-0fm`.
 //! * **[`serve`]'s trigger** -- now *known* (`$c06e`: player 2's animation
@@ -79,7 +84,8 @@ pub const AIM_X_OFFSET: i16 = 0x13;
 ///
 /// `$a7d8` aims 4 short of player 2 rather than `$13` short, and steers only
 /// the X axis. Which of the two a disc gets is decided by player 2's hit test
-/// (`// UNKNOWN: see bd discr-ovl.1`), not by anything in this module.
+/// -- [`crate::player::anticipate`], decoded and implemented, bd discr-ovl.1
+/// CLOSED -- not by anything in this module.
 pub const AIM_X_WIDE_OFFSET: i16 = 0x04;
 
 /// The player record's constant height reference, ST `player+$04` (`$6ca4`).
@@ -414,12 +420,15 @@ pub fn disc_cell(world_x: i16, world_y: i16) -> usize {
 ///   (`// UNKNOWN: see bd discr-5w5`). So the bounds here negate `dir_kind` and
 ///   stop, and `tiles` is untouched.
 /// * the two hit tests at `$a652`/`$a656` are what install hooks and retire
-///   discs. Not modelled: `// UNKNOWN: see bd discr-ovl.1`.
+///   discs. Hook installation is decoded and modelled --
+///   [`crate::player::anticipate`], bd discr-ovl.1 CLOSED. Retirement is not:
+///   `// UNKNOWN: see bd discr-0fm`.
 ///
 /// Because a bound clears the hook and the hit tests then re-install one within
 /// the same ST frame, [`DiscSlot::hook`] at the sampling point is what the hit
 /// tests decided, not what the bound left. A replay therefore has to reseed it
-/// each tick, exactly as it reseeds `state_index`.
+/// each tick, exactly as it reseeds `state_index` -- but `anticipate` is what
+/// computes the reseeded value now, not the trace.
 pub fn step(
     disc: &mut DiscSlot,
     _slot: usize,

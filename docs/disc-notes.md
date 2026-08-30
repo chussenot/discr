@@ -2493,3 +2493,40 @@ is what lets the rest be measured rather than guessed.
 
 **`p1_walk` is now clean: 274 of 274 ticks, nothing waived.** All three fixtures
 are clean for the first time in the project.
+
+## bd discr-ovl.1 CLOSED: the hook install, measured at its first consumer (Part 12)
+
+Parts 10f, 11 and 11j (above) transcribed both anticipation cascades and
+implemented them in `crate::player::anticipate`, called from both hit tests
+and wired into `disc::step` at `$a652`/`$a656` — `disc-core` has installed all
+four `disc+$12` hooks itself since commits `066e997` and `19ac647`. What this
+part adds is the measurement tying that code to the bead's own acceptance
+test, and a doc pass fixing several `UNKNOWN: discr-ovl.1` comments left
+stale by that earlier work (full detail in `reports/part12-hook.md`):
+
+```
+$ cargo run -q -p disc-tools --bin tracecheck -- tests/fixtures/p1_walk.ndjson \
+      --dump discs[0].hook --from 269
+  tick 271 in  discs[0].hook=0/0
+  tick 272 in  discs[0].hook=42778/42778      # 0xa71a -- expected == got
+```
+
+`players[0].state_index` and `.facing` both move to 18 on the same tick,
+matching `$113e2`'s `move.b #$12,$6cae`. This is `p1_walk` frame 272, the
+fixture's first and only exercise of player 1's deep hook, and the bead's
+originally cited "first consumer" (Part 11i) — now confirmed live rather than
+inferred from the disassembly alone.
+
+`tracecheck`'s `WAIVED` list has never carried `discs[n].hook`
+(`crates/disc-tools/src/main.rs`), and `feed_disc_inputs` does not touch it —
+the field is unconditionally compared, every tick, in every fixture. The one
+doc-comment correction worth flagging on its own: `player.rs`'s `hit_test`
+had attributed the `$a71a` install to the still-unmodelled racket path
+(states 7..10); the evidence ties it to the anticipation-cascade tail
+instead, and nothing found ties a hook install to the racket path at all.
+That gap is real but belongs to `discr-b6x`, not this bead.
+
+Left open, on separate beads: the racket path itself (`discr-b6x`), disc
+retirement (`discr-0fm`), and the coordinated `PlayerId`/`disc+$11` polarity
+rename `discr-ovl.2` flagged but deliberately did not land unilaterally
+(`discr-ovl.8`).
