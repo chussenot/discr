@@ -2493,3 +2493,68 @@ is what lets the rest be measured rather than guessed.
 
 **`p1_walk` is now clean: 274 of 274 ticks, nothing waived.** All three fixtures
 are clean for the first time in the project.
+
+## Part 12 (tiles) — a re-measurement, four collapse slots confirmed, $6d9a still open
+
+### discr-qsf, closed: the frame-238 divergence was already fixed
+
+Re-measuring the bead's own reproduce line (`cargo run -q -p disc-tools --bin
+tracecheck -- tests/fixtures/p1_walk.ndjson`, with and without
+`--skip-waived`) now returns 274/274 clean both ways. The bead was filed at
+`400606e` before Parts 11h/11i/11j landed; `b66be7a` (Part 11h, "the collapse
+advances per outer iteration, not per frame -- 237 -> 255") names the exact
+bug in its own commit message and fixes it: the collapse was advancing once
+per sampled frame instead of once per `$96b6` outer-loop iteration, so
+`disc-core` raced ahead of the ST and destroyed `tiles[14]` 47 frames early
+(frame 238 instead of the ST's real timing). `7dba893` (Part 11i) and
+`19ac647` (Part 11j) carried the fixture the rest of the way to 274. See
+`reports/part12-tiles.md` for the full citation.
+
+### discr-pu8, closed: four collapse slots, and $a38c's scan confirmed
+
+Ghidra (`tmp/ghidra_proj`) confirms the claim loop byte-for-byte:
+
+```
+$a386  moveq  #3,D6
+$a388  lea    $779e.w,A2
+$a38c  tst.b  (A2)          ; loop top
+$a38e  bne.b  $a3b2         ; busy -- try the next slot
+$a390  st     (A2)          ; free -- claim it, then init the slot
+$a3b2  lea    ($10,A2),A2   ; next slot, 16 bytes on
+$a3b6  dbf    D6w,$a38c
+```
+
+One function, `sub_a354` (152 bytes, `$a354`-`$a3ec`), four `dbf` iterations
+over `$779e`/`$77ae`/`$77be`/`$77ce`. **`$a38c` scans all four for the first
+free slot and claims that one; it does not queue behind a busy slot and does
+not merely test `$779e`.** If all four read busy, the `dbf` exhausts and falls
+through unclaimed -- the destroy's collapse animation is silently dropped,
+which `tile::damage` now models by finding no free slot and doing nothing
+further.
+
+Caveat, not a retraction: the pre-existing `$a4bc` citation for the *advance*
+loop (walks all four slots per outer iteration, `jsr $14ba4` per busy one,
+called from `$96b6`) could not be re-confirmed in this Ghidra snapshot --
+`$a4bc` sits in a span with no defined function and zero xrefs to `$14ba4`.
+`disc-core`'s `tile.rs`/`lib.rs`/`disc.rs` now model all four slots
+(`COLLAPSE_SLOTS = 4`); every gate is green with the same numbers as the
+single-slot model (behavior-preserving on all three fixtures, as the modelling
+was only ever correct while no trace destroyed two tiles within 50 collapse
+steps).
+
+A two-collapse fixture (to actually exercise slots 1-3) was attempted and
+found not cheap with the tools available in the time budgeted -- idle,
+fire-held and right+fire-held oracle runs over `seeds/match_challenge.seed`
+all produced the identical single destroy at the identical frame, meaning a
+short scripted hold doesn't perturb which tile the opponent's own play
+destroys. The recipe for a deliberate one is in `reports/part12-tiles.md`.
+
+### discr-z8m, still open: a null result from a live rally watch
+
+A Hatari change-watch on `$6d9a` (`scenarios/watch_6d9a_rally.yaml`, `mode:
+training` -- no bonus board, so the bead's named suspect `$9aa2` cannot be
+the explanation here regardless) over ~389 frames of a confirmed-live round
+(round clock visibly decrementing across three screenshots) found **zero
+writes**. `$9aa2` is ruled out as the source of *this* null by mode alone;
+`$6d9a`'s actual writer is still unlocated. See `reports/part12-tiles.md` for
+the caveat on what "confirmed live" does and doesn't establish here.
