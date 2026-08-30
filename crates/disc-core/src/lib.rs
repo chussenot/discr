@@ -24,12 +24,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ai;
 pub mod disc;
 pub mod player;
 pub mod tile;
 
 mod types;
 
+pub use ai::Ai;
 pub use tile::Collapse;
 pub use types::{
     COLUMN_TABLE_LEN, COLUMN_WIDTH, DISC_SLOTS, DirBits, DiscSlot, Event, FACING_LEFT,
