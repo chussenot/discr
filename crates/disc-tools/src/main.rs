@@ -837,7 +837,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     }
     println!(
-        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt). NOTHING on the disc side."
+        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); and updates, the $96ba\n         \x20              main-loop pass count (Part 11f). NOTHING on the disc side."
     );
     println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",
