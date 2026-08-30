@@ -182,12 +182,22 @@ Why each waiver or exclusion:
   wrong on both counts and is retracted.
   They stay waived because each is written by code **outside** the disc loop:
   the owner byte's
-  polarity (**discr-ovl.2**) cannot be settled because every trace reads 0 on
-  every live slot -- no trace has ever seen a disc change hands. `tracecheck`
-  feeds `active` in every tick, the way it feeds `$6c58`, and says so in its
-  header. **discr-ovl.1's player-2 half is closed**; its player-1 half, the
-  racket path at `$11030`-`$110a8`, is untested because neither player ever
-  swings in either fixture.
+  polarity (**discr-ovl.2, Part 12**) is now settled -- raw `0` is PLAYER 2's
+  disc and raw `0xFF` is PLAYER 1's. `$a9aa`/`$a9bc` (the serve routine, called
+  only from player 2's own control routine `$abb2`) bump `$6d8a` and clear the
+  owner byte together, so a freshly served disc is always owner-0 and charged
+  to player 2's own throw cap; `tests/fixtures/handover.ndjson` (frames 259 and
+  339) shows the wall handlers moving `players[0]`/`players[1]`'s
+  `discs_out`/`disc_cap` in both directions in lockstep with the flip, matching
+  `$6d8a--`/`$6d8c--`/`$6d0c++`/`$6d0a++` (far wall) and its mirror (near wall)
+  read live at `$a5d0`-`$a63c`. Full chain in `reports/part12-owner.md`. The row
+  stays **waived, not compared**: the field is fed every tick because
+  `disc-core` still has no WRITER for it (or for the four possession counters
+  it steers -- that gap is discr-st8's), not because the polarity is unknown
+  any more. `tracecheck` feeds `active` in every tick, the way it feeds
+  `$6c58`, and says so in its header. **discr-ovl.1's player-2 half is
+  closed**; its player-1 half, the racket path at `$11030`-`$110a8`, is
+  untested because neither player ever swings in either fixture.
 * Opponent AI (**discr-b6x**): **the input channel is no longer waived.**
   `$10eac` selects one-player mode on `$6da0`, `$d2cc` writes a synthetic
   joystick byte to `$6da1`, and `$abb2` consumes it exactly where a human's
