@@ -38,8 +38,11 @@ history of every one of those numbers; `reports/core-report.md` is the older
 account and says at the top what Part 10 superseded.
 
 Clean does not mean finished. `disc-core` reproduces everything these two traces
-do — 313 ticks of it — and six ST fields are still fed each tick, all of them
-animation-derived data or per-player constants; the run's own header names them.
+do — 313 ticks of it — and seven ST fields are still fed each tick: six of them
+animation-derived data or per-player constants, plus `updates`, the main-loop
+pass count Part 11f added (the game update lives in the main loop at `$96ba`,
+not the VBL, so a sampled frame contains 0, 1 or 2 passes); the run's own
+header names them.
 `docs/state-schema.md` has the seventeen waived rows and the beads that own them.
 
 `oracle-check` is prefix-gated for a different and permanent reason: the oracle
