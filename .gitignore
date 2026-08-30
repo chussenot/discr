@@ -40,6 +40,7 @@ oracle/*.o
 
 # per-agent worktrees
 wt/
+.claude/worktrees/
 
 # Rust build output
 /target/
