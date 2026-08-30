@@ -82,6 +82,39 @@ FULL_MIN_AGREE = "99"
 TILE_FULL_MIN_AGREE = "214"
 TILE_MIN_AGREE = "214"
 
+# The fourth fixture (Part 12, discr-ovl.2): tests/fixtures/handover.provenance.md.
+# Minted specifically to catch the disc's owner byte (disc+$11) actually
+# changing hands -- twice, in both directions, on the same disc slot -- and to
+# show the four possession counters ($6d8a/$6d8c/$6d0a/$6d0c, ported as
+# players[n].discs_out/disc_cap) moving in lockstep with it. It is NOT a
+# reproduction-length record: disc-core's own active-byte retirement countdown
+# (a pre-existing gap, not this bead's) diverges early, so these numbers are
+# small on purpose and gate the trace's OWN recorded columns, not a long clean
+# replay. 21 bare, 222 with --skip-waived.
+HANDOVER = "tests/fixtures/handover.ndjson"
+HANDOVER_MIN_AGREE = "21"
+HANDOVER_SKIP_MIN_AGREE = "222"
+
+# The fifth fixture, minted in Part 12 (tests/fixtures/bonus.provenance.md):
+# the first trace in which a bonus is ever placed (bit 7 of a tile's hp word)
+# AND picked up -- bonus_6d9a is 0 on every row of every fixture before this
+# one. 152 ticks, idle, cross-validated against a same-session Hatari
+# reference for 147 of them (oracle frames 5-151; the placement and pickup
+# both sit inside that window).
+#
+# --skip-waived (players[1].* resynced, discr-b6x): 150 -- disc-core has no
+# model at all yet for bit 7, $9aa2 or $6e3a/$6d9a, so it diverges the moment
+# the pickup strips bit 7 (132 -> 4 on the ST; disc-core's plain damage
+# subtraction gives 132 -> 129, oblivious to the flag). This is the gap
+# discr-ovl.4/z8m exist to close, not a bug to fix by raising the number.
+#
+# Full (nothing waived): 22 -- player 2's AI enters one of its 28 unhandled
+# $c6ec states, the same pre-existing discr-b6x limitation golden.ndjson and
+# tile_damage.ndjson already waive around. Not new.
+BONUS = "tests/fixtures/bonus.ndjson"
+BONUS_MIN_AGREE = "150"
+BONUS_FULL_MIN_AGREE = "22"
+
 # The repository's first three commits predate conventional commits (`bd init`
 # is not one of them), so cog is pointed at the range after them rather than
 # being told to ignore a rule. Everything since is compliant.
@@ -134,6 +167,11 @@ run = [
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --min-agree $FULL_MIN_AGREE",
   "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --min-agree $TILE_FULL_MIN_AGREE",
   "cargo run -q -p disc-tools --bin tracecheck -- $P1_WALK --min-agree $P1_WALK_MIN_AGREE",
+  "cargo run -q -p disc-tools --bin tracecheck -- $HANDOVER --skip-waived --min-agree $HANDOVER_SKIP_MIN_AGREE",
+  "cargo run -q -p disc-tools --bin tracecheck -- $HANDOVER --min-agree $HANDOVER_MIN_AGREE",
+
+  "cargo run -q -p disc-tools --bin tracecheck -- $BONUS --skip-waived --min-agree $BONUS_MIN_AGREE",
+  "cargo run -q -p disc-tools --bin tracecheck -- $BONUS --min-agree $BONUS_FULL_MIN_AGREE",
 ]
 
 [tasks.tracecheck]
@@ -142,6 +180,9 @@ run = [
   "cargo run -q -p disc-tools --bin tracecheck -- $GOLDEN --skip-waived",
   "cargo run -q -p disc-tools --bin tracecheck -- $TILE_DAMAGE --skip-waived",
   "cargo run -q -p disc-tools --bin tracecheck -- $P1_WALK",
+  "cargo run -q -p disc-tools --bin tracecheck -- $HANDOVER --skip-waived",
+
+  "cargo run -q -p disc-tools --bin tracecheck -- $BONUS --skip-waived",
 ]
 
 [tasks.tracecheck-deep]

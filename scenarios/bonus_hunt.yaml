@@ -1,0 +1,64 @@
+name: bonus_hunt
+mode: challenge
+# discr-ovl.4/ovl.6/z8m: static analysis (Ghidra, tmp/ghidra_proj) is exhausted --
+# every literal reference to $7616/$7596 in the whole 1MB RAM image (38 total,
+# byte-verified against the raw binary, not just Ghidra's instruction model) is
+# a known read (walkability / bit-7 pickup test) or the known pickup writer at
+# $a292-$a2ca. No static writer of a bonus (bit 7 set, or $6e3a written) exists
+# in this snapshot. This scenario watches $6e3a (the bonus-code mint the
+# pickup side already reads) and $6d9a (the active code) live, in CHALLENGE
+# mode (training has no bonus board per Part 12/discr-z8m), across an extended
+# rally so a genuinely dynamic writer -- one Ghidra's static model here never
+# resolved as code -- gets caught by the emulator's own change-tracking
+# breakpoint regardless.
+settle: 30
+steps:
+  - {watch: "$6e3a"}
+  - {watch: "$6d9a"}
+  - {screenshot: pre}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {screenshot: r1}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {screenshot: r2}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {screenshot: r3}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {screenshot: r4}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {screenshot: r5}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {screenshot: r6}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 80}
+  - {screenshot: post}
+  - {unwatch: true}

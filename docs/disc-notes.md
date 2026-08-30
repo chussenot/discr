@@ -2493,3 +2493,598 @@ is what lets the rest be measured rather than guessed.
 
 **`p1_walk` is now clean: 274 of 274 ticks, nothing waived.** All three fixtures
 are clean for the first time in the project.
+
+## Part 12 (tiles) — a re-measurement, four collapse slots confirmed, $6d9a still open
+
+### discr-qsf, closed: the frame-238 divergence was already fixed
+
+Re-measuring the bead's own reproduce line (`cargo run -q -p disc-tools --bin
+tracecheck -- tests/fixtures/p1_walk.ndjson`, with and without
+`--skip-waived`) now returns 274/274 clean both ways. The bead was filed at
+`400606e` before Parts 11h/11i/11j landed; `b66be7a` (Part 11h, "the collapse
+advances per outer iteration, not per frame -- 237 -> 255") names the exact
+bug in its own commit message and fixes it: the collapse was advancing once
+per sampled frame instead of once per `$96b6` outer-loop iteration, so
+`disc-core` raced ahead of the ST and destroyed `tiles[14]` 47 frames early
+(frame 238 instead of the ST's real timing). `7dba893` (Part 11i) and
+`19ac647` (Part 11j) carried the fixture the rest of the way to 274. See
+`reports/part12-tiles.md` for the full citation.
+
+### discr-pu8, closed: four collapse slots, and $a38c's scan confirmed
+
+Ghidra (`tmp/ghidra_proj`) confirms the claim loop byte-for-byte:
+
+```
+$a386  moveq  #3,D6
+$a388  lea    $779e.w,A2
+$a38c  tst.b  (A2)          ; loop top
+$a38e  bne.b  $a3b2         ; busy -- try the next slot
+$a390  st     (A2)          ; free -- claim it, then init the slot
+$a3b2  lea    ($10,A2),A2   ; next slot, 16 bytes on
+$a3b6  dbf    D6w,$a38c
+```
+
+One function, `sub_a354` (152 bytes, `$a354`-`$a3ec`), four `dbf` iterations
+over `$779e`/`$77ae`/`$77be`/`$77ce`. **`$a38c` scans all four for the first
+free slot and claims that one; it does not queue behind a busy slot and does
+not merely test `$779e`.** If all four read busy, the `dbf` exhausts and falls
+through unclaimed -- the destroy's collapse animation is silently dropped,
+which `tile::damage` now models by finding no free slot and doing nothing
+further.
+
+Caveat, not a retraction: the pre-existing `$a4bc` citation for the *advance*
+loop (walks all four slots per outer iteration, `jsr $14ba4` per busy one,
+called from `$96b6`) could not be re-confirmed in this Ghidra snapshot --
+`$a4bc` sits in a span with no defined function and zero xrefs to `$14ba4`.
+`disc-core`'s `tile.rs`/`lib.rs`/`disc.rs` now model all four slots
+(`COLLAPSE_SLOTS = 4`); every gate is green with the same numbers as the
+single-slot model (behavior-preserving on all three fixtures, as the modelling
+was only ever correct while no trace destroyed two tiles within 50 collapse
+steps).
+
+A two-collapse fixture (to actually exercise slots 1-3) was attempted and
+found not cheap with the tools available in the time budgeted -- idle,
+fire-held and right+fire-held oracle runs over `seeds/match_challenge.seed`
+all produced the identical single destroy at the identical frame, meaning a
+short scripted hold doesn't perturb which tile the opponent's own play
+destroys. The recipe for a deliberate one is in `reports/part12-tiles.md`.
+
+### discr-z8m, still open: a null result from a live rally watch
+
+A Hatari change-watch on `$6d9a` (`scenarios/watch_6d9a_rally.yaml`, `mode:
+training` -- no bonus board, so the bead's named suspect `$9aa2` cannot be
+the explanation here regardless) over ~389 frames of a confirmed-live round
+(round clock visibly decrementing across three screenshots) found **zero
+writes**. `$9aa2` is ruled out as the source of *this* null by mode alone;
+`$6d9a`'s actual writer is still unlocated. See `reports/part12-tiles.md` for
+the caveat on what "confirmed live" does and doesn't establish here.
+
+## The ten tier-1 states, decoded (Part 12)
+
+`bd discr-75o` named ten states whose handler addresses were tier-1 known but
+whose behaviour was not: 5, 11, 14, 19, 20, 21, 23, 24, 27, 31. By the time
+this part started, four had already been modelled by other work -- 11 and 23
+in Part 10b/10d (`struck_down`/`dead`), 20 in Part 10b (`turn`), 27 in Part
+10i (`run_out`, via `STATE_REACH`) -- so what follows covers the remaining
+six: 5, 14, 19, 21, 24, 31. All six were pulled from Ghidra 12.1.3 over
+`seeds/rally_f100.seed`; two of the six (19, 21) turn out to be fully
+determined by fields this crate already carries and are implemented in
+`player.rs`; the other four end in mechanisms (an undecoded throw commit, an
+undecoded parabola calculation, an opaque installed hook, and -- state 31 --
+an unconditional round reset) this crate has no representation for, and are
+documented rather than guessed at.
+
+### State 19, player 1's third catch state: decoded and implemented
+
+`$108f4` sits in the `$10e2c` table (confirmed by reading the table's raw 32
+longwords directly: entry 19 is `$108f4`, matching Part 8's tier-1 list
+exactly). It is gate-for-gate the same shape as state 18's commit:
+
+```
+$108f4  move.b #$13,$6ca9
+$108fa  if $6cda is $2c3c or $2c4c -> commit, else just run the animation
+$10912  btst #$7,(a0) ; beq out        ; fire must be HELD
+$1091a  btst #$1,(a0) ; bne out        ; down must not be
+$10922  if $6d0a == $6d0c -> out       ; a disc must be available
+$1092e  addq.w #6,$6ca2                ; six units RIGHT, in one step
+$10932  animation $2bb4 (5 cells of 4, read out of the image)
+$10940  move.b #$10,$6cae              ; and straight into state 16
+```
+
+Two differences from `intercept()` (state 18) are real, not noise: the step
+is `addq` (RIGHT), where state 18's is `subq` (LEFT); and the committed state
+is 16 (`STATE_THROW_LEFT`), where state 18 commits to 15
+(`STATE_THROW_STANDING`). Both are exactly what the disassembly shows, so
+`catch19()` in `player.rs` mirrors `intercept()` with those two constants
+flipped -- `CATCH19_STEP`, `STATE_THROW_LEFT` -- and the release checkpoints
+(`CATCH19_RELEASE_A`/`B`) are their own pair, not a reuse of state 18's.
+
+What is **not** decoded is what enters state 19 in the first place:
+`anticipate()`'s X ladder only ever picks `STATE_INTERCEPT` or `STATE_REACH`,
+so a third branch this crate has not found yet must select state 19 --
+exactly matching `p2_hit_test`'s own honest note ("`$cad0` is state 19's; no
+fixture reaches state 19"). No fixture and no Hatari probe in this part
+reached it either. Fully implemented, fully gated on fields `disc-core`
+already carries (`anim_cursor`, `discs_out`, `disc_cap`, `world_x`), tested in
+`player.rs` (`state19_commits_on_its_release_frame_with_fire_and_a_disc`,
+`state19_is_a_pass_through_off_its_release_frame`) -- but **not
+cross-validated against a live trace**, because nothing yet drives player 1
+into it.
+
+### `intercept()` had player 2's gate values hardcoded for both players -- `retract`
+
+Decoding state 19 meant reading state 18's real player-1 address for
+comparison, and that turned up a bug in code this crate already ships.
+`intercept()` (state 18, `STATE_INTERCEPT`) is called for whichever player
+reaches state 18, but its release-checkpoint constants,
+`INTERCEPT_RELEASE_A`/`B` (`$4624`/`$4634`), are **player 2's** -- read off
+`$c19c`/`$c1a8`. Player 1's own copy of the handler is at `$1089e` (four bytes
+past the state-17 stub, `$1089a`, which is why nothing had gone looking for
+it), and it gates on `$2c10`/`$2c20` instead:
+
+```
+$1089e  move.b #$12,$6ca9
+$108a4  if $6cda is $2c10 or $2c20 -> commit, else just run the animation
+$108bc  btst #$7,(a0) ; beq out
+$108c4  btst #$1,(a0) ; bne out
+$108cc  if $6d0a == $6d0c -> out
+$108d8  subq.w #6,$6ca2                ; the same LEFT step as $c1d0
+$108dc  animation $2bdc (5 cells of 4)
+$108ea  move.b #$f,$6cae               ; the same target state, 15
+```
+
+The step magnitude and sign and the committed state are identical to player
+2's -- only the two gate checkpoints differ, because each player's animation
+data lives at its own addresses (`$2c10` is exactly `ANIM_P1_INTERCEPT`'s
+fourth cell, `$2bfe + 3*6`, matching how `$4624` is `ANIM_INTERCEPT`'s fourth
+cell, `$4612 + 3*6`). Before this part, a player 1 that reached state 18 and
+its real release frame would stamp `$6ca9`, hold the pose, and **never
+commit**, because its `anim_cursor` would never equal player 2's addresses.
+
+This is a real divergence from the ST, but it is currently inert: the only
+fixture that puts player 1 in state 18 is `p1_walk.ndjson`, and its window
+ends three frames after entry (272-274) with `discs_out == disc_cap` (`2 ==
+2`) throughout -- the disc-availability gate alone would have blocked the
+commit regardless of which checkpoint constants were used, and the recorded
+`anim_cursor` (`$2bfe`, i.e. `11262`) never reaches either checkpoint within
+the window either. So all five gates in this bead's list still pass at their
+required counts with the fix applied. `intercept()` now takes `who` and reads
+the correct pair via `intercept_release()`; `INTERCEPT_RELEASE_A`/`B` keep
+their names and player 2's values, documented as such.
+
+### State 21: decoded and implemented, an unconditional slide
+
+`$109aa`, immediately after state 20's turn transient in the table (entry
+21), is a plain three-unit slide left with **no gate at all**:
+
+```
+$109aa  move.b #$15,$6ca9
+$109b0  subq.w #3,$6ca2          ; world_x -= 3, EVERY call, unconditionally
+$109b4  [the 20-byte tail copy, inlined -- the same shape state 20 duplicates]
+$109ec  tst.l (a1) ; bne out     ; sequence not done -> just save the cursor
+$109f2  lea $2c78,a1 ; ... ; $6cae = 0   ; ended -> straight to idle
+```
+
+No held-input test, and -- checked directly against the disassembly, not
+inferred -- no clamp at `WALK_X_MIN`/`WALK_X_MAX` either, unlike `walk()`.
+And the sequence running out lands on state 0 directly, not through
+`player.pending_state` the way state 20's does. Entry 22 (`$10a0e`) is the
+mirror, `addq.w #3` instead of `subq.w #3`, otherwise byte-identical; it is
+left opaque, since inferring its body from 21's would be exactly the kind of
+guess the house rules forbid, and neither state was reached by any fixture or
+by the Hatari probe below.
+
+Implemented as `slide_left()`, which is `world_x -= SLIDE_STEP` followed by
+`run_out()` -- `run_out` already is exactly this handler's ending, so no new
+machinery was needed. Tested in `player.rs`
+(`state21_slides_unconditionally_and_ends_at_idle`); not cross-validated live,
+since nothing in this part's probing reached it.
+
+### States 5, 14, 24 and 31: decoded, not implemented, and one live cross-validation
+
+These four were pulled from the same Ghidra pass but are **not** wired into
+`step()`, because each one's real behaviour depends on a mechanism this crate
+does not carry, and guessing at any of the four would be the speculative
+implementation the house rules forbid.
+
+**State 5** (`$fb6e`), player 1's rise, entered from idle under Up
+(`$f222`-`$f238`):
+
+```
+$fb6e  move.b #$5,$6ca9
+$fb74  btst #$7,(a0) ; beq $fb94        ; fire not held -> just check Up
+$fb7c  btst #$1,(a0) ; bne $f306        ; fire+Down -> an aerial-throw commit,
+$fb84  d0 = $6d0a (discs_out)           ;   undecoded (see idle()'s own $f21e
+$fb88  cmp.w $6d0c,d0 (disc_cap)        ;   bmi to the same $f306, bd discr-b6x)
+$fb8c  bne $f306                       ; fire+!Down+a disc available -> the same
+$fb90  bclr #$7,(a0)                    ; otherwise: consume fire, keep rising
+$fb94  btst #$0,(a0) ; beq $fb9c        ; Up not held -> straight to idle ($2c78)
+$fbb2  addq.w #1,$6ca6                  ; world_y += 1, EVERY frame Up is held
+$fbb6  cmpi.w #$19,$6ca6 ; ble $fbde    ; below the clamp -> continue rising
+$fbc0  move.w #$19,$6ca6                ; at the clamp: pin world_y at 25
+$fbc6  animation $2a22 (8 cells of 4)
+$fbd4  move.b #$18,$6cae                ; -> state 24
+$fbde  btst #$3,(a0) ...                ; Right/Left while rising: a large
+                                        ;   undecoded column/parabola lookup
+                                        ;   and bsr $aae8 -- an aerial attack
+                                        ;   calculation, a NEW undecoded wall
+```
+
+**State 14** (`$106b2`), Right+Fire from idle -- already tier-1 known as an
+entry condition, newly decoded as a body:
+
+```
+$106b2  move.b #$e,$6ca9
+        [the same inlined 20-byte tail copy]
+$106f6  btst #$3,(a0) ; beq $10754      ; Right no longer held -> idle
+$106fc  cmpi.w #$98,$6ca2 ; beq $10754  ; already at WALK_X_MAX -> idle
+$10704  addq.w #2,$6ca2                 ; else: two units right
+$10708  [primes a sound cue: $6c5c, Timer A via $63312, $fa1f/$fa19]
+$10732  animation $300a (6 cells of 4)
+$10740  move.b #$1f,$6cae               ; -> state 31
+$10746  move.l #$1334a,$6cce            ; installs a function-pointer hook
+$1074e  clr.w $6cd2
+```
+
+**State 24** (`$10ac4`), the hover atop a state-5 rise, is the same shape as
+14 with the direction bit swapped for Up and a second, **unclamped**
+`world_y += 1` on the frame it hands off to 31:
+
+```
+$10ac4  move.b #$18,$6ca9
+        [the same inlined tail copy]
+$10b08  btst #$0,(a0) ; beq $10b5e      ; Up no longer held -> idle
+$10b0e  addq.w #1,$6ca6                 ; world_y += 1 again, no clamp this time
+$10b12  [the same sound-cue priming as state 14]
+$10b3c  animation $2f92 (6 cells of 4)
+$10b4a  move.b #$1f,$6cae               ; -> state 31
+$10b50  move.l #$1334a,$6cce            ; the SAME hook address as state 14's
+$10b58  clr.w $6cd2
+```
+
+**State 31** (`$10dda`) is where both paths land, and it is not a normal
+transient at all:
+
+```
+$10dda  move.b #$1f,$6ca9
+$10de0  st.b $6d2d      ; SET, unconditionally, EVERY call -- player 2's own
+                        ;   +$0d, the exact field $a564 polls to retire every
+                        ;   disc and end the round, and the exact field $f1b4
+                        ;   sets three instructions after player 1 enters
+                        ;   state 23 (death)
+$10de4  st.b $6cac      ; SET, unconditionally -- player 1's own "down" flag,
+                        ;   the same field idle() tests to enter the death path
+$10de8  if $6cda's sequence pointer is null -> $10aba, STATE 23's OWN
+                        ;   terminal return (bumps $6cab by 3, $6c83 by 1) --
+                        ;   otherwise the usual inlined tail copy, and rts
+                        ;   (no bra to $f1c4: no further state change here)
+```
+
+So reaching state 31 sets the *same two* fields the disc-damage death path
+sets -- via a completely different trigger, a sustained rise rather than
+being hit -- and shares state 23's own terminal code once its sequence runs
+dry. Nothing in `Player`/`GameState` models "end the round"; inventing a
+field or event for it here would be exactly the guess this bead exists to
+prevent, so states 24 and 31 stay opaque pass-throughs in `step()`, same as 5
+and 14.
+
+#### Live cross-validation: `dumps/state5_hunt`
+
+A scenario (`mode: training`, watching `$6cae` while holding Up for 90
+frames) drove player 1 through this entire chain in one run and recorded
+**exactly** the three write sites this decode predicts, in order:
+
+```
+[watch] $6cae: 3 hit(s) from PC $f23e, $fbda, $10b50
+```
+
+`$f23e` is the `bra $f1c4` immediately after `$f238`'s `move.b #$5,$6cae` --
+idle entering state 5 on Up. `$fbda` is the `bra $f1c4` immediately after
+`$fbd4`'s `move.b #$18,$6cae` -- state 5's rise clamp handing off to state 24.
+`$10b50` is the hook-install instruction immediately after `$10b4a`'s
+`move.b #$1f,$6cae` -- state 24 handing off to state 31. (Hatari's
+change-watch reports the PC reached *after* the write completes, one
+instruction past each `move.b`, consistently across all three hits.)
+
+A dump taken 10 frames later (`dumps/state5_hunt/b.bin`, VBL 17922 against
+the baseline's 16684) shows player 1 fully reset: `$6cae` = 0, `$6ca6` = 18
+(the starting `world_y`, not the clamped 25), `$6cac` = 0, and player 2's
+`$6d2d` = 0 -- all back to their pre-jump values. **Entering state 31 forces
+an immediate round reset**, confirmed live and not just from the disassembly:
+sustaining an upward jump is a way to end the current round outright, not (as
+first guessed, before this run) some kind of aerial power move that leaves
+the jumping player briefly vulnerable.
+
+### Status table
+
+| state | address | semantics | status |
+|---|---|---|---|
+| 5 | `$fb6e` | rise on Up; `world_y += 1`/frame, clamp 25 -> state 24; fire (+availability) or fire+Down bail to the undecoded `$f306`; Left/Right bail to the undecoded `$aae8` parabola calc | decoded, not implemented |
+| 11 | `$10554` | knocked down, sinks one row per animation cell, floor at `world_y` 2 | decoded + implemented (Part 10b/11i) |
+| 14 | `$106b2` | Right+Fire windup; on completion, Right still held -> `world_x += 2`, sound cue, -> state 31 with the `$1334a` hook installed; else -> idle | decoded, not implemented |
+| 19 | `$108f4` | player 1's third catch/commit state; gate on `anim_cursor` + fire + !Down + a disc available; commits `world_x += 6` -> state 16 | decoded + implemented (this part) |
+| 20 | `$1094a` | the turn transient, redirects through `pending_state` | decoded + implemented (Part 10b) |
+| 21 | `$109aa` | unconditional `world_x -= 3`/frame, no gate, no clamp; sequence end -> idle directly | decoded + implemented (this part) |
+| 23 | `$10a72` | out of energy; terminal, tests the terminator before copying | decoded + implemented (Part 10b/10d) |
+| 24 | `$10ac4` | the hover atop state 5's rise; on completion, Up still held -> unclamped `world_y += 1`, sound cue, -> state 31 with the same `$1334a` hook; else -> idle | decoded, not implemented |
+| 27 | `$10c8a` | reaching for a disc without moving, runs its sequence out via `run_out` | decoded + implemented (Part 10i) |
+| 31 | `$10dda` | reached from 14 or 24; unconditionally sets player 2's `$6d2d` and player 1's `$6cac` every call -- an immediate round reset, live-confirmed | decoded, not implemented |
+
+Plus one correction to code that shipped before this part: `intercept()`
+(state 18) was using player 2's release checkpoints for both players; it now
+takes `who` and reads the right pair (`intercept_release()`), currently inert
+against both committed fixtures (see above).
+
+Two new walls this part surfaced and did not chase, both worth a follow-up
+bead of their own rather than folding into `discr-75o`: `$f306` (state 5's
+and idle's shared fire+Down / fire+available-disc branch -- an aerial throw
+commit) and `$aae8` (the column/parabola calculation state 5's Left/Right
+branch runs while rising, and the `$1334a` hook both 14 and 24 install before
+handing off to state 31).
+
+## Player 2's AI policy: the table is fully decoded, two of twenty rows are implemented (Part 12, discr-b6x)
+
+Full detail and every command in `reports/part12-ai.md`. Summary, in the
+same voice:
+
+`$d2cc` (the writer of `$6da1`, Part 10) walks a 20-entry priority table at
+`$efa8` once a frame: `priority:u8, threshold:u8, test:fn, action:fn,
+identity:fn`, 14 bytes each, terminated by an all-zero 21st row at `$f0c0`.
+Ghidra's `dis`/`dec` cannot read this table at all -- it is data, and
+`getInstructionAt` failing silently falls back to `getInstructionAfter`,
+which is how the first attempt printed a confident wrong answer starting at
+`$f104`. The fix was a raw byte read of `discram.bin` (file offset == ST
+address, checked against `$d2cc`'s own opcode bytes) -- every table row and
+raw table (`$1556`/`$155e`/`$15fe`) below came from that, not from the
+disassembler.
+
+**The dispatch mechanism is fully decoded.** A row's reaction roll (`$d2f8`-
+`$d308`: `$6c5d += $6ab5`, fail if the running total exceeds the row's
+threshold) runs *before* its test, for every row whose priority exceeds the
+currently latched one -- so `$6c5d`'s own evolution depends on which rows
+were eligible, which depends on the latch, which is the outcome of earlier
+rolls. A `u8` roll can never exceed a threshold of 255, and exactly two of
+the twenty rows carry threshold 255 (priority 50, the escape at `$e0d8`; and
+priority 30, the avoid at `$e158`) -- those two, and only those two, do not
+depend on `$6c5d` at all. They share an identity pointer (`$e290`), so the
+ST treats them as one latch: once either fires the other cannot preempt it
+until the maneuver ends on its own. The "plan" mini-VM their shared action
+(`$e214`) and step executor (`$e30a`) compile into is fully decoded too: a
+buffer at `$6dac` holds a step (a function pointer plus its parameters), run
+once a frame by the identity, that walks player 2 toward a target
+`(world_x, world_y)` and ends the maneuver when player 2's own state enters
+one of four values or the target is reached within a small tolerance box.
+
+**Those two rows are implemented**, in `crates/disc-core/src/ai.rs`
+(`Ai::p2_policy`) -- entry 0's escape (floor cell destroyed under player 2,
+looked up via three raw tables at `$1556`/`$155e`/`$15fe`) and entry 1's
+avoid (an active disc in a box built from player 2's own hit box, side-
+stepped via the same floor-cell check `$d062`/`$e2d0` use independently at
+two addresses, falling back to entry 0's escape table exactly as the ST
+falls through from `$e1e4`/`$e202` into `$e112`).
+
+**Why not all twenty**: the other eighteen rows all carry threshold < 255,
+so whether they fire depends on `$6c5d` -- a byte no fixture feeds, shared
+with at least three call sites outside `$d2cc` entirely, and (argued in the
+report) not reconstructable after the fact even from a fixture with a known
+starting value, because its own increments are coupled to the AI's latch
+history all the way back to a reset this project has never observed. That is
+the actual wall, address-cited, not a shortage of transcription time.
+
+**Measured, not assumed**: `cargo test -p disc-core --lib ai::agreement --
+nocapture` compares `Ai::p2_policy` against `ai_6da1`/`pass_ai` directly from
+the three committed fixtures (only on single-pass ticks -- Part 11f/11g's
+own granularity wall applies here too). Golden 18/99, tile_damage 61/214,
+p1_walk 22/200 -- both simpler fixtures never trigger rows 0/1 at all, so
+their number is exactly the fraction of ticks whose own byte is already 0
+(everything else in these traces comes from the eighteen undecoded rows).
+`p1_walk` does trigger row 1 once, correctly, for most of its run; the
+exception is four ticks right where player 2 enters state 11 (knocked down,
+`$ca12`) -- this module keeps steering (nothing in `$e158`'s or `$e30a`'s own
+exclusion lists names state 11), but the ST's own byte there (`$06`) is not
+what a fresh steer computes either (`$04`), and is not silence. Left open
+rather than papered over with a guessed fifth exclusion state.
+
+**Also corrected in the same phase**: this section originally would have
+cited `discr-ovl.2` ("every trace reads owner 0") as the reason rows 2-4
+can never fire -- that closed mid-phase (`reports/part12-owner.md`,
+`tests/fixtures/handover.ndjson`), and `p1_walk.ndjson` itself already has
+`disc[0].own` flip nonzero at frame 220. The narrower, still-true claim: in
+every case on hand, ownership turns nonzero at the same far-wall bounce that
+flips `dir_kind` negative, and a negative `dir_kind` is exactly what
+`$cea6`'s own candidate scan excludes -- so rows 2-4 still don't fire here,
+but not for the reason first drafted.
+
+The waiver (discr-b6x) stays open. `Ai` is not wired into `GameState::tick`;
+feeding `$6da1` from it today would fail `core-check` in exactly the frames
+above.
+
+## bd discr-ovl.1 CLOSED: the hook install, measured at its first consumer (Part 12)
+
+Parts 10f, 11 and 11j (above) transcribed both anticipation cascades and
+implemented them in `crate::player::anticipate`, called from both hit tests
+and wired into `disc::step` at `$a652`/`$a656` — `disc-core` has installed all
+four `disc+$12` hooks itself since commits `066e997` and `19ac647`. What this
+part adds is the measurement tying that code to the bead's own acceptance
+test, and a doc pass fixing several `UNKNOWN: discr-ovl.1` comments left
+stale by that earlier work (full detail in `reports/part12-hook.md`):
+
+```
+$ cargo run -q -p disc-tools --bin tracecheck -- tests/fixtures/p1_walk.ndjson \
+      --dump discs[0].hook --from 269
+  tick 271 in  discs[0].hook=0/0
+  tick 272 in  discs[0].hook=42778/42778      # 0xa71a -- expected == got
+```
+
+`players[0].state_index` and `.facing` both move to 18 on the same tick,
+matching `$113e2`'s `move.b #$12,$6cae`. This is `p1_walk` frame 272, the
+fixture's first and only exercise of player 1's deep hook, and the bead's
+originally cited "first consumer" (Part 11i) — now confirmed live rather than
+inferred from the disassembly alone.
+
+`tracecheck`'s `WAIVED` list has never carried `discs[n].hook`
+(`crates/disc-tools/src/main.rs`), and `feed_disc_inputs` does not touch it —
+the field is unconditionally compared, every tick, in every fixture. The one
+doc-comment correction worth flagging on its own: `player.rs`'s `hit_test`
+had attributed the `$a71a` install to the still-unmodelled racket path
+(states 7..10); the evidence ties it to the anticipation-cascade tail
+instead, and nothing found ties a hook install to the racket path at all.
+That gap is real but belongs to `discr-b6x`, not this bead.
+
+Left open, on separate beads: the racket path itself (`discr-b6x`), disc
+retirement (`discr-0fm`), and the coordinated `PlayerId`/`disc+$11` polarity
+rename `discr-ovl.2` flagged but deliberately did not land unilaterally
+(`discr-ovl.8`).
+
+**Correction (Part 12b, `reports/part12-rng.md`)**: the line above about
+`$6c5d` — "not reconstructable... a reset this project has never observed"
+— was wrong on the "never observed" part. A raw byte-pattern scan of
+`discram.bin` (independent of Ghidra's `xref`, which only sees code its own
+analysis already disassembled) found an eleventh-hour reset: `$968a`,
+`move.b $6ab5,$6c5d`, unconditional, inside an undissasembled init block
+(clears `$6c83`/`$6c9c`/`$6ab8`/`$6c5a`/`$6ab6` too, then chains ~9 `bsr`s to
+other subsystem setup). What still holds, now measured live rather than
+argued: two independent cold boots of the identical scripted scenario
+(`scenarios/watch_6c5d_rng.yaml`, `--fresh --state ''` both times) reach
+"match live" 121 VBLs apart on the game's own frame counter despite running
+the exact same input script, so `$968a`'s reseed copies a different `$6ab5`
+each time — the wall is narrower and sharper now (an anchor exists; its own
+input isn't reproducible even under this project's own harness), not gone.
+
+## bd discr-qqt: the `$6d8e`/`$6d10`/`$6d90` writer -- a per-character table, not a constant
+
+Ghidra's static image never showed a writer for `$6d8e` (served disc's
+`dir_kind`) or its per-player damage companions at `player+$70` (`$6d10`
+p1, `$6d90` p2) for a concrete reason: the writer lives entirely outside
+whatever code Ghidra's own CFG walk ever reached from its entry points --
+`xref`/`scan` on `$6d96`, `$6d18`, `$cd7c`, `$11512` all come back with zero
+references, even though this code visibly executes on every live match.
+Only a live Hatari change-watch armed *before* `navigate_to_match()` even
+taps SPACE (a custom driver, not a `collect.py` scenario -- `run_scenario`'s
+own `watch` step starts too late, after `enter_match()` already has a live
+match) could see it: three full boots, one per mode, with `$6d8e`/`$6d10`/
+`$6d90` watched from cold boot through character select and mode select.
+
+**When**: boot noise only (a TOS memory scan at `$11f0`, an unrelated
+`movem.l` register save at `$1028`) until VBL ~16300-18070, well after the
+match is already live and well before any disc is served -- an
+unconditional per-round setup step, not a serve-triggered one. Identical in
+training (which never serves a disc at all) and in challenge/tournament.
+
+**Who, and its source data**: two parallel player-slot blocks, one per
+player struct base (`$6ca0` p1, `$6d20` p2 -- matching `docs/state-schema.md`
+row 132's own `player+$6e`/`+$70` labelling exactly). Both scan the *same*
+8-row table at `$11542` (`threshold, valA, valB, mag_raw, mag`, 5 words/row),
+picking the first row whose threshold is `<=` a stat word read from the
+*currently selected character's own roster record* (`record+$8`; the
+pointer to that record lives at `$6d96` p2 / `$6d18` p1, 32-byte records,
+name first -- measured: EAGLE, stat `$4000` -> row 0, mag 3; MACDO, stat
+`$0` -> row 7, mag 1). The row's magnitude is written **twice**: negated
+into the dir_kind field (`$6d8e` at PC `$cda6`, p1's `$6d0e` at `$11538`,
+not negated), and as-is into the damage field (`$6d90` at PC `$cdaa`,
+`$6d10` at `$1153c`) -- this is the concrete mechanism behind the
+already-established fact "one per-player number is both throw depth-speed
+and damage": it is the *same table column*, read once, stored twice.
+
+Player 2's slot has a second, gated path: `$6c60 >= 16` (set to `$10` only
+when the mode byte `$6ca0` selects training, at `$116c4`) skips the
+character table entirely and hardcodes `$6d8e=-1`/`$6d90=1` at PC
+`$ce70`/`$ce76` instead. Player 1's slot has no such gate -- confirmed with
+an *unconditional* PC breakpoint (not a value-change watch, which
+structurally cannot see a write that happens to preserve the existing
+value -- `$6d10` was already `1` from the unrelated `$1028` boot `movem.l`,
+so MACDO's own row-7 write to the same value never showed up as a change):
+`$1153c` fires once in every mode tested; `$cda6`/`$cdaa` fire only outside
+training; `$ce70`/`$ce76` fire only in training.
+
+**Answers the bead's own question ("per-rank or per-disc-kind?"): it's
+per-character.** A stat at a fixed offset in the selected character's own
+roster record selects a row in a fixed, shared table; nothing here is
+disc-kind- or rank-keyed. Full instruction listing, the whole 8-row table,
+and a `docs/state-schema.md` diff are in `reports/part12-dirkind.md`. The
+schema row stays `waived:discr-qqt` -- the writer is now named, but
+modelling it needs a character-roster table `disc-core` does not have.
+
+## Part 12 (bonus) — the placer named, a bonus finally picked up on trace
+
+`bd discr-ovl.4` asked what sets bit 7 of a tile's hp word and what writes
+`$6e3a`; Part 10 had decoded the pickup side only. Static analysis
+(`tmp/ghidra_proj`) had nothing left to give: every literal reference to
+`$7616`/`$7596` anywhere in the 1MB image (38 total, checked against the raw
+binary bytes, not just Ghidra's own instruction model) is a known read or the
+already-decoded `$a292`-`$a2ca` pickup -- the placer's code sits in a span
+Ghidra's batch analysis never reached from a known entry point, so it does
+not exist in this snapshot's function list at all. A live change-watch on
+`$6e3a` (Hatari's own change-tracking breakpoint) in CHALLENGE mode found it
+inside one idle run.
+
+**The trigger and the code roll**, `$9d0c`-`$9d88`:
+
+```
+$9d0c  cmp.b  #1,$6ca0        ; a special/test path when $6ca0==1, unexercised
+                              ; by anything committed here
+$9d16  subq.w #1,$6e3c        ; $6e3c: reloaded to $14=20 every time it fires --
+$9d1e  move.w #$14,$6e3c      ; a bonus is only ever ROLLED once every 20 ticks
+$9d24  move.b $6c5d,D0 / add.b $6ab5,D0 / move.b D0,$6c5d   ; PRNG advance
+$9d30  and.b  #$7f,D0         ; D0 &= 0x7f
+$9d34  blt.w  $9ab6           ; D0<4    (4/128)  -> no bonus
+$9d42  move.w #2,$6e3a        ; 4<=D0<8 (4/128)  -> code 2
+$9d52  move.w #1,$6e3a        ; 8<=D0<$a(2/128)  -> code 1
+$9d62  move.w #4,$6e3a        ; $a<=D0<$c(2/128) -> code 4 (shield)
+$9d72  move.w #5,$6e3a        ; $c<=D0<$e(2/128) -> code 5
+$9d7e  move.w #3,$6e3a        ; D0==$e  (1/128)  -> code 3
+$9d88  rts                    ; D0 15..127 (113/128) -> no bonus
+```
+
+Every successful roll branches to `$9aea`, which picks WHERE:
+
+```
+$9aea  clr.l $6e32 / st.b $6e16          ; bonus-icon render state armed
+$9af2  move.b $6c5d,D0 / add.b $6ab5,D0 / move.b D0,$6c5d   ; same PRNG, rolled again
+$9afe  and.w #7,D0                       ; D0 = 0..7, which of 8 eligible cells
+$9b08  lea $5028,A1 / movea.l (0,A1,D0*4),A1   ; per-slot icon table
+$9b1c  move.w #$fa,$6e38                 ; icon lifetime, 250 frames
+$9b28  lea $761e,A0 / or.w #$0080,($02,A0,D0*8)   ; **SETS BIT 7**, near bank
+$9b32  lea $759e,A0 / or.w #$0080,($02,A0,D0*8)   ; and the far bank, same slot
+```
+
+`$761e`/`$759e` are their banks' base plus one cell, so both ORs land on cell
+`slot+1` of their own bank (confirmed live: a roll with slot=6 put the flag on
+cell 7). Both banks are written unconditionally in the same straight-line
+code -- a placement is not near-bank-only, though this project's committed
+fixture only shows the near-bank copy surviving to pickup (see
+`tests/fixtures/bonus.provenance.md` for why: a slow diagnostic pass let the
+far-bank copy be consumed in real time between placement and capture, which
+re-running with a same-session, no-round-trip seed avoided).
+
+**`bd discr-ovl.4` accepted.** The writer of bit 7 (`$9b28`/`$9b32`) and the
+writer of `$6e3a` (`$9d42`/`$9d52`/`$9d62`/`$9d72`/`$9d7e`, gated by the
+`$6e3c` timer) are both named address for address, and
+`tests/fixtures/bonus.ndjson` is a trace, cross-validated against a
+same-session Hatari reference for 147 frames, in which a bonus is placed
+and picked up.
+
+### `bd discr-z8m`'s writer is also named -- the multiplier semantics are not
+
+`$a2b0 move.w D0w,$6d9a` (inside the already-decoded near-grid pickup) is
+`$6d9a`'s only writer: it copies whatever `$9d1c`-`$9d88` most recently
+minted into `$6e3a`. Not a multiplier being written directly -- Part 10's own
+retraction already established that `$6d9a` is a bonus CODE, and this closes
+the loop on where that code comes from. What is **not** measured: the
+`$a314 cmp.w #1,$6d9a` double-apply this bead was actually filed against needs
+a code-1 roll specifically (2/128 per gate-fire), and every roll caught so
+far -- across two independent placement-fixture captures plus a 20,000-frame
+fast-forwarded hunt that recorded every code seen -- has come up code 2. Left
+open. The hunt recipe (poll `$6e3a` idle, seed the instant it changes) is
+proven and cheap to re-run; it has just not yet been lucky. See
+`reports/part12-bonus.md`.
+
+### discr-ovl.6: the fixture, and disc-core's own wall
+
+`tests/fixtures/bonus.ndjson`, 152 idle frames from a live CHALLENGE seed:
+`bonus_6d9a` goes 0 -> 2 at frame 151, `tiles[7].hp` goes `132` (`0x84`, bit 7
++ base hp 4) -> `4` (bit 7 stripped on pickup). `disc-core` matches the first
+**150** ticks (`--skip-waived`) and then diverges exactly there: it has no
+model yet for a bit-7-carrying cell, so its plain damage subtraction gives
+`132 -> 129` instead of the ST's `132 -> 4`. That gap is discr-ovl.4/z8m's
+open half, not a new bug.
