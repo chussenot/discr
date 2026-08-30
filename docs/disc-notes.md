@@ -2493,3 +2493,266 @@ is what lets the rest be measured rather than guessed.
 
 **`p1_walk` is now clean: 274 of 274 ticks, nothing waived.** All three fixtures
 are clean for the first time in the project.
+
+## The ten tier-1 states, decoded (Part 12)
+
+`bd discr-75o` named ten states whose handler addresses were tier-1 known but
+whose behaviour was not: 5, 11, 14, 19, 20, 21, 23, 24, 27, 31. By the time
+this part started, four had already been modelled by other work -- 11 and 23
+in Part 10b/10d (`struck_down`/`dead`), 20 in Part 10b (`turn`), 27 in Part
+10i (`run_out`, via `STATE_REACH`) -- so what follows covers the remaining
+six: 5, 14, 19, 21, 24, 31. All six were pulled from Ghidra 12.1.3 over
+`seeds/rally_f100.seed`; two of the six (19, 21) turn out to be fully
+determined by fields this crate already carries and are implemented in
+`player.rs`; the other four end in mechanisms (an undecoded throw commit, an
+undecoded parabola calculation, an opaque installed hook, and -- state 31 --
+an unconditional round reset) this crate has no representation for, and are
+documented rather than guessed at.
+
+### State 19, player 1's third catch state: decoded and implemented
+
+`$108f4` sits in the `$10e2c` table (confirmed by reading the table's raw 32
+longwords directly: entry 19 is `$108f4`, matching Part 8's tier-1 list
+exactly). It is gate-for-gate the same shape as state 18's commit:
+
+```
+$108f4  move.b #$13,$6ca9
+$108fa  if $6cda is $2c3c or $2c4c -> commit, else just run the animation
+$10912  btst #$7,(a0) ; beq out        ; fire must be HELD
+$1091a  btst #$1,(a0) ; bne out        ; down must not be
+$10922  if $6d0a == $6d0c -> out       ; a disc must be available
+$1092e  addq.w #6,$6ca2                ; six units RIGHT, in one step
+$10932  animation $2bb4 (5 cells of 4, read out of the image)
+$10940  move.b #$10,$6cae              ; and straight into state 16
+```
+
+Two differences from `intercept()` (state 18) are real, not noise: the step
+is `addq` (RIGHT), where state 18's is `subq` (LEFT); and the committed state
+is 16 (`STATE_THROW_LEFT`), where state 18 commits to 15
+(`STATE_THROW_STANDING`). Both are exactly what the disassembly shows, so
+`catch19()` in `player.rs` mirrors `intercept()` with those two constants
+flipped -- `CATCH19_STEP`, `STATE_THROW_LEFT` -- and the release checkpoints
+(`CATCH19_RELEASE_A`/`B`) are their own pair, not a reuse of state 18's.
+
+What is **not** decoded is what enters state 19 in the first place:
+`anticipate()`'s X ladder only ever picks `STATE_INTERCEPT` or `STATE_REACH`,
+so a third branch this crate has not found yet must select state 19 --
+exactly matching `p2_hit_test`'s own honest note ("`$cad0` is state 19's; no
+fixture reaches state 19"). No fixture and no Hatari probe in this part
+reached it either. Fully implemented, fully gated on fields `disc-core`
+already carries (`anim_cursor`, `discs_out`, `disc_cap`, `world_x`), tested in
+`player.rs` (`state19_commits_on_its_release_frame_with_fire_and_a_disc`,
+`state19_is_a_pass_through_off_its_release_frame`) -- but **not
+cross-validated against a live trace**, because nothing yet drives player 1
+into it.
+
+### `intercept()` had player 2's gate values hardcoded for both players -- `retract`
+
+Decoding state 19 meant reading state 18's real player-1 address for
+comparison, and that turned up a bug in code this crate already ships.
+`intercept()` (state 18, `STATE_INTERCEPT`) is called for whichever player
+reaches state 18, but its release-checkpoint constants,
+`INTERCEPT_RELEASE_A`/`B` (`$4624`/`$4634`), are **player 2's** -- read off
+`$c19c`/`$c1a8`. Player 1's own copy of the handler is at `$1089e` (four bytes
+past the state-17 stub, `$1089a`, which is why nothing had gone looking for
+it), and it gates on `$2c10`/`$2c20` instead:
+
+```
+$1089e  move.b #$12,$6ca9
+$108a4  if $6cda is $2c10 or $2c20 -> commit, else just run the animation
+$108bc  btst #$7,(a0) ; beq out
+$108c4  btst #$1,(a0) ; bne out
+$108cc  if $6d0a == $6d0c -> out
+$108d8  subq.w #6,$6ca2                ; the same LEFT step as $c1d0
+$108dc  animation $2bdc (5 cells of 4)
+$108ea  move.b #$f,$6cae               ; the same target state, 15
+```
+
+The step magnitude and sign and the committed state are identical to player
+2's -- only the two gate checkpoints differ, because each player's animation
+data lives at its own addresses (`$2c10` is exactly `ANIM_P1_INTERCEPT`'s
+fourth cell, `$2bfe + 3*6`, matching how `$4624` is `ANIM_INTERCEPT`'s fourth
+cell, `$4612 + 3*6`). Before this part, a player 1 that reached state 18 and
+its real release frame would stamp `$6ca9`, hold the pose, and **never
+commit**, because its `anim_cursor` would never equal player 2's addresses.
+
+This is a real divergence from the ST, but it is currently inert: the only
+fixture that puts player 1 in state 18 is `p1_walk.ndjson`, and its window
+ends three frames after entry (272-274) with `discs_out == disc_cap` (`2 ==
+2`) throughout -- the disc-availability gate alone would have blocked the
+commit regardless of which checkpoint constants were used, and the recorded
+`anim_cursor` (`$2bfe`, i.e. `11262`) never reaches either checkpoint within
+the window either. So all five gates in this bead's list still pass at their
+required counts with the fix applied. `intercept()` now takes `who` and reads
+the correct pair via `intercept_release()`; `INTERCEPT_RELEASE_A`/`B` keep
+their names and player 2's values, documented as such.
+
+### State 21: decoded and implemented, an unconditional slide
+
+`$109aa`, immediately after state 20's turn transient in the table (entry
+21), is a plain three-unit slide left with **no gate at all**:
+
+```
+$109aa  move.b #$15,$6ca9
+$109b0  subq.w #3,$6ca2          ; world_x -= 3, EVERY call, unconditionally
+$109b4  [the 20-byte tail copy, inlined -- the same shape state 20 duplicates]
+$109ec  tst.l (a1) ; bne out     ; sequence not done -> just save the cursor
+$109f2  lea $2c78,a1 ; ... ; $6cae = 0   ; ended -> straight to idle
+```
+
+No held-input test, and -- checked directly against the disassembly, not
+inferred -- no clamp at `WALK_X_MIN`/`WALK_X_MAX` either, unlike `walk()`.
+And the sequence running out lands on state 0 directly, not through
+`player.pending_state` the way state 20's does. Entry 22 (`$10a0e`) is the
+mirror, `addq.w #3` instead of `subq.w #3`, otherwise byte-identical; it is
+left opaque, since inferring its body from 21's would be exactly the kind of
+guess the house rules forbid, and neither state was reached by any fixture or
+by the Hatari probe below.
+
+Implemented as `slide_left()`, which is `world_x -= SLIDE_STEP` followed by
+`run_out()` -- `run_out` already is exactly this handler's ending, so no new
+machinery was needed. Tested in `player.rs`
+(`state21_slides_unconditionally_and_ends_at_idle`); not cross-validated live,
+since nothing in this part's probing reached it.
+
+### States 5, 14, 24 and 31: decoded, not implemented, and one live cross-validation
+
+These four were pulled from the same Ghidra pass but are **not** wired into
+`step()`, because each one's real behaviour depends on a mechanism this crate
+does not carry, and guessing at any of the four would be the speculative
+implementation the house rules forbid.
+
+**State 5** (`$fb6e`), player 1's rise, entered from idle under Up
+(`$f222`-`$f238`):
+
+```
+$fb6e  move.b #$5,$6ca9
+$fb74  btst #$7,(a0) ; beq $fb94        ; fire not held -> just check Up
+$fb7c  btst #$1,(a0) ; bne $f306        ; fire+Down -> an aerial-throw commit,
+$fb84  d0 = $6d0a (discs_out)           ;   undecoded (see idle()'s own $f21e
+$fb88  cmp.w $6d0c,d0 (disc_cap)        ;   bmi to the same $f306, bd discr-b6x)
+$fb8c  bne $f306                       ; fire+!Down+a disc available -> the same
+$fb90  bclr #$7,(a0)                    ; otherwise: consume fire, keep rising
+$fb94  btst #$0,(a0) ; beq $fb9c        ; Up not held -> straight to idle ($2c78)
+$fbb2  addq.w #1,$6ca6                  ; world_y += 1, EVERY frame Up is held
+$fbb6  cmpi.w #$19,$6ca6 ; ble $fbde    ; below the clamp -> continue rising
+$fbc0  move.w #$19,$6ca6                ; at the clamp: pin world_y at 25
+$fbc6  animation $2a22 (8 cells of 4)
+$fbd4  move.b #$18,$6cae                ; -> state 24
+$fbde  btst #$3,(a0) ...                ; Right/Left while rising: a large
+                                        ;   undecoded column/parabola lookup
+                                        ;   and bsr $aae8 -- an aerial attack
+                                        ;   calculation, a NEW undecoded wall
+```
+
+**State 14** (`$106b2`), Right+Fire from idle -- already tier-1 known as an
+entry condition, newly decoded as a body:
+
+```
+$106b2  move.b #$e,$6ca9
+        [the same inlined 20-byte tail copy]
+$106f6  btst #$3,(a0) ; beq $10754      ; Right no longer held -> idle
+$106fc  cmpi.w #$98,$6ca2 ; beq $10754  ; already at WALK_X_MAX -> idle
+$10704  addq.w #2,$6ca2                 ; else: two units right
+$10708  [primes a sound cue: $6c5c, Timer A via $63312, $fa1f/$fa19]
+$10732  animation $300a (6 cells of 4)
+$10740  move.b #$1f,$6cae               ; -> state 31
+$10746  move.l #$1334a,$6cce            ; installs a function-pointer hook
+$1074e  clr.w $6cd2
+```
+
+**State 24** (`$10ac4`), the hover atop a state-5 rise, is the same shape as
+14 with the direction bit swapped for Up and a second, **unclamped**
+`world_y += 1` on the frame it hands off to 31:
+
+```
+$10ac4  move.b #$18,$6ca9
+        [the same inlined tail copy]
+$10b08  btst #$0,(a0) ; beq $10b5e      ; Up no longer held -> idle
+$10b0e  addq.w #1,$6ca6                 ; world_y += 1 again, no clamp this time
+$10b12  [the same sound-cue priming as state 14]
+$10b3c  animation $2f92 (6 cells of 4)
+$10b4a  move.b #$1f,$6cae               ; -> state 31
+$10b50  move.l #$1334a,$6cce            ; the SAME hook address as state 14's
+$10b58  clr.w $6cd2
+```
+
+**State 31** (`$10dda`) is where both paths land, and it is not a normal
+transient at all:
+
+```
+$10dda  move.b #$1f,$6ca9
+$10de0  st.b $6d2d      ; SET, unconditionally, EVERY call -- player 2's own
+                        ;   +$0d, the exact field $a564 polls to retire every
+                        ;   disc and end the round, and the exact field $f1b4
+                        ;   sets three instructions after player 1 enters
+                        ;   state 23 (death)
+$10de4  st.b $6cac      ; SET, unconditionally -- player 1's own "down" flag,
+                        ;   the same field idle() tests to enter the death path
+$10de8  if $6cda's sequence pointer is null -> $10aba, STATE 23's OWN
+                        ;   terminal return (bumps $6cab by 3, $6c83 by 1) --
+                        ;   otherwise the usual inlined tail copy, and rts
+                        ;   (no bra to $f1c4: no further state change here)
+```
+
+So reaching state 31 sets the *same two* fields the disc-damage death path
+sets -- via a completely different trigger, a sustained rise rather than
+being hit -- and shares state 23's own terminal code once its sequence runs
+dry. Nothing in `Player`/`GameState` models "end the round"; inventing a
+field or event for it here would be exactly the guess this bead exists to
+prevent, so states 24 and 31 stay opaque pass-throughs in `step()`, same as 5
+and 14.
+
+#### Live cross-validation: `dumps/state5_hunt`
+
+A scenario (`mode: training`, watching `$6cae` while holding Up for 90
+frames) drove player 1 through this entire chain in one run and recorded
+**exactly** the three write sites this decode predicts, in order:
+
+```
+[watch] $6cae: 3 hit(s) from PC $f23e, $fbda, $10b50
+```
+
+`$f23e` is the `bra $f1c4` immediately after `$f238`'s `move.b #$5,$6cae` --
+idle entering state 5 on Up. `$fbda` is the `bra $f1c4` immediately after
+`$fbd4`'s `move.b #$18,$6cae` -- state 5's rise clamp handing off to state 24.
+`$10b50` is the hook-install instruction immediately after `$10b4a`'s
+`move.b #$1f,$6cae` -- state 24 handing off to state 31. (Hatari's
+change-watch reports the PC reached *after* the write completes, one
+instruction past each `move.b`, consistently across all three hits.)
+
+A dump taken 10 frames later (`dumps/state5_hunt/b.bin`, VBL 17922 against
+the baseline's 16684) shows player 1 fully reset: `$6cae` = 0, `$6ca6` = 18
+(the starting `world_y`, not the clamped 25), `$6cac` = 0, and player 2's
+`$6d2d` = 0 -- all back to their pre-jump values. **Entering state 31 forces
+an immediate round reset**, confirmed live and not just from the disassembly:
+sustaining an upward jump is a way to end the current round outright, not (as
+first guessed, before this run) some kind of aerial power move that leaves
+the jumping player briefly vulnerable.
+
+### Status table
+
+| state | address | semantics | status |
+|---|---|---|---|
+| 5 | `$fb6e` | rise on Up; `world_y += 1`/frame, clamp 25 -> state 24; fire (+availability) or fire+Down bail to the undecoded `$f306`; Left/Right bail to the undecoded `$aae8` parabola calc | decoded, not implemented |
+| 11 | `$10554` | knocked down, sinks one row per animation cell, floor at `world_y` 2 | decoded + implemented (Part 10b/11i) |
+| 14 | `$106b2` | Right+Fire windup; on completion, Right still held -> `world_x += 2`, sound cue, -> state 31 with the `$1334a` hook installed; else -> idle | decoded, not implemented |
+| 19 | `$108f4` | player 1's third catch/commit state; gate on `anim_cursor` + fire + !Down + a disc available; commits `world_x += 6` -> state 16 | decoded + implemented (this part) |
+| 20 | `$1094a` | the turn transient, redirects through `pending_state` | decoded + implemented (Part 10b) |
+| 21 | `$109aa` | unconditional `world_x -= 3`/frame, no gate, no clamp; sequence end -> idle directly | decoded + implemented (this part) |
+| 23 | `$10a72` | out of energy; terminal, tests the terminator before copying | decoded + implemented (Part 10b/10d) |
+| 24 | `$10ac4` | the hover atop state 5's rise; on completion, Up still held -> unclamped `world_y += 1`, sound cue, -> state 31 with the same `$1334a` hook; else -> idle | decoded, not implemented |
+| 27 | `$10c8a` | reaching for a disc without moving, runs its sequence out via `run_out` | decoded + implemented (Part 10i) |
+| 31 | `$10dda` | reached from 14 or 24; unconditionally sets player 2's `$6d2d` and player 1's `$6cac` every call -- an immediate round reset, live-confirmed | decoded, not implemented |
+
+Plus one correction to code that shipped before this part: `intercept()`
+(state 18) was using player 2's release checkpoints for both players; it now
+takes `who` and reads the right pair (`intercept_release()`), currently inert
+against both committed fixtures (see above).
+
+Two new walls this part surfaced and did not chase, both worth a follow-up
+bead of their own rather than folding into `discr-75o`: `$f306` (state 5's
+and idle's shared fire+Down / fire+available-disc branch -- an aerial throw
+commit) and `$aae8` (the column/parabola calculation state 5's Left/Right
+branch runs while rising, and the `$1334a` hook both 14 and 24 install before
+handing off to state 31).

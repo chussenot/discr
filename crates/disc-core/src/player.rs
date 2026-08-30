@@ -184,6 +184,9 @@ anims! {
     ANIM_P2_THROW_RIGHT = 0x45ea, [4, 4, 4, 4, 4, 4],
         "ST `$45ea`, loaded at `$ae0e`: the same, stepping right. `$45f0` -- the \
          sequence the intercept commits into -- is this table's second cell.";
+    ANIM_P1_CATCH19_COMMIT = 0x2bb4, [4, 4, 4, 4, 4],
+        "ST `$2bb4`, loaded at `$10932` when state 19 commits: five cells of \
+         four, the same shape as `$45f0`/`ANIM_AFTER_INTERCEPT`.";
 }
 
 /// The sequence a handler loaded, by its ST address.
@@ -452,6 +455,44 @@ fn turn(player: &mut Player) {
     }
 }
 
+/// State 21: an unconditional three-unit slide left. ST `$109aa`.
+pub const STATE_SLIDE_LEFT: u8 = 0x15;
+
+/// How far state 21 (and its mirror, state 22) slides each frame. ST
+/// `$109b0 subq.w #3,$6ca2` / `$10a14 addq.w #3,$6ca2`.
+pub const SLIDE_STEP: i16 = 3;
+
+/// State 21, an unconditional slide left with no gating at all. ST `$109aa`.
+///
+/// ```text
+/// $109aa  move.b #$15,$6ca9
+/// $109b0  subq.w #3,$6ca2          ; world_x -= 3, EVERY frame, no gate
+/// $109b4  [the 20-byte tail copy, inlined -- same shape as state 20's]
+/// $109ec  tst.l (a1) ; bne out     ; sequence not done -> just save the cursor
+/// $109f2  lea $2c78,a1 ; $6cae = 0 ; -- ended: straight to idle
+/// ```
+///
+/// Two things distinguish it from the turn transient (state 20), both
+/// measured rather than assumed: the step is **unconditional**, run on every
+/// call regardless of held input, and there is **no clamp** at
+/// `WALK_X_MIN`/`WALK_X_MAX` -- unlike [`walk`], nothing here bounds
+/// `world_x` at all. And the sequence running out lands directly on state 0,
+/// not through `player.pending_state` the way state 20's does -- exactly
+/// [`run_out`]'s ending, which is why this reuses it.
+///
+/// State 22 (`$10a0e`) is the mirror, `addq.w #3` instead of `subq.w #3`,
+/// otherwise identical down to the byte. Neither state appears in any
+/// committed fixture, and forcing player 1's rise (Up held, see
+/// `dumps/state5_hunt`) never reached either one, so what enters 21/22 is
+/// still unknown; only 21 is modelled, since guessing at 22 from its mirror
+/// alone would be exactly the kind of inference the house rules forbid.
+/// `// UNKNOWN (what enters state 21/22): see bd discr-75o`.
+fn slide_left(player: &mut Player, who: PlayerId) {
+    player.facing = STATE_SLIDE_LEFT;
+    player.world_x -= SLIDE_STEP;
+    run_out(player, who);
+}
+
 /// State 11, knocked down. ST `$10554` for player 1, `$be54` for player 2.
 ///
 /// ```text
@@ -528,8 +569,23 @@ fn stub(player: &mut Player, who: PlayerId) {
 ///
 /// `golden.ndjson` frames 39 -> 40 are exactly this: the cursor reaches `$4624`
 /// and player 2 goes from `x` 63 to 57, in state 15.
-fn intercept(player: &mut Player, input: Input) {
-    if player.anim_cursor != INTERCEPT_RELEASE_A && player.anim_cursor != INTERCEPT_RELEASE_B {
+///
+/// **`who` matters here, and it did not used to be a parameter.** Player 1's
+/// own copy of this handler is at `$1089e` (four bytes past the state-17
+/// stub, which is why nothing had gone looking for it): `$108a4`/`$108b0`
+/// gate on `$2c10`/`$2c20` where player 2 gates on `$4624`/`$4634` -- two
+/// entirely different sequence tables, since each player's animation data
+/// lives at its own addresses. The step itself is the same `subq.w #6` for
+/// both. Before this fix, `intercept()` used player 2's release constants
+/// unconditionally, so player 1 could stamp `$6ca9`, hold the intercept pose
+/// and never commit -- silently, because `p1_walk.ndjson`'s frame 272-274
+/// window (`discs_out == disc_cap` there, so the commit gate would have
+/// bailed either way) ends exactly where player 1 first reaches state 18 and
+/// never reaches a frame that would have told the two constants apart.
+/// `// retract: see docs/disc-notes.md, Part 12 (discr-75o)`.
+fn intercept(player: &mut Player, who: PlayerId, input: Input) {
+    let (release_a, release_b) = intercept_release(who);
+    if player.anim_cursor != release_a && player.anim_cursor != release_b {
         return;
     }
     if !input.fire_held || input.dir.has(DirBits::DOWN) || player.discs_out == player.disc_cap {
@@ -542,6 +598,25 @@ fn intercept(player: &mut Player, input: Input) {
     player.state_index = STATE_THROW_STANDING;
     enter_anim(player, ANIM_AFTER_INTERCEPT);
     anim_tick(player);
+}
+
+/// The two animation-cursor checkpoints state 18 commits on, per player. ST
+/// `$c19c`/`$c1a8` for player 2, `$108a4`/`$108b0` for player 1.
+///
+/// Player 1's first checkpoint (`$2c10`) is exactly `ANIM_P1_INTERCEPT`'s
+/// fourth cell (`$2bfe + 3*6`), matching how player 2's `$4624` is
+/// `ANIM_INTERCEPT`'s fourth cell (`$4612 + 3*6`) -- the same shape, cited
+/// separately because inferring one from the other would be a guess, not a
+/// measurement. Read live: `dumps/state5_hunt` (below) confirms the write
+/// sites this function's callers rely on; the two checkpoints themselves are
+/// disassembly-only, since no fixture or Hatari probe has driven player 1's
+/// intercept to commit.
+#[must_use]
+const fn intercept_release(who: PlayerId) -> (u32, u32) {
+    match who {
+        PlayerId::One => (0x2c10, 0x2c20),
+        PlayerId::Two => (INTERCEPT_RELEASE_A, INTERCEPT_RELEASE_B),
+    }
 }
 
 /// The four throw states, whose handlers -- `$b3ee`, `$b4a0`, `$c068`, `$c0fe` --
@@ -776,7 +851,9 @@ pub const SMASH_LUNGE_RIGHT_AT: u32 = 0x4708;
 /// ST `$ae94 subi.w #$26` / `$aef4 addi.w #$26`.
 pub const SMASH_PROBE: i16 = 0x26;
 
-/// The two animation cursor values state 18 commits on. ST `$c19c` / `$c1a8`.
+/// The two animation cursor values player 2's state 18 commits on. ST
+/// `$c19c` / `$c1a8`. Player 1's own pair is different -- see
+/// [`intercept_release`].
 pub const INTERCEPT_RELEASE_A: u32 = 0x4624;
 /// The other one.
 pub const INTERCEPT_RELEASE_B: u32 = 0x4634;
@@ -988,6 +1065,68 @@ pub const STATE_INTERCEPT: u8 = 0x12;
 
 /// ST state 27: reaching for a disc without moving (`$c6ec` entry 27).
 pub const STATE_REACH: u8 = 0x1b;
+
+/// ST state 19: player 1's own third catch/commit state, `$108f4`. Structurally
+/// identical to [`STATE_INTERCEPT`]'s commit (`$1089e`/`$c196`) -- same four
+/// gates, same shape of tail-load -- but it commits to [`STATE_THROW_LEFT`]
+/// (`$10940 move.b #$10,$6cae`) instead of [`STATE_THROW_STANDING`], and steps
+/// `world_x` the OPPOSITE direction (`$1092e addq.w #6`, not `subq.w #6`).
+///
+/// What selects state 19 over 18 or 27 is not decoded: [`anticipate`]'s X
+/// ladder only ever picks [`STATE_INTERCEPT`] or [`STATE_REACH`], so entering
+/// state 19 comes from a third branch this crate has not found yet -- which
+/// is exactly why `p2_hit_test`'s own note calls its mirror "not modelled, no
+/// fixture reaches state 19" (see [`p2_hit_test`]). No fixture and no Hatari
+/// probe has reached it on player 1 either.
+/// `// UNKNOWN (what enters state 19): see bd discr-75o`.
+pub const STATE_CATCH19: u8 = 0x13;
+
+/// The two animation-cursor checkpoints state 19 commits on. ST
+/// `$108fa`/`$10906`. Player 1's `STATE_INTERCEPT` checkpoints are `$2c10`/
+/// `$2c20` -- a different pair again, confirming each committing state reads
+/// its own two-cell window rather than sharing one.
+pub const CATCH19_RELEASE_A: u32 = 0x2c3c;
+/// The other one. ST `$10906`.
+pub const CATCH19_RELEASE_B: u32 = 0x2c4c;
+
+/// How far state 19 steps on commit, and which way. ST `$1092e addq.w #6,$6ca2`
+/// -- the opposite sign from `INTERCEPT_STEP`'s `subq.w #6`.
+pub const CATCH19_STEP: i16 = 6;
+
+/// State 19, player 1's other catch/commit state. ST `$108f4`.
+///
+/// ```text
+/// $108f4  move.b #$13,$6ca9
+/// $108fa  if $6cda is $2c3c or $2c4c -> commit, else just run the animation
+/// $10912  btst #$7,(a0) ; beq out        ; fire must be HELD
+/// $1091a  btst #$1,(a0) ; bne out        ; down must not be
+/// $10922  if $6d0a == $6d0c -> out       ; a disc must be available
+/// $1092e  addq.w #6,$6ca2                ; six units RIGHT, in one step
+/// $10932  animation $2bb4 (5 cells of 4)
+/// $10940  move.b #$10,$6cae              ; and straight into state 16
+/// ```
+///
+/// Gate-for-gate the same shape as [`intercept`], and fully determined by
+/// fields this crate already carries, so it is modelled the same way. Player
+/// 2's mirror is not decoded (see [`STATE_CATCH19`]'s doc), so this is a
+/// no-op for [`PlayerId::Two`] rather than a guess.
+/// `// UNKNOWN (what enters this state): see bd discr-75o`.
+fn catch19(player: &mut Player, who: PlayerId, input: Input) {
+    if who != PlayerId::One {
+        return;
+    }
+    if player.anim_cursor != CATCH19_RELEASE_A && player.anim_cursor != CATCH19_RELEASE_B {
+        return;
+    }
+    if !input.fire_held || input.dir.has(DirBits::DOWN) || player.discs_out == player.disc_cap {
+        return;
+    }
+    player.world_x += CATCH19_STEP;
+    player.grid_cell = grid_cell(player.world_x, player.world_y);
+    player.state_index = STATE_THROW_LEFT;
+    enter_anim(player, ANIM_P1_CATCH19_COMMIT);
+    anim_tick(player);
+}
 
 /// The reach the bonus code 5 substitutes for [`Player::reach`]. ST `$cb5e`.
 pub const BONUS_REACH: i16 = 0x32;
@@ -1444,7 +1583,8 @@ pub fn step(
         STATE_STRUCK_DOWN => struck_down(player, who),
         STATE_STRUCK_UP => struck_up(player, who),
         STATE_DEAD => dead(player),
-        STATE_INTERCEPT => intercept(player, input),
+        STATE_INTERCEPT => intercept(player, who, input),
+        STATE_CATCH19 => catch19(player, who, input),
         STATE_STUB => stub(player, who),
         15 | 16 => throwing(player, who),
         STATE_SMASH_LEFT => smashing(player, who, -SMASH_SLIDE, SMASH_LUNGE_LEFT_AT),
@@ -1456,15 +1596,21 @@ pub fn step(
         STATE_REACH => run_out(player, who),
         1 => walk(player, input, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
         2 => walk(player, input, FACING_RIGHT, DirBits::RIGHT, WALK_STEP),
+        STATE_SLIDE_LEFT => slide_left(player, who),
         // Tier-1 states: the handler address is known, the behaviour is not.
         // Opaque pass-through -- moving a field we cannot justify would only
         // make a trace comparison diverge on the fields these do not touch.
-        5 => {}  // $fb6e (tests fire, btst #7,(a0) at $fb74). UNKNOWN: see bd discr-75o
-        14 => {} // $106b2, entered under Right+Fire. UNKNOWN: see bd discr-75o
-        19 => {} // $108f4. UNKNOWN: see bd discr-75o
-        21 => {} // $109aa. UNKNOWN: see bd discr-75o
-        24 => {} // $10ac4. UNKNOWN: see bd discr-75o
-        31 => {} // $10dda. UNKNOWN: see bd discr-75o
+        // Decoded in full (docs/disc-notes.md, Part 12) but not implemented:
+        // each one either falls into a subroutine this crate does not carry
+        // ($f306's aerial throw commit, or $aae8's parabola calculation) or
+        // -- states 24 and 31 -- ends in a mechanism (installing the $1334a
+        // hook, then state 31's unconditional round-reset) this crate has no
+        // event for. Inventing one would be exactly the guess the house
+        // rules forbid; see bd discr-75o.
+        5 => {}  // $fb6e: Up from idle, rising. -> 24 at the $19 (25) clamp.
+        14 => {} // $106b2: Right+Fire windup. -> 31 when it completes.
+        24 => {} // $10ac4: the hover atop a rise. -> 31 when it completes.
+        31 => {} // $10dda: sets $6d2d and $6cac every frame -- a round reset.
         // States 16 and 17 used to sit here under bd discr-rf9, "never observed
         // in Hatari"; player 2 spends much of both fixtures in them and they
         // are modelled above. Every other index is still unattested.
@@ -1676,11 +1822,12 @@ mod tests {
 
     #[test]
     fn opaque_states_move_nothing() {
-        // 0, 11, 12, 18, 20 and 23 left the list as Part 10 modelled them. What
-        // is left changes exactly one field: every handler stamps $6ca9 with
-        // its own index as its first instruction, modelled or not -- with 17
-        // the single exception, a four-byte stub that stamps nothing.
-        for state in [5, 14, 16, 19, 21, 24, 31] {
+        // 0, 11, 12, 18, 19, 20, 21 and 23 left the list as Part 10/12
+        // modelled them. What is left changes exactly one field: every
+        // handler stamps $6ca9 with its own index as its first instruction,
+        // modelled or not -- with 17 the single exception, a four-byte stub
+        // that stamps nothing.
+        for state in [5, 14, 16, 24, 31] {
             let before = walking(state, 117);
             let mut p = before;
             run(&mut p, press(DirBits::LEFT), &FLOOR);
@@ -1697,6 +1844,101 @@ mod tests {
         let mut p = before;
         run(&mut p, press(DirBits::LEFT), &FLOOR);
         assert_eq!(p, before, "the state-17 stub touches nothing at all");
+    }
+
+    /// State 19, off its release frame: a pass-through exactly like the
+    /// states `opaque_states_move_nothing` covers, tested separately because
+    /// this file also proves the release frame itself commits. ST `$108fa`/
+    /// `$10906` gate on `$2c3c`/`$2c4c`; `player.anim_cursor` starts at 0 via
+    /// `Player::default`, which is neither.
+    #[test]
+    fn state19_is_a_pass_through_off_its_release_frame() {
+        let before = Player {
+            discs_out: 0,
+            disc_cap: 1, // a disc IS available -- only the anim gate should block it
+            ..walking(STATE_CATCH19, 117)
+        };
+        let mut p = before;
+        let fire = Input {
+            dir: DirBits::NONE,
+            fire_edge: false,
+            fire_held: true,
+        };
+        run(&mut p, fire, &FLOOR);
+        assert_eq!(p.facing, STATE_CATCH19, "every handler stamps $6ca9");
+        assert_eq!(
+            Player { facing: 0, ..p },
+            Player {
+                facing: 0,
+                ..before
+            },
+            "off the release frame, state 19 touches nothing else"
+        );
+    }
+
+    /// State 19's commit, ST `$10922`-`$10940`: fire held, down not held, a
+    /// disc available, and `anim_cursor` at one of its two checkpoints ends
+    /// in six units RIGHT (the opposite sign from `STATE_INTERCEPT`'s left
+    /// step) and state 16, not 15.
+    #[test]
+    fn state19_commits_on_its_release_frame_with_fire_and_a_disc() {
+        for release in [CATCH19_RELEASE_A, CATCH19_RELEASE_B] {
+            let mut p = Player {
+                discs_out: 0,
+                disc_cap: 1,
+                anim_cursor: release,
+                ..walking(STATE_CATCH19, 117)
+            };
+            let fire = Input {
+                dir: DirBits::NONE,
+                fire_edge: false,
+                fire_held: true,
+            };
+            run(&mut p, fire, &FLOOR);
+            assert_eq!(p.world_x, 117 + CATCH19_STEP, "checkpoint {release:#x}");
+            assert_eq!(p.state_index, STATE_THROW_LEFT);
+            assert_eq!(p.anim_base, ANIM_P1_CATCH19_COMMIT.start);
+        }
+
+        // The same frame, but with no disc available: the cap gate still
+        // wins over the anim gate, exactly like STATE_INTERCEPT's.
+        let mut p = Player {
+            discs_out: 1,
+            disc_cap: 1,
+            anim_cursor: CATCH19_RELEASE_A,
+            ..walking(STATE_CATCH19, 117)
+        };
+        let fire = Input {
+            dir: DirBits::NONE,
+            fire_edge: false,
+            fire_held: true,
+        };
+        run(&mut p, fire, &FLOOR);
+        assert_eq!(p.world_x, 117, "no disc available -> no commit");
+        assert_eq!(p.state_index, STATE_CATCH19);
+    }
+
+    /// State 21, ST `$109aa`: `world_x` moves left by exactly
+    /// [`SLIDE_STEP`] on every single call, whether or not any input is
+    /// held, and the sequence loaded on entry ending lands directly on idle
+    /// -- unlike state 20, which redirects through `pending_state`.
+    #[test]
+    fn state21_slides_unconditionally_and_ends_at_idle() {
+        let mut p = walking(STATE_SLIDE_LEFT, 117);
+        enter_anim(&mut p, ANIM_TURN); // one cell, hold 4 -- reused for its shape only
+        let none = Input::default();
+
+        for expected_x in [114, 111, 108] {
+            run(&mut p, none, &FLOOR);
+            assert_eq!(p.world_x, expected_x, "unconditional, no input needed");
+            assert_eq!(p.state_index, STATE_SLIDE_LEFT);
+        }
+        run(&mut p, none, &FLOOR);
+        assert_eq!(p.world_x, 117 - 4 * SLIDE_STEP);
+        assert_eq!(
+            p.state_index, STATE_IDLE,
+            "the sequence ending lands on idle directly, not via pending_state"
+        );
     }
 
     /// golden.ndjson f10-f14, the whole start-walking sequence. Idle with Left
