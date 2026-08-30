@@ -678,15 +678,17 @@ fn struck_up(player: &mut Player, who: PlayerId) {
 /// **between the integration and the write-back**, which is why it takes the
 /// three candidate coordinates and returns a possibly-modified `world_z`.
 ///
-/// Only the strike -- the disc hitting the player's body -- is modelled. Two
-/// other paths through the same routine are not:
+/// Only the strike -- the disc hitting the player's body -- is modelled here.
+/// [`anticipate`] models a third path, the tail at `$112f4`-`$1147a` every
+/// non-crossing and non-strike falls into, which is what actually installs
+/// `$a71a`/`$a78e` (bd discr-ovl.1, CLOSED -- see [`anticipate`]'s doc).
+/// Two paths through this routine remain genuinely unmodelled:
 ///
 /// * **states 7..10 are the racket** (`$11030`-`$11096`): the player is
 ///   swinging, the disc is caught inside a second, wider box built from
-///   `$6cc6`/`$6cc8`, and `$110a6` adds `$6cc4` to its `vel_x`. That is the
-///   path that installs the `$a71a` steering hook at `$113e2`, so decoding it
-///   is what would let `disc-core` stop being fed `disc+$12`.
-///   `// UNKNOWN: see bd discr-ovl.1`.
+///   `$6cc6`/`$6cc8`, and `$110a6` adds `$6cc4` to its `vel_x`. Nothing found
+///   ties this path to a hook install; it is a separate, still-open swing
+///   mechanic. `// UNKNOWN: see bd discr-b6x`.
 /// * **the three owner-specific states** `$12`, `$13` and `$1b` (`$11012`).
 ///
 /// The strike, transcribed:

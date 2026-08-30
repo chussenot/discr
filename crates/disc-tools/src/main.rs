@@ -487,8 +487,12 @@ impl Frame {
                     Some(0) | None => disc_core::PlayerId::One,
                     Some(_) => disc_core::PlayerId::Two,
                 },
-                // `disc+$12`: reseeded every tick, because what installs it is
-                // the two hit tests. // UNKNOWN: see bd discr-ovl.1.
+                // `disc+$12`, the steering hook. Parsed here purely as the
+                // trace's OWN value for `want`/comparison -- `disc-core`
+                // installs the hook itself now (Part 10f/11j, bd discr-ovl.1
+                // CLOSED: both hit tests' anticipation cascades are modelled),
+                // so this is no longer fed into `state`; see
+                // `feed_disc_inputs` below.
                 hook: t.hook.map_or(disc_core::SteerHook::None, steer_hook),
                 world_x: t.wx,
                 world_y: t.wy,
