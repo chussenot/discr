@@ -425,7 +425,7 @@ pub fn step(
     _slot: usize,
     players: &mut [Player; 2],
     tiles: &mut [Tile; TILE_CELLS],
-    collapse: &mut Option<tile::Collapse>,
+    collapse: &mut [Option<tile::Collapse>; tile::COLLAPSE_SLOTS],
     tiles_far: &mut [Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
@@ -669,7 +669,7 @@ pub fn impact(
     disc: &DiscSlot,
     cell: usize,
     tiles: &mut [Tile; TILE_CELLS],
-    collapse: &mut Option<tile::Collapse>,
+    collapse: &mut [Option<tile::Collapse>; tile::COLLAPSE_SLOTS],
     events: &mut Vec<Event>,
 ) {
     // $a2ec/$a2f0: type == 0 skips the whole damage path.
@@ -737,7 +737,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -780,7 +780,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -814,7 +814,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -829,7 +829,7 @@ mod tests {
             0,
             &mut players,
             &mut tiles,
-            &mut None,
+            &mut [None, None, None, None],
             &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
@@ -862,7 +862,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -875,7 +875,7 @@ mod tests {
             0,
             &mut players,
             &mut tiles,
-            &mut None,
+            &mut [None, None, None, None],
             &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
@@ -932,7 +932,7 @@ mod tests {
             0,
             &mut players,
             &mut tiles,
-            &mut None,
+            &mut [None, None, None, None],
             &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
@@ -979,7 +979,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -995,7 +995,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -1024,7 +1024,7 @@ mod tests {
             0,
             &mut players,
             &mut tiles,
-            &mut None,
+            &mut [None, None, None, None],
             &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
@@ -1052,7 +1052,7 @@ mod tests {
             0,
             &mut players,
             &mut tiles,
-            &mut None,
+            &mut [None, None, None, None],
             &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
@@ -1065,7 +1065,7 @@ mod tests {
             0,
             &mut players,
             &mut tiles,
-            &mut None,
+            &mut [None, None, None, None],
             &mut [Tile::default(); TILE_CELLS],
             &mut events,
         );
@@ -1093,7 +1093,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -1118,7 +1118,7 @@ mod tests {
             0,
             &mut players,
             &mut tiles,
-            &mut None,
+            &mut [None, None, None, None],
             &mut [Tile::default(); TILE_CELLS],
             &mut Vec::new(),
         );
@@ -1177,7 +1177,7 @@ mod tests {
                 0,
                 &mut players,
                 &mut tiles,
-                &mut None,
+                &mut [None, None, None, None],
                 &mut [Tile::default(); TILE_CELLS],
                 &mut events,
             );
@@ -1333,7 +1333,13 @@ mod tests {
         let mut disc = flying(80, aim_y());
         disc.damage = 3;
         let mut events = Vec::new();
-        impact(&disc, 9, &mut tiles, &mut None, &mut events);
+        impact(
+            &disc,
+            9,
+            &mut tiles,
+            &mut [None, None, None, None],
+            &mut events,
+        );
         assert_eq!(tiles[9], Tile::default());
         assert!(events.is_empty());
     }
