@@ -15,8 +15,9 @@ disagree, the notes win and this file is the bug.
   model, listed so nobody has to rediscover that the omission was deliberate.
 * **ST address** -- absolute for singletons, `base + n*stride + offset` for the
   arrays. `$6ca0` is player 1, `$6d20` player 2 (same layout, stride `$80`);
-  discs are 8 records of stride `$42` from `$6e3e`; tiles are 17 cells of
-  stride 8 from `$7616`.
+  discs are 8 records of stride `$42` from `$6e3e`; tiles are 16 cells of
+  stride 8 from `$7616` -- the near bank; the far bank is 16 more from `$7596`
+  (`$7596 + 16*8 = $7616`), waived under discr-ovl.3.
 * **status**
   * `compared` -- tracecheck must assert this field matches the ST.
   * `waived:<bead-id>` -- not modelled in this phase because the behaviour
@@ -106,6 +107,13 @@ Notes on individual rows:
 * `tiles[n].tile_type` -- `{0,1,2}`; 0 = destroyed = unwalkable, and the
   movement code `tst.w`s it as its walkability gate. `$a354` clears it when HP
   reaches 0.
+* `tiles[n].*` -- **n is 0..15**: a bank is 16 cells (Part 10, discr-ovl.5),
+  so 32 tile checks per frame. The three committed fixtures predate that and
+  carry a 17-pair grid column; the 17th pair is the word past the bank's end
+  (`$7696`, reads `(1,1)`, never a tile) and tracecheck parses and drops it. A
+  regenerated fixture emits exactly 16. Note `grid_cell` still *reads* 16 on
+  the far-right far-row cell -- the index goes one past the bank on the ST
+  too; the value is compared as a value, not used as a tile row.
 * `players[n].energy` -- **added in Part 10d.** `player+$76`, the word the
   strike at `$11178` subtracts the striking disc's `+$16` from, clamped to 0 at
   `$111c6`, at which point `$111ca` sets `$6cac` and the player is out. Player 1

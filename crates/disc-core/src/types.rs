@@ -9,8 +9,16 @@
 /// ST `$aa50`: the round initialiser stores 8 disc records.
 pub const DISC_SLOTS: usize = 8;
 
-/// Number of floor cells in the tile grid at ST `$7616` (stride 8).
-pub const TILE_CELLS: usize = 17;
+/// Number of cells in ONE tile bank (stride 8).
+///
+/// There are TWO adjacent 16-cell banks, not one 17-cell grid: `$7596` (far,
+/// player 2's) and `$7616` (near, player 1's), with `$7596 + 16*8 = $7616`.
+/// See docs/disc-notes.md:1103, "There are TWO 16-cell tile banks" (Part 10).
+/// This was 17 until discr-ovl.5: the old 17th word (`$7696`, the first word
+/// past the near bank) happens to read `(1,1)` but was never a tile. Note the
+/// index arithmetic still *reaches* 16 -- a player on the far-right far-row
+/// cell has `grid_cell` 16, one past the bank, and the ST reads `$7696` there.
+pub const TILE_CELLS: usize = 16;
 
 /// Lowest walkable player world X.
 ///

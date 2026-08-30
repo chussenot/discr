@@ -362,9 +362,11 @@ pub fn aim_for(hook: SteerHook, players: &[Player; 2]) -> (Option<i16>, Option<i
 ///
 /// So the cell index is `column(world_x + 4) + (4 if world_y > 70)`, which
 /// lands in **1..=8** -- and the player's `grid_cell` rule
-/// (`8 + column(x) + (4 if y > 14)`) lands in 9..=16. The 17 cells at `$7616`
-/// are therefore two banks of eight: **1..8 is the wall a disc hits and 9..16
-/// is the floor the players walk on**, with index 0 unused. That is consistent
+/// (`8 + column(x) + (4 if y > 14)`) lands in 9..=16. The 16-cell bank at
+/// `$7616` is therefore two rows of eight: **1..8 is the wall a disc hits and
+/// 9..16 is the floor the players walk on**, with index 0 unused and index 16
+/// landing one word PAST the bank (`$7696` -- see [`crate::TILE_CELLS`]).
+/// That is consistent
 /// with the observed tile events -- cells 6, 7 and 8 changed under disc impact
 /// and cell 14, in the floor bank, changed under something else (bd discr-b4q).
 ///

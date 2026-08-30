@@ -587,16 +587,20 @@ static void emit_frame(FILE *out, long frame)
                 (rd16(b + 0x12) << 16) | rd16(b + 0x14), (int16_t)rd16(b + 0x16),
                 (int16_t)rd16(b + 0x0c), (int16_t)rd16(b + 0x0e));
     }
+    /* The near bank: 16 cells of stride 8 from $7616 (discr-ovl.5).  This
+     * column was 17 cells wide before Part 10e established that a bank is 16;
+     * the old 17th entry was the first word past $7616's end ($7696, reads
+     * (1,1) -- not a tile).  tracecheck still parses-and-drops a 17-wide
+     * column so the committed fixtures load; anything regenerated from here
+     * emits the honest 16. */
     fprintf(out, "],\"grid\":[");
-    for (i = 0; i < 17; i++) {
+    for (i = 0; i < 16; i++) {
         unsigned b = 0x7616 + i * 8;
         fprintf(out, "%s[%u,%u]", i ? "," : "", rd16(b), rd16(b + 2));
     }
     /* Part 10e: BOTH banks, 16 cells of stride 8 each, contiguous from $7596.
      * $7596 is the bank player 2's code and $9f5e index; $7616 is player 1's
-     * and $a24c's.  The 17-cell "grid" above predates the discovery that a bank
-     * is 16 and is kept so committed fixtures still load; its 17th entry is the
-     * first word past $7616's end. */
+     * and $a24c's. */
     fprintf(out, "],\"banks\":[");
     for (i = 0; i < 32; i++) {
         unsigned b = 0x7596 + i * 8;
