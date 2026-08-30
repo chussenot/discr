@@ -2493,3 +2493,57 @@ is what lets the rest be measured rather than guessed.
 
 **`p1_walk` is now clean: 274 of 274 ticks, nothing waived.** All three fixtures
 are clean for the first time in the project.
+
+## bd discr-qqt: the `$6d8e`/`$6d10`/`$6d90` writer -- a per-character table, not a constant
+
+Ghidra's static image never showed a writer for `$6d8e` (served disc's
+`dir_kind`) or its per-player damage companions at `player+$70` (`$6d10`
+p1, `$6d90` p2) for a concrete reason: the writer lives entirely outside
+whatever code Ghidra's own CFG walk ever reached from its entry points --
+`xref`/`scan` on `$6d96`, `$6d18`, `$cd7c`, `$11512` all come back with zero
+references, even though this code visibly executes on every live match.
+Only a live Hatari change-watch armed *before* `navigate_to_match()` even
+taps SPACE (a custom driver, not a `collect.py` scenario -- `run_scenario`'s
+own `watch` step starts too late, after `enter_match()` already has a live
+match) could see it: three full boots, one per mode, with `$6d8e`/`$6d10`/
+`$6d90` watched from cold boot through character select and mode select.
+
+**When**: boot noise only (a TOS memory scan at `$11f0`, an unrelated
+`movem.l` register save at `$1028`) until VBL ~16300-18070, well after the
+match is already live and well before any disc is served -- an
+unconditional per-round setup step, not a serve-triggered one. Identical in
+training (which never serves a disc at all) and in challenge/tournament.
+
+**Who, and its source data**: two parallel player-slot blocks, one per
+player struct base (`$6ca0` p1, `$6d20` p2 -- matching `docs/state-schema.md`
+row 132's own `player+$6e`/`+$70` labelling exactly). Both scan the *same*
+8-row table at `$11542` (`threshold, valA, valB, mag_raw, mag`, 5 words/row),
+picking the first row whose threshold is `<=` a stat word read from the
+*currently selected character's own roster record* (`record+$8`; the
+pointer to that record lives at `$6d96` p2 / `$6d18` p1, 32-byte records,
+name first -- measured: EAGLE, stat `$4000` -> row 0, mag 3; MACDO, stat
+`$0` -> row 7, mag 1). The row's magnitude is written **twice**: negated
+into the dir_kind field (`$6d8e` at PC `$cda6`, p1's `$6d0e` at `$11538`,
+not negated), and as-is into the damage field (`$6d90` at PC `$cdaa`,
+`$6d10` at `$1153c`) -- this is the concrete mechanism behind the
+already-established fact "one per-player number is both throw depth-speed
+and damage": it is the *same table column*, read once, stored twice.
+
+Player 2's slot has a second, gated path: `$6c60 >= 16` (set to `$10` only
+when the mode byte `$6ca0` selects training, at `$116c4`) skips the
+character table entirely and hardcodes `$6d8e=-1`/`$6d90=1` at PC
+`$ce70`/`$ce76` instead. Player 1's slot has no such gate -- confirmed with
+an *unconditional* PC breakpoint (not a value-change watch, which
+structurally cannot see a write that happens to preserve the existing
+value -- `$6d10` was already `1` from the unrelated `$1028` boot `movem.l`,
+so MACDO's own row-7 write to the same value never showed up as a change):
+`$1153c` fires once in every mode tested; `$cda6`/`$cdaa` fire only outside
+training; `$ce70`/`$ce76` fire only in training.
+
+**Answers the bead's own question ("per-rank or per-disc-kind?"): it's
+per-character.** A stat at a fixed offset in the selected character's own
+roster record selects a row in a fixed, shared table; nothing here is
+disc-kind- or rank-keyed. Full instruction listing, the whole 8-row table,
+and a `docs/state-schema.md` diff are in `reports/part12-dirkind.md`. The
+schema row stays `waived:discr-qqt` -- the writer is now named, but
+modelling it needs a character-roster table `disc-core` does not have.
