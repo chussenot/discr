@@ -3004,3 +3004,87 @@ disc-kind- or rank-keyed. Full instruction listing, the whole 8-row table,
 and a `docs/state-schema.md` diff are in `reports/part12-dirkind.md`. The
 schema row stays `waived:discr-qqt` -- the writer is now named, but
 modelling it needs a character-roster table `disc-core` does not have.
+
+## Part 12 (bonus) — the placer named, a bonus finally picked up on trace
+
+`bd discr-ovl.4` asked what sets bit 7 of a tile's hp word and what writes
+`$6e3a`; Part 10 had decoded the pickup side only. Static analysis
+(`tmp/ghidra_proj`) had nothing left to give: every literal reference to
+`$7616`/`$7596` anywhere in the 1MB image (38 total, checked against the raw
+binary bytes, not just Ghidra's own instruction model) is a known read or the
+already-decoded `$a292`-`$a2ca` pickup -- the placer's code sits in a span
+Ghidra's batch analysis never reached from a known entry point, so it does
+not exist in this snapshot's function list at all. A live change-watch on
+`$6e3a` (Hatari's own change-tracking breakpoint) in CHALLENGE mode found it
+inside one idle run.
+
+**The trigger and the code roll**, `$9d0c`-`$9d88`:
+
+```
+$9d0c  cmp.b  #1,$6ca0        ; a special/test path when $6ca0==1, unexercised
+                              ; by anything committed here
+$9d16  subq.w #1,$6e3c        ; $6e3c: reloaded to $14=20 every time it fires --
+$9d1e  move.w #$14,$6e3c      ; a bonus is only ever ROLLED once every 20 ticks
+$9d24  move.b $6c5d,D0 / add.b $6ab5,D0 / move.b D0,$6c5d   ; PRNG advance
+$9d30  and.b  #$7f,D0         ; D0 &= 0x7f
+$9d34  blt.w  $9ab6           ; D0<4    (4/128)  -> no bonus
+$9d42  move.w #2,$6e3a        ; 4<=D0<8 (4/128)  -> code 2
+$9d52  move.w #1,$6e3a        ; 8<=D0<$a(2/128)  -> code 1
+$9d62  move.w #4,$6e3a        ; $a<=D0<$c(2/128) -> code 4 (shield)
+$9d72  move.w #5,$6e3a        ; $c<=D0<$e(2/128) -> code 5
+$9d7e  move.w #3,$6e3a        ; D0==$e  (1/128)  -> code 3
+$9d88  rts                    ; D0 15..127 (113/128) -> no bonus
+```
+
+Every successful roll branches to `$9aea`, which picks WHERE:
+
+```
+$9aea  clr.l $6e32 / st.b $6e16          ; bonus-icon render state armed
+$9af2  move.b $6c5d,D0 / add.b $6ab5,D0 / move.b D0,$6c5d   ; same PRNG, rolled again
+$9afe  and.w #7,D0                       ; D0 = 0..7, which of 8 eligible cells
+$9b08  lea $5028,A1 / movea.l (0,A1,D0*4),A1   ; per-slot icon table
+$9b1c  move.w #$fa,$6e38                 ; icon lifetime, 250 frames
+$9b28  lea $761e,A0 / or.w #$0080,($02,A0,D0*8)   ; **SETS BIT 7**, near bank
+$9b32  lea $759e,A0 / or.w #$0080,($02,A0,D0*8)   ; and the far bank, same slot
+```
+
+`$761e`/`$759e` are their banks' base plus one cell, so both ORs land on cell
+`slot+1` of their own bank (confirmed live: a roll with slot=6 put the flag on
+cell 7). Both banks are written unconditionally in the same straight-line
+code -- a placement is not near-bank-only, though this project's committed
+fixture only shows the near-bank copy surviving to pickup (see
+`tests/fixtures/bonus.provenance.md` for why: a slow diagnostic pass let the
+far-bank copy be consumed in real time between placement and capture, which
+re-running with a same-session, no-round-trip seed avoided).
+
+**`bd discr-ovl.4` accepted.** The writer of bit 7 (`$9b28`/`$9b32`) and the
+writer of `$6e3a` (`$9d42`/`$9d52`/`$9d62`/`$9d72`/`$9d7e`, gated by the
+`$6e3c` timer) are both named address for address, and
+`tests/fixtures/bonus.ndjson` is a trace, cross-validated against a
+same-session Hatari reference for 147 frames, in which a bonus is placed
+and picked up.
+
+### `bd discr-z8m`'s writer is also named -- the multiplier semantics are not
+
+`$a2b0 move.w D0w,$6d9a` (inside the already-decoded near-grid pickup) is
+`$6d9a`'s only writer: it copies whatever `$9d1c`-`$9d88` most recently
+minted into `$6e3a`. Not a multiplier being written directly -- Part 10's own
+retraction already established that `$6d9a` is a bonus CODE, and this closes
+the loop on where that code comes from. What is **not** measured: the
+`$a314 cmp.w #1,$6d9a` double-apply this bead was actually filed against needs
+a code-1 roll specifically (2/128 per gate-fire), and every roll caught so
+far -- across two independent placement-fixture captures plus a 20,000-frame
+fast-forwarded hunt that recorded every code seen -- has come up code 2. Left
+open. The hunt recipe (poll `$6e3a` idle, seed the instant it changes) is
+proven and cheap to re-run; it has just not yet been lucky. See
+`reports/part12-bonus.md`.
+
+### discr-ovl.6: the fixture, and disc-core's own wall
+
+`tests/fixtures/bonus.ndjson`, 152 idle frames from a live CHALLENGE seed:
+`bonus_6d9a` goes 0 -> 2 at frame 151, `tiles[7].hp` goes `132` (`0x84`, bit 7
++ base hp 4) -> `4` (bit 7 stripped on pickup). `disc-core` matches the first
+**150** ticks (`--skip-waived`) and then diverges exactly there: it has no
+model yet for a bit-7-carrying cell, so its plain damage subtraction gives
+`132 -> 129` instead of the ST's `132 -> 4`. That gap is discr-ovl.4/z8m's
+open half, not a new bug.
