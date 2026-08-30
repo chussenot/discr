@@ -59,8 +59,10 @@ which downloads:
   abandonware page (https://www.myabandonware.com/game/disc-vp). If the
   scrape breaks, the script says how to finish by hand (`DISC_URL=<direct
   link>`, or drop the zip into `tmp/` and re-run).
-* `tmp/emutos-512k-1.4/etos512us.img` — the TOS ROM: EmuTOS 1.4 (free
-  software), from its SourceForge releases.
+* `tmp/emutos-512k-1.4/etos512us.img` — the TOS ROM: EmuTOS 1.4 (GPL;
+  source at https://github.com/emutos/emutos), from its [SourceForge
+  releases](https://sourceforge.net/projects/emutos/files/emutos/1.4/),
+  where the source package and the other binary packages also live.
 
 `scripts/collect.py` looks for both under `tmp/` first, then at the repo
 root (their old home). It needs `curl` (or `wget`) and `unzip`.

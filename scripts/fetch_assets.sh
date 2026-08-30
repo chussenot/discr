@@ -16,7 +16,9 @@
 #     .st>, or download the zip by hand into tmp/ and re-run -- this script
 #     will find and unpack it.
 #   * the TOS ROM: EmuTOS's SourceForge releases (free software, so a stable
-#     direct link).
+#     direct link). EmuTOS is GPL: source at https://github.com/emutos/emutos,
+#     and the 1.4 source/binary packages at
+#     https://sourceforge.net/projects/emutos/files/emutos/1.4/
 #
 # Re-running is a no-op once both files exist; FORCE=1 re-downloads.
 set -eu
