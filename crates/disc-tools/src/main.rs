@@ -56,10 +56,16 @@ use clap::Parser;
 use disc_core::{DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, TILE_CELLS, Tile};
 use serde::Deserialize;
 
-/// `docs/state-schema.md`, "Compared fields": 18 rows marked `compared`.
-const SCHEMA_COMPARED: usize = 18;
-/// `docs/state-schema.md`, "Waived and excluded": 17 rows marked `waived:`.
-const SCHEMA_WAIVED: usize = 17;
+/// `docs/state-schema.md`, "Compared fields": 20 rows marked `compared`.
+///
+/// 18 through Part 10, +2 in Part 12 (discr-ovl.3): `tiles_far[n].tile_type`
+/// and `tiles_far[n].hp`, the far bank's two former waived rows, now compared.
+const SCHEMA_COMPARED: usize = 20;
+/// `docs/state-schema.md`, "Waived and excluded": 15 rows marked `waived:`.
+///
+/// 17 through Part 10, -2 in Part 12 (discr-ovl.3): the far bank's two rows
+/// moved to compared, above.
+const SCHEMA_WAIVED: usize = 15;
 /// `docs/state-schema.md`, "Waived and excluded": 5 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
 /// serde default for [`Frame::updates`]: a trace recorded before Part 11f has no
@@ -83,6 +89,15 @@ fn not_in_trace(f: &Frame) -> Vec<&'static str> {
     let mut v = Vec::new();
     if f.disc.iter().all(|d| d.dmg.is_none()) {
         v.push("discs[n].damage (disc+$16)");
+    }
+    // Part 12 (discr-ovl.3): the far bank ($7596) rides in on `banks`, which
+    // Part 10e's oracle already emits unconditionally (both banks, 32 pairs)
+    // -- but a trace minted before then has no column at all, same shape as
+    // `dmg` above. Two rows, matching `tiles[n].tile_type`/`tiles[n].hp`'s
+    // own split in docs/state-schema.md.
+    if f.banks.is_empty() {
+        v.push("tiles_far[n].tile_type (banks $7596)");
+        v.push("tiles_far[n].hp (banks $7596)");
     }
     v
 }
@@ -212,7 +227,12 @@ struct Frame {
     /// or resynced.
     #[serde(deserialize_with = "grid_column")]
     grid: [(u16, i16); TILE_CELLS],
-    /// Both banks, 16 cells each: `$7596` then `$7616`. Part 10e.
+    /// Both banks, 16 cells each: `$7596` then `$7616`. Part 10e carried it
+    /// (seeding `tiles_far`); Part 12 (discr-ovl.3) is the first to compare
+    /// it -- `checks()` reads the first 16 pairs (`$7596`'s) against
+    /// `got.tiles_far`. Absent on a trace minted before Part 10e; empty here
+    /// via `#[serde(default)]`, and `not_in_trace` reports the gap instead of
+    /// comparing against nothing.
     #[serde(default)]
     banks: Vec<(u16, i16)>,
 }
@@ -466,26 +486,27 @@ impl Frame {
                 // raw 0xFF is PLAYER 1's. See reports/part12-owner.md for the
                 // full chain (static + two independent trace confirmations).
                 //
-                // The mapping below is NOT flipped to match: `disc_core::
-                // PlayerId::One`/`Two` as used for `aim` is an internal
-                // boolean this crate's own wall/cascade logic (disc.rs,
-                // player.rs) was written against under the OPPOSITE
-                // convention (raw 0 <-> One), and `aim` is fed every tick,
-                // never compared (see `feed_disc_inputs`) -- so the two
-                // conventions never clash today. Flipping only this arm
-                // measurably regresses `p1_walk` 274 -> 10 ticks (tried and
-                // reverted; see reports/part12-owner.md), because it desyncs
-                // from `disc.rs`'s and `player.rs`'s own `aim ==
-                // PlayerId::One` checks, which encode the ST's raw-0 branch
-                // under the CURRENT convention. A correct fix has to flip
-                // this arm and every internal `PlayerId::One`/`Two` use for
-                // `aim` in disc-core together; that is cross-crate and
-                // tracked separately (message sent to disc.rs's and
-                // player.rs's current owners; file a follow-up bead if one
-                // does not already exist).
+                // The mapping below IS flipped to match, as of discr-ovl.8
+                // (Part 12): `disc_core::PlayerId::One`/`Two` as used for
+                // `aim` used to be an internal-only convention (raw 0 <->
+                // One) that disc.rs's and player.rs's own wall/cascade logic
+                // was written against, self-consistent internally but
+                // backwards against which REAL player raw 0 names. Flipping
+                // only this arm (leaving the internal checks alone) was
+                // tried first and measurably regressed `p1_walk` 274 -> 10
+                // ticks (see reports/part12-owner.md) -- it desynced the two
+                // sides of a convention that had never been compared against
+                // each other before, because `aim` is fed every tick, never
+                // compared (see `feed_disc_inputs`). The fix landed here is
+                // the coordinated one: this arm AND every internal
+                // `disc.aim == PlayerId::One`/`Two` use in disc.rs/player.rs
+                // flipped together in the same commit, so `PlayerId::One`
+                // now means real player 1 consistently everywhere, including
+                // for this field. All nine tracecheck gates hold at their
+                // pre-flip numbers or higher; see reports/part12-farbank.md.
                 aim: match t.own {
-                    Some(0) | None => disc_core::PlayerId::One,
-                    Some(_) => disc_core::PlayerId::Two,
+                    Some(0) | None => disc_core::PlayerId::Two,
+                    Some(_) => disc_core::PlayerId::One,
                 },
                 // `disc+$12`, the steering hook. Parsed here purely as the
                 // trace's OWN value for `want`/comparison -- `disc-core`
@@ -510,7 +531,9 @@ impl Frame {
         // comes first, so the zip against the 16-cell array takes exactly the
         // far bank). A trace recorded before it has none, and the array stays
         // all-zero, which makes every cell read as destroyed -- visible
-        // rather than silent.
+        // rather than silent. `checks()` now compares this seed against the
+        // trace's own recorded values every tick (discr-ovl.3); it is never
+        // fed or resynced mid-run, the same as `tiles`.
         for (tile, &(tile_type, hp)) in st.tiles_far.iter_mut().zip(&self.banks) {
             *tile = Tile { tile_type, hp };
         }
@@ -623,6 +646,25 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
             g.tile_type.into(),
         );
         push(format!("tiles[{n}].hp"), hp.into(), g.hp.into());
+    }
+
+    // Part 12 (discr-ovl.3): the far bank, $7596's 16 cells -- `banks`' first
+    // 16 pairs (Part 10e's ordering; see `seed()` above). Absent on a trace
+    // minted before that (`not_in_trace` reports it instead, and this loop
+    // is simply empty rather than comparing against a phantom column).
+    for (n, (&(tile_type, hp), g)) in expected
+        .banks
+        .iter()
+        .take(TILE_CELLS)
+        .zip(&got.tiles_far)
+        .enumerate()
+    {
+        push(
+            format!("tiles_far[{n}].tile_type"),
+            tile_type.into(),
+            g.tile_type.into(),
+        );
+        push(format!("tiles_far[{n}].hp"), hp.into(), g.hp.into());
     }
 
     v
@@ -1085,7 +1127,10 @@ mod tests {
             // slot here (this golden trace has every column). The tile term is
             // 32 since discr-ovl.5: 16 real cells, two fields each -- the old
             // 17th pair compared a non-tile and is no longer a check at all.
-            1 + 2 * 6 + DISC_SLOTS * 9 + TILE_CELLS * 2,
+            // A second TILE_CELLS * 2 in Part 12 (discr-ovl.3): golden.ndjson
+            // carries `banks` (Part 10e emitted it long before this bead used
+            // it), so the far bank's 16 cells are compared too.
+            1 + 2 * 6 + DISC_SLOTS * 9 + TILE_CELLS * 2 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
     }

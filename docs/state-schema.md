@@ -17,7 +17,8 @@ disagree, the notes win and this file is the bug.
   arrays. `$6ca0` is player 1, `$6d20` player 2 (same layout, stride `$80`);
   discs are 8 records of stride `$42` from `$6e3e`; tiles are 16 cells of
   stride 8 from `$7616` -- the near bank; the far bank is 16 more from `$7596`
-  (`$7596 + 16*8 = $7616`), waived under discr-ovl.3.
+  (`$7596 + 16*8 = $7616`), compared as `tiles_far[n]` since discr-ovl.3
+  (Part 12).
 * **status**
   * `compared` -- tracecheck must assert this field matches the ST.
   * `waived:<bead-id>` -- not modelled in this phase because the behaviour
@@ -52,8 +53,10 @@ tag or index.
 | `players[n].energy` | `i16` | `player+$76` (`$6d16`) | compared |
 | `discs[n].hook` | `SteerHook` | `disc+$12` | compared |
 | `discs[n].active` | `u8` | `disc+$10` | compared |
+| `tiles_far[n].tile_type` | `u16` | `far_tile+$00` (`$7596+n*8`) | compared |
+| `tiles_far[n].hp` | `i16` | `far_tile+$02` | compared |
 
-18 compared fields.
+20 compared fields.
 
 Notes on individual rows:
 
@@ -120,6 +123,23 @@ Notes on individual rows:
   reads 5, 2 and 0 across the golden fixture and `disc-core` produces all three.
   Two bonus branches are not modelled: code 4 skips the subtraction entirely
   (`$1117c`, a shield) and code 1 applies it twice (`$11188`).
+* `tiles_far[n].*` -- **added in Part 12, discr-ovl.3.** `$9f5e` is `$a24c`
+  instruction-for-instruction with `lea $7596` substituted for `$7616` and
+  `$6d1c` for `$6d9a` (`docs/disc-notes.md`, "There are TWO 16-cell tile
+  banks"), so the far bank's cell-index formula, HP subtraction and type
+  clear are the same code (`disc::disc_cell`, `tile::damage`) already used
+  for the near bank -- `disc::step`'s far-wall branch calls them against
+  `tiles_far` instead of duplicating them. The oracle has emitted this
+  column since Part 10e (`banks`, both bank's 16 cells each); this bead is
+  the first to seed *and compare* it rather than only seed it. Same known
+  gap as `tiles[n].hp` above (bit 7, discr-dc0) applies identically here --
+  `tests/fixtures/farbank.ndjson` hits exactly that gap at its own
+  min-agree boundary. **Untested by any committed fixture is the damage
+  subtraction itself** (`$a5d6`'s arm, gated on the disc already being
+  owned by real player 1) -- every trace that reaches the far wall does so
+  on a disc's first arrival (the transfer arm, `$a5e2`), the same
+  modelled-but-fixture-unexercised shape as discr-ovl.1's player-1 racket
+  path. See `reports/part12-farbank.md`.
 
 ## Waived and excluded
 
@@ -135,28 +155,30 @@ Notes on individual rows:
 | -- (player states 16, 17) | -- | `$10e2c` entries 16, 17 | waived:discr-rf9 |
 | -- (what places a bonus on a cell) | -- | `tile+$02` bit 7, and `$6e3a` | waived:discr-ovl.4 |
 | -- (the bonus effects) | -- | `$6d9a`/`$6d9c`/`$6d9e`, table `$9aa2` | waived:discr-z8m |
-| -- (the far wall's tile grid) | -- | `$7596`, damaged by `$9f5e` | waived:discr-ovl.3 |
 | -- (the animation engine) | `pending_state`, `anim_hold`, `anim_cell`, `anim_shown` | `$6caa`, `$6cda`, `$6ce2`, `$6ce4` | waived:discr-75o |
 | `players[n].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` | waived:discr-75o |
 | `players[n].reach` | `i16` | `player+$12` | waived:discr-b6x |
 | `players[n].x_delta` | `i16` | `player+$1a` | waived:discr-75o |
 | `players[n].disc_cap` | `i16` | `player+$6c` | waived:discr-b6x |
-| -- (the far bank `$7596`) | -- | 16 cells of stride 8 | waived:discr-ovl.3 |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
 | -- (disc sub-record pointers) | -- | `disc+$1a`, `disc+$3e` | excluded:pointer |
 | -- (tile trailing long) | -- | `tile+$04` | excluded:always-zero |
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
-22 waived or excluded rows: 17 waived against a filed unknown, 5 excluded by
-scope. **The count is unchanged from before Part 10 and that is close to the
-honest number**: five waivers were resolved and five new ones filed from what
-the answers exposed -- a second tile grid, the bonus placer, the hook installer,
-the owner polarity, and what retires a disc -- and one row moved from
-`excluded:rendering` to `waived:discr-75o`, because `$6cda`/`$6ce2` turned out
-to be the state machine's clock rather than a rendering detail. What changed is
-not how many unknowns there are but where they sit: six of them used to stand
-between the disc model and the fixture, and now one does.
+20 waived or excluded rows: 15 waived against a filed unknown, 5 excluded by
+scope. **Two of the seventeen waived rows before Part 12 came off**: the far
+wall's tile grid and the far bank's 16 cells, both `waived:discr-ovl.3`, moved
+up to the Compared table above as `tiles_far[n].tile_type`/`tiles_far[n].hp`.
+Before that, the count had been unchanged from before Part 10, which was
+already close to the honest number: five waivers were resolved and five new
+ones filed from what the answers exposed -- a second tile grid, the bonus
+placer, the hook installer, the owner polarity, and what retires a disc -- and
+one row moved from `excluded:rendering` to `waived:discr-75o`, because
+`$6cda`/`$6ce2` turned out to be the state machine's clock rather than a
+rendering detail. What changed is not how many unknowns there are but where
+they sit: six of them used to stand between the disc model and the fixture,
+and now one does.
 `reports/part10-report.md` has the before-and-after gate numbers. With the 15
 compared rows above, that is the whole table, and
 `tracecheck`'s header prints these three numbers so a drift between tool and
@@ -194,7 +216,14 @@ Why each waiver or exclusion:
   stays **waived, not compared**: the field is fed every tick because
   `disc-core` still has no WRITER for it (or for the four possession counters
   it steers -- that gap is discr-st8's), not because the polarity is unknown
-  any more. `tracecheck` feeds `active` in every tick, the way it feeds
+  any more. **discr-ovl.8 (Part 12) is CLOSED**: the feed mapping in
+  `main.rs`'s `seed()` and every internal `disc.aim == PlayerId::One`/`Two`
+  check in `disc.rs`/`player.rs` were flipped together in one commit, so
+  `PlayerId::One` now names real player 1 consistently everywhere `disc.aim`
+  is read, including here -- not the self-consistent-but-backwards internal
+  convention `main.rs`'s comment used to cite as the reason this arm alone
+  couldn't be flipped. All nine tracecheck gates hold unchanged; see
+  `reports/part12-farbank.md`. `tracecheck` feeds `active` in every tick, the way it feeds
   `$6c58`, and says so in its header. **discr-ovl.1's player-2 half is
   closed**; its player-1 half, the racket path at `$11030`-`$110a8`, is
   untested because neither player ever swings in either fixture.
@@ -239,9 +268,18 @@ Why each waiver or exclusion:
   It is the active bonus code, 1..5, with its payload and duration in the table
   at `$9aa2`. The five effects are documented in `docs/disc-notes.md` and none
   is modelled, because `bonus_6d9a` is 0 on every frame of both fixtures.
-* The far wall's grid (**discr-ovl.3**): `$9f5e` is `$a24c` with `$7596`
-  substituted for `$7616`, so there is a **second 8-cell bank** this crate does
-  not carry and the differ has never looked at.
+* **The far wall's grid is COMPARED as of Part 12, discr-ovl.3.** `$9f5e` is
+  `$a24c` with `$7596` substituted for `$7616` (and `$6d1c` for `$6d9a`), so
+  the second 16-cell bank is the same code, not a second mechanism: `disc-core`
+  already carried `tiles_far`, the oracle already emitted the column
+  (`banks`, Part 10e), and this bead is what connects the two --
+  `tiles_far[n].tile_type`/`tiles_far[n].hp` are now compared rows, and
+  `scripts/oracle_diff.py`'s labeller covers the range instead of reporting it
+  unlabelled. `tests/fixtures/farbank.ndjson` confirms the seeded bank against
+  a live trace. What is **not** exercised by any committed fixture is the
+  damage subtraction itself (`$a5d6`'s arm) -- every reachable far-wall
+  crossing is a disc's first arrival (the transfer arm), the same
+  modelled-but-untested shape as discr-ovl.1's player-1 racket path.
 * Screen X/Y are projection, recomputed from world `(x, y, z)` through LUTs at
   `$a6b2`/`$a6b6`. Comparing them would test the projection, not the rules.
 

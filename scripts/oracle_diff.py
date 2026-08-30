@@ -65,6 +65,14 @@ def label_for(addr):
     if 0x6e3e <= addr < 0x704e:
         i = (addr - 0x6e3e) // 0x42
         return "disc[%d] +$%02x" % (i, (addr - 0x6e3e) % 0x42)
+    if 0x7596 <= addr < 0x7616:
+        # The far bank -- $9f5e is $a24c instruction-for-instruction with
+        # $7596 substituted for $7616 (discr-ovl.3). The window has always
+        # covered these bytes ($7596 > WIN_LO); this label is what used to be
+        # missing, so a divergence in range fell through to "unlabelled"
+        # instead of naming the cell.
+        i = (addr - 0x7596) // 8
+        return "far tile bank cell %d +$%x" % (i, (addr - 0x7596) % 8)
     if 0x7616 <= addr < 0x7696:
         i = (addr - 0x7616) // 8
         return "tile grid cell %d +$%x" % (i, (addr - 0x7616) % 8)
