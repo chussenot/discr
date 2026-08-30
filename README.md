@@ -48,6 +48,23 @@ and Hatari agree byte-for-byte for a bounded window, and
 
 ## What you need installed
 
+The emulator inputs are gitignored and never committed. Fetch both into the
+(equally gitignored) `tmp/` directory with:
+
+    ./scripts/fetch_assets.sh
+
+which downloads:
+
+* `tmp/Disc (1990)(Loriciel)[cr Exo-7].st` — the game disk image, from its
+  abandonware page (https://www.myabandonware.com/game/disc-vp). If the
+  scrape breaks, the script says how to finish by hand (`DISC_URL=<direct
+  link>`, or drop the zip into `tmp/` and re-run).
+* `tmp/emutos-512k-1.4/etos512us.img` — the TOS ROM: EmuTOS 1.4 (free
+  software), from its SourceForge releases.
+
+`scripts/collect.py` looks for both under `tmp/` first, then at the repo
+root (their old home). It needs `curl` (or `wget`) and `unzip`.
+
 ## Versioning
 
 The Rust workspace is a **cocogitto monorepo**: `crates/disc-core`,
