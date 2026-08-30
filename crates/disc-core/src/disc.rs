@@ -131,9 +131,12 @@ pub const Z_NEAR: i16 = 0;
 /// The far bound on `world_z`. ST `$a5ba`: `cmp.w #$4f,d2`.
 ///
 /// Reaching it clears the hook, negates `dir_kind` and clamps `world_z` to 79.
-/// **No trace reaches it** -- every disc we have recorded is retired or
-/// returned by player 2 well before, the deepest observed `world_z` being 54 --
-/// so this bound is a code read with no trace behind it.
+/// **Retraction (Part 12/discr-st8):** this used to say no trace reaches it.
+/// `tests/fixtures/p1_walk.ndjson` frame 220 does -- disc 0's owner byte
+/// flips 0 -> 255 at the exact tick `world_z` clamps to 79, the far-wall
+/// possession transfer (`reports/part12-owner.md`, `reports/
+/// part12-round.md`). The claim was about the traces on hand at the time,
+/// not a property of the bound.
 ///
 /// It is emphatically *not* where the old "dwell at 54" came from. That was
 /// `disc+$10` losing bit 7; see [`crate::DiscSlot::active`].
@@ -409,16 +412,23 @@ pub fn disc_cell(world_x: i16, world_y: i16) -> usize {
 ///    [`Z_NEAR`]/[`Z_FAR`] flipping `dir_kind`.
 /// 5. `$a640` -- `vel_y` decays one step toward zero.
 ///
-/// Two ST behaviours inside this loop are deliberately **not** reproduced,
-/// because their triggers are outside it:
+/// One ST behaviour inside this loop is only half reproduced, and one is not
+/// reproduced at all, because their remaining triggers are outside it:
 ///
-/// * the near wall additionally forces `dir_kind` to `+1` and calls the
-///   tile-damage routine (`$a618`), and the far wall forces `-1` and calls the
-///   far grid's (`$a5d6`) -- but *only* for one value of `disc+$11`, whose
-///   polarity is not settled (`// UNKNOWN: see bd discr-ovl.2`), and the
-///   tile-damage call needs the `$7bfe` column table this crate does not carry
-///   (`// UNKNOWN: see bd discr-5w5`). So the bounds here negate `dir_kind` and
-///   stop, and `tiles` is untouched.
+/// * **Retraction (Part 12, discr-ovl.2 settled; Part 12/round, discr-st8):**
+///   this used to say the owner-byte polarity gating the near/far walls'
+///   extra behaviour was unsettled and neither side was modelled. Both are
+///   now: raw owner 0 is player 2's disc, 0xFF is player 1's
+///   (`reports/part12-owner.md`). The near wall's force-`+1`-and-damage arm
+///   (`$a618`, [`impact`]) and its transfer arm's four possession counters
+///   ([`crate::round::transfer_at_near_wall`]) are both implemented below.
+///   The far wall's mirror is only half done: its transfer arm's counters
+///   are ([`crate::round::transfer_at_far_wall`]), but its force-`-1`-and-
+///   damage arm (`$a5d6`, the second tile grid at `$7596`) is not -- that
+///   grid needs the `$7bfe` column table this crate does not carry for the
+///   near wall's damage call either (`// UNKNOWN: see bd discr-5w5`), and no
+///   trace on hand ever reaches the far wall with an owner value that would
+///   exercise it (`// UNKNOWN: see bd discr-ovl.3`).
 /// * the two hit tests at `$a652`/`$a656` are what install hooks and retire
 ///   discs. Hook installation is decoded and modelled --
 ///   [`crate::player::anticipate`], bd discr-ovl.1 CLOSED. Retirement is not:
@@ -498,9 +508,25 @@ pub fn step(
             disc.hook = SteerHook::None;
             disc.dir_kind = disc.dir_kind.wrapping_neg();
             disc.world_z = Z_FAR;
-            // $a5d0-$a5e0: for the OTHER owner value the ST forces dir_kind to
-            // -1 and damages the far grid at $7596, a second 8-cell bank this
-            // crate does not carry. // UNKNOWN: see bd discr-ovl.3.
+            // $a5d0: tst.b (0x11,a5); beq $a5e2 -- owner==0 (this crate's
+            // PlayerId::One, see the module docs' aim/owner convention note)
+            // takes the transfer path ($a5ea-$a5fa): the neg.w above stands
+            // for it, unmodified, and possession moves from player 2's own
+            // ledger to player 1's (discr-st8, reports/part12-round.md).
+            // owner!=0 instead OVERWRITES dir_kind to literal -1 ($a5d6) and
+            // damages the far grid at $7596 ($a5dc bsr $9f5e), a second
+            // 8-cell bank this crate does not carry -- UNKNOWN, bd
+            // discr-ovl.3, and NOT reproduced here (the neg.w above is left
+            // standing for that owner value too, which is wrong for it but
+            // untested: no trace on hand ever reaches this bound with owner
+            // != 0). Both paths are additionally gated on $6ca0.b != 1 in the
+            // ST (the game-mode byte -- training gates the transfer off
+            // entirely, reports/part12-round.md); not modelled, so this
+            // crate would over-transfer in training. // UNKNOWN: see bd
+            // discr-st8.
+            if disc.aim == PlayerId::One {
+                crate::round::transfer_at_far_wall(players);
+            }
         }
         next if next < Z_NEAR => {
             disc.hook = SteerHook::None;
@@ -515,9 +541,14 @@ pub fn step(
                 let cell = disc_cell(disc.world_x, disc.world_y);
                 impact(disc, cell, tiles, collapse, _events);
             } else {
-                // $a624: the other owner value transfers possession instead,
-                // moving four counters this crate does not model. The neg.w
-                // from $a602 stands. // UNKNOWN: see bd discr-ovl.2.
+                // $a624-$a63c: the other owner value transfers possession
+                // instead, the exact mirror of the far wall's transfer:
+                // owner := 0, possession moves from player 1's own ledger
+                // back to player 2's (discr-st8, reports/part12-round.md).
+                // The neg.w from $a602 stands. Also gated on $6ca0.b != 1 in
+                // the ST (training) -- not modelled, see the far wall's
+                // comment above and the module docs.
+                crate::round::transfer_at_near_wall(players);
                 disc.dir_kind = disc.dir_kind.wrapping_neg();
             }
         }

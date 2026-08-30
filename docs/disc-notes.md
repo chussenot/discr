@@ -3088,3 +3088,148 @@ proven and cheap to re-run; it has just not yet been lucky. See
 model yet for a bit-7-carrying cell, so its plain damage subtraction gives
 `132 -> 129` instead of the ST's `132 -> 4`. That gap is discr-ovl.4/z8m's
 open half, not a new bug.
+
+## Part 12 (round): the four counters get a writer, and init/round-over/win are named without a fixture (discr-st8)
+
+`bd discr-st8` asked for round init, scoring and win/loss -- the last
+undecoded gameplay system. `reports/part12-owner.md` had already pinned the
+four possession counters' writer PCs and directions (the serve and the two
+wall handlers); this part gives them a `disc-core` writer, and decodes --
+from the static image only, no fixture crosses a round transition -- what
+starts a round, what ends it, and what decides who won it. Full chain, every
+instruction: `reports/part12-round.md`.
+
+### The four counters are computed now
+
+`crates/disc-core/src/round.rs` (new): `transfer_at_far_wall` and
+`transfer_at_near_wall`, called from `disc::step`'s two wall-bound match
+arms, move `players[0]`/`players[1]`'s `discs_out`/`disc_cap` in lockstep --
+the far wall moves player 2's pair DOWN and player 1's UP, the near wall the
+exact mirror. Serve (`GameState::update`) and catch (`player::hit_test`/
+`p2_hit_test`) already wrote `discs_out`; this was the missing third writer.
+
+Both fields came OFF `docs/state-schema.md`'s waived list and into the
+compared one (`players[0].discs_out`/`disc_cap`, `crates/disc-tools/src/
+main.rs`'s `checks()`); the unconditional `disc_cap` feed in
+`feed_disc_inputs` is gone. `tests/fixtures/p1_walk.ndjson` (`--min-agree
+274`, the WHOLE trace) now exercises the far-wall transfer live -- frame 220,
+`disc[0].own` 0 -> 255 -- with both fields genuinely computed, and the gate
+holds at 274/274. `tests/fixtures/handover.ndjson` records both directions on
+one disc slot (frames 259 far wall, 339 near wall), but `disc-core`'s own
+replay of it diverges earlier (tick 222 skip-waived, tick 21 bare) on an
+unrelated `discs[0].active` gap, so the near-wall transfer is measured
+against that fixture's own recorded columns, not a passing tracecheck run
+past frame 339 -- documented in `round.rs`'s own module docs rather than
+claimed as tracecheck-verified.
+
+Not modelled: the `$6ca0.b != 1` training gate on both transfers (see below --
+`$6ca0` turned out to be the game-mode byte), so this crate over-transfers in
+training; no fixture on hand is a training-mode capture with a live wall
+crossing to measure it against.
+
+### Where `$aa50` sits: the round-start init chain
+
+Ghidra's own analysis has no xref to `$aa50` and no operand-scan hit either
+(`xref`/`scan aa50` both return zero) -- it sits in the same undissassembled
+span Part 12b's `$968a` RNG reseed was found in, outside Ghidra's own CFG
+walk from its entry points. A raw byte-pattern scan of `discram.bin` with
+`capstone` (same technique as `reports/part12-rng.md`/`part12-dirkind.md`)
+finds the one `bsr.w` that reaches it: `$965c`, inside a ~20-call chain from
+`$9628` to `$96b6` that is unmistakably round-start init -- it falls straight
+through into the already-known main VBL loop at `$96ba` (`move.w
+$6ab8,-(a7)`, `GameState::update`'s own `$a4ea`/`$10eac` calls).
+
+`$aa50` itself (disassembled in full, all 8 disc records): `active` and the
+owner byte cleared, `world_y := 0x52` (82, `disc::SERVE_WORLD_Y`'s value
+minus one -- not the same field, see its own doc comment), and a previously
+undocumented word, `disc+$18 := 3`, right after `damage` (`+$16`) and before
+the excluded pointer at `+$1a`. This crate does not carry it; flagged, not
+chased further (no offset-relative xref technique reaches register-relative
+accesses like this one without a full disassembly of the surrounding loop,
+which was out of this pass's budget).
+
+In the same chain: `$9682 clr.b $6c83` (the round-over tally, below) and the
+already-known `$968a move.b $6ab5,$6c5d` RNG reseed (Part 12b), plus roughly
+twenty other `bsr`/`jsr` calls to subsystems this pass did not open.
+
+### The round-play loop, the round-over threshold, and the mode byte
+
+`$9600`-`$97d6` is the per-VBL loop that plays one round: `$9700`-`$972e` is
+the VBL-pacing wait (computing `$6ab8`, the pass count `GameState::updates`
+already models from the trace side); `$96ba`-`$96cc` is the already-known
+main update (`$a4ea` disc loop, `$10eac` player dispatch); `$97d0 cmpi.b
+#1,$6c56; bne.w $9698` loops back for another frame unless `$6c56 == 1`
+(unidentified, not chased).
+
+`$6c83` is a GLOBAL counter -- not per player -- bumped +1 by each player's
+own state-23 terminal handler: `$10abe` for player 1 (this file's own state-23
+section already named the bump, "$6cab by 3 and $6c83 by 1"), and its exact
+mirror at `$c3b6` for player 2. State 31's shared fallthrough into state 23's
+terminal code (this file's own "state 31 forces an immediate round reset"
+finding) reaches the same bump, so both of this project's known round-ending
+triggers -- energy death and the sustained-jump exploit -- fund the same
+counter.
+
+`$9746`-`$975c` reads it against a threshold gated by `$6ca0`, read as a BYTE
+at player 1's own base address (`+$00` -- distinct from any modelled `Player`
+field, which starts at `+$02`): **`$6ca0` is the game-mode byte.** `cmpi.b
+#1,$6ca0` recurs at `$9746` and `$97a8` in this same loop, and independently
+at `$116c4` (`docs/disc-notes.md`'s discr-qqt section, "set to `$10` only
+when the mode byte `$6ca0` selects training") -- three unrelated call sites
+agreeing that 1 selects training. Training ends the round on the very first
+death (`tst.b $6c83; bne.w $97ea`); challenge and tournament wait for two
+(`cmpi.b #2,$6c83; bge.w $97ea`). This also RETRACTS `reports/
+part12-owner.md`'s framing of the wall transfer's `$6ca0.b != 1` gate as "an
+apparent flag on player 1's own record" -- it is not a flag on the record at
+all, it is the mode selector, and the wall transfer is gated OFF entirely in
+training.
+
+### Win/loss: a previously undocumented field at `player+$72`
+
+`$97b2`-`$97cc`, reached once a separate latch (`$6c9c`) permits it: `move.w
+$6d12,d0; cmp.w $6d92,d0`. `$6d12` is player 1's base (`$6ca0`) plus `$72`;
+`$6d92` is player 2's base (`$6d20`) plus the same offset -- one word past
+`throw_damage` (`+$70`), previously undocumented. Whichever side is SMALLER
+gets `down` set on ITS OWN record, and the LARGER side gets its own
+`round_over` set (consistent with `round_over`'s established meaning,
+"my opponent is out, I should stop too"): `$6d12 < $6d92` sets `$6d2d`
+(p2 round_over) + `$cac` (p1 down); `$6d12 > $6d92` sets `$cad` (p1
+round_over) + `$6d2c` (p2 down); equal does nothing.
+
+A raw scan for writers of `$6d12`/`$6d92` finds a BCD-style
+incrementer-with-carry at `$9938` (mirrored at `$9956` for player 2): `addq.w
+#1` to a second word at `+$74`, then a predecrementing byte-walk back toward
+`+$72` that clears each digit and carries into the one above it once it hits
+`$a` (10). That shape -- a display-ready multi-digit counter with carry --
+reads as a SCORE, but nothing on hand ties it to a specific event: no
+fixture's `player+$72` ever moves, so this is named by its writer's shape,
+not by an observed increment. `scenarios/round_watch.yaml` (new, unrun) is
+built to watch it live across exactly this kind of exchange.
+
+### The round-over exit, and where the FDC boundary actually sits
+
+`$97ea`: `clr.b $6c4a` (the "round active" flag `$9658` set in the init
+chain), a `jsr`, `clr.b $6c4a` again, one more VBL wait, then `rts` back to
+its caller. `reports/part10-report.md` found the round's end without its
+beginning; this part finds the beginning (`$9628`-`$96b6`) and the counter
+that triggers the end (`$6c83` against `$6ca0`'s threshold), but `$97ea`'s
+own caller -- whatever loads the next round or the match summary off floppy --
+is outside every snapshot this project has taken. That caller is where the
+FDC boundary actually sits, one level up from anything disassembled in this
+pass.
+
+### What is implemented, and what stays decoded-only
+
+Only the four counters' wall-transfer writer (`round.rs`) is implemented and
+gated. Round init, the round-over threshold and win/loss are decoded but not
+modelled: no committed fixture crosses a round transition (the oracle cannot,
+by design -- KNOWN_ISSUES -- and no live Hatari capture in this project's
+history brackets one either), so there is nothing on hand to measure a
+`GameState` model against. `docs/state-schema.md`'s round/score/win row stays
+`waived:discr-st8`, reworded to name the addresses now known rather than the
+two it used to cite. A future fixture needs a live Hatari watch armed on
+`$6c83`/`$6ca0`/`$6d12`/`$6d92`/`$6c4a` from mid-round through the `$97ea`
+exit and into whatever comes next; `scenarios/round_watch.yaml` is the
+scaffold, and `scripts/ramdiff.py` on a `dump: pre`/`dump: post` pair
+bracketing the transition would catch every field it writes, not just the
+ones this pass already guessed.
