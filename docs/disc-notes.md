@@ -2898,3 +2898,18 @@ but not for the reason first drafted.
 The waiver (discr-b6x) stays open. `Ai` is not wired into `GameState::tick`;
 feeding `$6da1` from it today would fail `core-check` in exactly the frames
 above.
+
+**Correction (Part 12b, `reports/part12-rng.md`)**: the line above about
+`$6c5d` — "not reconstructable... a reset this project has never observed"
+— was wrong on the "never observed" part. A raw byte-pattern scan of
+`discram.bin` (independent of Ghidra's `xref`, which only sees code its own
+analysis already disassembled) found an eleventh-hour reset: `$968a`,
+`move.b $6ab5,$6c5d`, unconditional, inside an undissasembled init block
+(clears `$6c83`/`$6c9c`/`$6ab8`/`$6c5a`/`$6ab6` too, then chains ~9 `bsr`s to
+other subsystem setup). What still holds, now measured live rather than
+argued: two independent cold boots of the identical scripted scenario
+(`scenarios/watch_6c5d_rng.yaml`, `--fresh --state ''` both times) reach
+"match live" 121 VBLs apart on the game's own frame counter despite running
+the exact same input script, so `$968a`'s reseed copies a different `$6ab5`
+each time — the wall is narrower and sharper now (an anchor exists; its own
+input isn't reproducible even under this project's own harness), not gone.
