@@ -83,3 +83,4 @@
 {"id":"int-2e6d2821b1260890f944b982d90f328d","kind":"field_change","created_at":"2026-08-30T20:36:14.210938087Z","actor":"round","issue_id":"discr-st8","extra":{"field":"status","new_value":"in_progress","old_value":"blocked"}}
 {"id":"int-93dbc104dbc6c4853ba3cd7f5b27db1c","kind":"field_change","created_at":"2026-08-30T20:36:14.211049013Z","actor":"round","issue_id":"discr-st8","extra":{"field":"assignee","new_value":"round","old_value":""}}
 {"id":"int-163e46820e784bed9e7f996710d61c4d","kind":"field_change","created_at":"2026-08-30T21:02:16.528821114Z","actor":"round","issue_id":"discr-st8","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-cbf8af73b398b93e8f4650b77b21bd0f","kind":"field_change","created_at":"2026-08-30T21:28:45.094421384Z","actor":"anim","issue_id":"discr-rxx.1","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
