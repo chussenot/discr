@@ -45,7 +45,7 @@ const ARENA_H: f32 = 32.0;
 /// ponytail: the ST's real floor geometry is not recovered -- the only evidence
 /// is `grid_cell = 8 + column(world_x) + (4 if world_y > 14)` and the 145-byte
 /// column table at `$7bfe`, which gives cells 9..16 and says nothing about the
-/// other eight. So the 17 cells are drawn index-ordered in two rows: this is a
+/// other eight. So the 16 cells are drawn index-ordered in two rows: this is a
 /// debug view of the array, not a picture of the arena floor. Replace it with
 /// real geometry once `$7bfe` is decoded.
 const TILE_COLS: usize = 9;
@@ -164,7 +164,7 @@ fn draw(prev: &GameState, cur: &GameState, alpha: f32) {
     // Arena bounds.
     draw_rectangle_lines(ox, oy, ARENA_W * s, ARENA_H * s, 2.0, DARKGRAY);
 
-    // The 17 floor cells. Destroyed (`tile_type == 0`) reads as an empty hole.
+    // The 16 floor cells. Destroyed (`tile_type == 0`) reads as an empty hole.
     let tile_y = oy + ARENA_H * s + 24.0;
     let cell = (ARENA_W * s / TILE_COLS as f32).min(40.0);
     for (i, tile) in cur.tiles.iter().enumerate() {

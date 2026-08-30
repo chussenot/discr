@@ -278,7 +278,11 @@ fn column(world_x: i16) -> u16 {
 /// The floor grid cell a player at `(world_x, world_y)` stands on.
 ///
 /// ST `$f836`/`$f838`/`$f842`: `column(X) + 8`, plus 4 when `$6ca6 > 14`. The
-/// result is at most `4 + 8 + 4 = 16`, so it always indexes the 17-cell grid.
+/// result is at most `4 + 8 + 4 = 16` -- which is one PAST the 16-cell bank
+/// (`TILE_CELLS`, discr-ovl.5): the far-right far-row cell reads the word at
+/// `$7696`, past `$7616`'s end. The value is a compared field in its own
+/// right; everything that uses it as an index goes through `.get`, which
+/// reads past-the-bank as blocked.
 fn grid_cell(world_x: i16, world_y: i16) -> u16 {
     GRID_CELL_BASE
         + column(world_x)
@@ -1332,7 +1336,7 @@ pub fn step(
 mod tests {
     use super::*;
 
-    /// All 17 cells walkable, as the floor is before any disc lands.
+    /// All 16 cells walkable, as the floor is before any disc lands.
     const FLOOR: [Tile; TILE_CELLS] = [Tile {
         tile_type: 1,
         hp: 4,
@@ -1429,13 +1433,12 @@ mod tests {
         // direction compare passes; the probe's answer goes into d2 and what
         // reads it is further down the handler. p1_walk frame 100 is the frame
         // that tells the two models apart, and it says the player moves.
-        let mut tiles = FLOOR;
-        tiles[16] = Tile {
-            tile_type: 0,
-            hp: 0,
-        };
+        //
+        // The destination cell here is 16 -- since discr-ovl.5 that is one
+        // PAST the 16-cell bank, so the probe reads it as blocked without any
+        // cell having to be destroyed, and the step still happens.
         let mut p = walking(2, 117);
-        run(&mut p, press(DirBits::RIGHT), &tiles);
+        run(&mut p, press(DirBits::RIGHT), &FLOOR);
         assert_eq!(p.world_x, 120, "the step is not gated on the probe");
         assert_eq!((p.facing, p.grid_cell), (FACING_RIGHT, 16));
     }
@@ -1446,40 +1449,61 @@ mod tests {
     #[test]
     fn walk_probe_reads_each_player_own_bank_and_threshold() {
         let mut bank = FLOOR;
-        // From X = 117 probing right, 141 -> column 4 -> +8 -> 12, +4 -> 16.
-        bank[16] = Tile {
+        // From X = 93 probing right, 117 -> column 3 -> +8 -> 11, +4 -> 15.
+        bank[15] = Tile {
             tile_type: 0,
             hp: 0,
         };
         let p1 = Player {
+            world_x: 93,
+            world_y: 18,
+            grid_cell: 14,
+            ..Player::default()
+        };
+        assert!(!walk_probe(&p1, PlayerId::One, 117, &bank));
+        assert!(walk_probe(&p1, PlayerId::One, 117, &FLOOR));
+
+        // $f630 / $b010: the cell you are standing on is always steppable, even
+        // destroyed -- which is what lets a player leave a collapsing tile.
+        let standing = Player {
+            grid_cell: 15,
+            ..p1
+        };
+        assert!(walk_probe(&standing, PlayerId::One, 117, &bank));
+
+        // Off the arena is blocked, not clamped ($f612 / $aff2).
+        assert!(!walk_probe(&p1, PlayerId::One, 7, &FLOOR));
+
+        // Cell 16 -- from X = 117 probing right, 141 -> column 4 -> 12, +4 --
+        // is one PAST the 16-cell bank (discr-ovl.5). The ST's tst.w there
+        // reads $7696, the word past $7616's end, which happens to hold (1,1);
+        // disc-core keeps the bank honest at 16 cells and reads past-the-bank
+        // as blocked. Nothing consumes the probe's answer (discr-75o), so no
+        // observable behaviour hangs on the difference.
+        let at_the_edge = Player {
             world_x: 117,
             world_y: 18,
             grid_cell: 15,
             ..Player::default()
         };
-        assert!(!walk_probe(&p1, PlayerId::One, 141, &bank));
-        assert!(walk_probe(&p1, PlayerId::One, 141, &FLOOR));
-
-        // $f630 / $b010: the cell you are standing on is always steppable, even
-        // destroyed -- which is what lets a player leave a collapsing tile.
-        let standing = Player {
+        assert!(!walk_probe(&at_the_edge, PlayerId::One, 141, &FLOOR));
+        // ...unless the player is already standing on 16 -- the own-cell
+        // shortcut fires before the bank read, exactly as on the ST.
+        let standing_past = Player {
             grid_cell: 16,
-            ..p1
+            ..at_the_edge
         };
-        assert!(walk_probe(&standing, PlayerId::One, 141, &bank));
-
-        // Off the arena is blocked, not clamped ($f612 / $aff2).
-        assert!(!walk_probe(&p1, PlayerId::One, 7, &FLOOR));
+        assert!(walk_probe(&standing_past, PlayerId::One, 141, &FLOOR));
 
         // Player 2 at its own depth takes the far row through the OTHER test:
         // $b004 adds 4 when world_y <= $3a, where $f624 adds it when > $e.
         let p2 = Player {
-            world_x: 117,
+            world_x: 93,
             world_y: 54,
-            grid_cell: 15,
+            grid_cell: 14,
             ..Player::default()
         };
-        assert!(!walk_probe(&p2, PlayerId::Two, 141, &bank));
+        assert!(!walk_probe(&p2, PlayerId::Two, 117, &bank));
     }
 
     #[test]

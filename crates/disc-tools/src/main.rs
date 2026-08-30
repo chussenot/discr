@@ -56,11 +56,11 @@ use clap::Parser;
 use disc_core::{DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, TILE_CELLS, Tile};
 use serde::Deserialize;
 
-/// `docs/state-schema.md`, "Compared fields": 15 rows marked `compared`.
+/// `docs/state-schema.md`, "Compared fields": 18 rows marked `compared`.
 const SCHEMA_COMPARED: usize = 18;
-/// `docs/state-schema.md`, "Waived and excluded": 12 rows marked `waived:`.
+/// `docs/state-schema.md`, "Waived and excluded": 17 rows marked `waived:`.
 const SCHEMA_WAIVED: usize = 17;
-/// `docs/state-schema.md`, "Waived and excluded": 6 rows marked `excluded:`.
+/// `docs/state-schema.md`, "Waived and excluded": 5 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
 /// serde default for [`Frame::updates`]: a trace recorded before Part 11f has no
 /// column, and every such trace ran exactly one pass per frame.
@@ -189,12 +189,39 @@ struct Frame {
     ai_6da1: u8,
     player: [TracePlayer; 2],
     disc: [TraceDisc; DISC_SLOTS],
-    /// 17 cells of `[tile_type, hp]` from `$7616`. Predates Part 10e's
-    /// discovery that a bank is 16; its 17th entry is the word past the end.
+    /// 16 cells of `[tile_type, hp]` from `$7616` -- the near bank.
+    ///
+    /// The three committed fixtures predate Part 10e's discovery that a bank
+    /// is 16 cells and carry a 17-pair column; the 17th pair is the first
+    /// word past the bank's end (`$7696`, which reads `(1,1)` -- it is not a
+    /// tile). That pair is parsed and DROPPED here so pre-discr-ovl.5 traces
+    /// still load; a regenerated fixture emits exactly 16
+    /// (`oracle/disc-oracle.c`). Only the 16 real cells are seeded, compared
+    /// or resynced.
+    #[serde(deserialize_with = "grid_column")]
     grid: [(u16, i16); TILE_CELLS],
     /// Both banks, 16 cells each: `$7596` then `$7616`. Part 10e.
     #[serde(default)]
     banks: Vec<(u16, i16)>,
+}
+
+/// Deserialize [`Frame::grid`]: exactly 16 pairs from a regenerated trace, or
+/// 17 from a committed pre-discr-ovl.5 one, whose trailing non-tile pair is
+/// dropped. Any other width is a malformed trace, not a tolerable variant.
+fn grid_column<'de, D>(de: D) -> Result<[(u16, i16); TILE_CELLS], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let pairs = Vec::<(u16, i16)>::deserialize(de)?;
+    if pairs.len() != TILE_CELLS && pairs.len() != TILE_CELLS + 1 {
+        return Err(serde::de::Error::invalid_length(
+            pairs.len(),
+            &"16 tile cells (or 17 in a pre-discr-ovl.5 trace)",
+        ));
+    }
+    let mut grid = [(0, 0); TILE_CELLS];
+    grid.copy_from_slice(&pairs[..TILE_CELLS]);
+    Ok(grid)
 }
 
 #[derive(Deserialize)]
@@ -419,10 +446,12 @@ impl Frame {
         for (tile, &(tile_type, hp)) in st.tiles.iter_mut().zip(&self.grid) {
             *tile = Tile { tile_type, hp };
         }
-        // The far bank, $7596's 16 cells, from the Part 10e column. A trace
-        // recorded before it has none, and the array stays all-zero, which
-        // makes every cell read as destroyed -- visible rather than silent.
-        for (tile, &(tile_type, hp)) in st.tiles_far.iter_mut().zip(self.banks.iter().take(16)) {
+        // The far bank, $7596's 16 cells, from the Part 10e column ($7596
+        // comes first, so the zip against the 16-cell array takes exactly the
+        // far bank). A trace recorded before it has none, and the array stays
+        // all-zero, which makes every cell read as destroyed -- visible
+        // rather than silent.
+        for (tile, &(tile_type, hp)) in st.tiles_far.iter_mut().zip(&self.banks) {
             *tile = Tile { tile_type, hp };
         }
         st
@@ -912,7 +941,9 @@ mod tests {
         assert_eq!(st.frame, 6949);
         assert_eq!(st.players[0].world_x, 117);
         assert_eq!(st.discs[0].world_z, 20);
-        assert_eq!(st.tiles.len(), 17);
+        // The committed fixture's grid column is 17 pairs wide; the 17th is
+        // the non-tile word past the bank, parsed and dropped (discr-ovl.5).
+        assert_eq!(st.tiles.len(), 16);
     }
 
     #[test]
@@ -958,7 +989,10 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("screen")));
         assert_eq!(
             names.len(),
-            // Part 10 added discs[n].vel_y and discs[n].damage, so 7 per disc.
+            // Part 10 added discs[n].vel_y and discs[n].damage, so 9 per disc
+            // slot here (this golden trace has every column). The tile term is
+            // 32 since discr-ovl.5: 16 real cells, two fields each -- the old
+            // 17th pair compared a non-tile and is no longer a check at all.
             1 + 2 * 6 + DISC_SLOTS * 9 + TILE_CELLS * 2,
             "one check per compared field instance"
         );

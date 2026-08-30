@@ -19,13 +19,16 @@ ORACLE = os.path.join(ROOT, "oracle", "disc-oracle")
 # One memdump window covers every address the oracle reports: $6ab4 counter,
 # $6c58 joystick, $6ca0/$6d20 players, $6e3e disc array, $7616 tile grid.
 #
-# It has to reach $769d -- the END of tile cell 16.  At nMemdumpLines = 200 the
-# window stopped at $767f, so cells 13-16 were never compared: exactly the far
-# row of the floor, where the player stands (its idle cell is 15).  The differ
-# skipped the missing bytes silently, which is how a blind spot survives.  The
-# window is now 232 lines and coverage is ASSERTED below, not assumed.
+# It has to reach $7695 -- the END of tile cell 15, the last cell of the
+# 16-cell near bank (discr-ovl.5; GRID_END was 17 cells until then, but the
+# 17th "cell" was the word past the bank at $7696, never a tile).  At
+# nMemdumpLines = 200 the window stopped at $767f, so the floor's far row was
+# never compared: exactly where the player stands (its idle cell is 15).  The
+# differ skipped the missing bytes silently, which is how a blind spot
+# survives.  The window is now 232 lines and coverage is ASSERTED below, not
+# assumed.
 WIN_LO, WIN_HI = 0x6a00, 0x76a0
-GRID_END = 0x7616 + 17 * 8          # $769e, one past the last tile byte
+GRID_END = 0x7616 + 16 * 8          # $7696, one past the last tile byte
 
 # The screen double-buffer pointers. They swap every frame EXCEPT on a frame
 # the game drops, and whether a frame drops depends on whether the main loop
@@ -62,9 +65,12 @@ def label_for(addr):
     if 0x6e3e <= addr < 0x704e:
         i = (addr - 0x6e3e) // 0x42
         return "disc[%d] +$%02x" % (i, (addr - 0x6e3e) % 0x42)
-    if 0x7616 <= addr < 0x769e:
+    if 0x7616 <= addr < 0x7696:
         i = (addr - 0x7616) // 8
         return "tile grid cell %d +$%x" % (i, (addr - 0x7616) % 8)
+    if 0x7696 <= addr < 0x769e:
+        # One word past the near bank -- the old "cell 16" (discr-ovl.5).
+        return "past the near bank +$%x (not a tile)" % (addr - 0x7696)
     if 0x6ca0 <= addr < 0x6d20:
         return "player1 record +$%02x" % (addr - 0x6ca0)
     if 0x6d20 <= addr < 0x6da0:

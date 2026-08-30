@@ -49,9 +49,10 @@ pub struct GameState {
     pub players: [Player; 2],
     /// ST `$6e3e`, 8 records of stride `$42`.
     pub discs: [DiscSlot; DISC_SLOTS],
-    /// ST `$7616`, 17 cells of stride 8. Cells 1..8 are the records a disc's
-    /// damage path writes and 9..16 the copies the movement code reads -- the
-    /// same eight tiles twice, see [`tile`].
+    /// ST `$7616`, 16 cells of stride 8 (the near bank -- discr-ovl.5).
+    /// Cells 1..8 are the records a disc's damage path writes and 9..16 the
+    /// copies the movement code reads -- the same eight tiles twice, see
+    /// [`tile`]. Index 16 is one past the bank (`$7696`, never a tile).
     pub tiles: [Tile; TILE_CELLS],
     /// ST `$7596`, the other 16-cell bank: player 2's floor, the one `$9f5e`
     /// damages and `$cc0a` tests for walkability. Held separately because
@@ -246,7 +247,8 @@ mod tests {
     fn record_shapes_match_the_st_arrays() {
         let st = GameState::default();
         assert_eq!(st.discs.len(), 8); // $6e3e, 8 x $42
-        assert_eq!(st.tiles.len(), 17); // $7616, 17 x 8
+        assert_eq!(st.tiles.len(), 16); // $7616, one 16 x 8 bank (discr-ovl.5)
+        assert_eq!(st.tiles_far.len(), 16); // $7596, the other bank
         assert_eq!(st.players.len(), 2); // $6ca0 / $6d20
     }
 }
