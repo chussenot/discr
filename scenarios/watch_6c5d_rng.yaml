@@ -1,0 +1,22 @@
+name: watch_6c5d_rng
+mode: training
+# discr-b6x: is $6c5d (the AI reaction-roll accumulator) reset at round/serve
+# start, and is its per-frame cadence what $d2cc's dispatch loop implies (up
+# to 20 rolls/frame when nothing is latched, since $6daa==0 idle makes every
+# row's priority>latch check pass)?
+#
+# base=$6ab4 catches BOTH the VBL frame counter ($6ab4/$6ab5, ground truth,
+# always +1/frame) and $6c5c/$6c5d/$6c5e in the SAME per-VBL snapshot --
+# $6c5c is offset 0x1a8 (424) into the dump, well inside frame_trace's
+# 3200-byte window, so one trace correlates both without a second pass.
+settle: 90
+steps:
+  - {dump: pre}                # baseline before any scripted input at all
+  - {trace: idle, base: "$6ab4", frames: 150}
+  - {hold: Fire, frames: 3}
+  - {wait: 40}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {trace: rally, base: "$6ab4", frames: 150}
