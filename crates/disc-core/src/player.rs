@@ -759,8 +759,9 @@ pub fn hit_test(
         return z_cand;
     }
 
-    // $1116e-$111c6: only one owner value takes damage.
-    if disc.aim == PlayerId::One {
+    // $1116e-$111c6: only one owner value takes damage -- raw owner 0 docks
+    // player 1, per discr-ovl.8's settled polarity that is PlayerId::Two.
+    if disc.aim == PlayerId::Two {
         player.energy -= disc.damage;
         if player.energy < 0 {
             player.energy = 0;
@@ -926,9 +927,11 @@ pub fn p2_hit_test(
         return z_cand;
     }
 
-    // $c85a-$c87a: only one owner value gets the catch states, and a state that
-    // is not one of the three falls through to $c87e like the other owner does.
-    let catch_window = if disc.aim == PlayerId::One {
+    // $c85a-$c87a: only one owner value gets the catch states, and a state
+    // that is not one of the three falls through to $c87e like the other
+    // owner does. Raw owner 0 (player 2's own serve) is the one that opens a
+    // catch window here, per discr-ovl.8's settled polarity PlayerId::Two.
+    let catch_window = if disc.aim == PlayerId::Two {
         match player.state_index {
             // $ca96, the intercept's catch.
             STATE_INTERCEPT => {
@@ -1016,8 +1019,9 @@ fn strike(
         return z_cand;
     }
 
-    // $c9a6-$ca02, the inverted owner gate.
-    if disc.aim != PlayerId::One {
+    // $c9a6-$ca02, the inverted owner gate: raw owner non-zero docks player 2,
+    // which is PlayerId::One under discr-ovl.8's settled polarity.
+    if disc.aim != PlayerId::Two {
         player.energy -= disc.damage;
         if player.energy < 0 {
             player.energy = 0;
@@ -1196,11 +1200,13 @@ pub fn anticipate(
         PlayerId::One => disc.dir_kind < 0,
         PlayerId::Two => disc.dir_kind > 0,
     };
-    // $cb4a bne vs $1130e beq: and it must be the other player's disc.
-    let theirs = match who {
-        PlayerId::One => disc.aim != PlayerId::One,
-        PlayerId::Two => disc.aim == PlayerId::One,
-    };
+    // $cb4a bne vs $1130e beq: and the disc must still be charged to this
+    // player's OWN ledger (raw owner, not who is about to touch it -- see
+    // reports/part12-owner.md). Before discr-ovl.8's flip this was two
+    // hand-tuned arms (`aim != One` / `aim == One`) because `disc.aim` and
+    // `who` disagreed on what `PlayerId::One` meant; now both are
+    // real-player-consistent and the gate collapses to one comparison.
+    let theirs = disc.aim == who;
     if !away || !theirs {
         return;
     }

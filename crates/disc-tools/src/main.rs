@@ -466,26 +466,27 @@ impl Frame {
                 // raw 0xFF is PLAYER 1's. See reports/part12-owner.md for the
                 // full chain (static + two independent trace confirmations).
                 //
-                // The mapping below is NOT flipped to match: `disc_core::
-                // PlayerId::One`/`Two` as used for `aim` is an internal
-                // boolean this crate's own wall/cascade logic (disc.rs,
-                // player.rs) was written against under the OPPOSITE
-                // convention (raw 0 <-> One), and `aim` is fed every tick,
-                // never compared (see `feed_disc_inputs`) -- so the two
-                // conventions never clash today. Flipping only this arm
-                // measurably regresses `p1_walk` 274 -> 10 ticks (tried and
-                // reverted; see reports/part12-owner.md), because it desyncs
-                // from `disc.rs`'s and `player.rs`'s own `aim ==
-                // PlayerId::One` checks, which encode the ST's raw-0 branch
-                // under the CURRENT convention. A correct fix has to flip
-                // this arm and every internal `PlayerId::One`/`Two` use for
-                // `aim` in disc-core together; that is cross-crate and
-                // tracked separately (message sent to disc.rs's and
-                // player.rs's current owners; file a follow-up bead if one
-                // does not already exist).
+                // The mapping below IS flipped to match, as of discr-ovl.8
+                // (Part 12): `disc_core::PlayerId::One`/`Two` as used for
+                // `aim` used to be an internal-only convention (raw 0 <->
+                // One) that disc.rs's and player.rs's own wall/cascade logic
+                // was written against, self-consistent internally but
+                // backwards against which REAL player raw 0 names. Flipping
+                // only this arm (leaving the internal checks alone) was
+                // tried first and measurably regressed `p1_walk` 274 -> 10
+                // ticks (see reports/part12-owner.md) -- it desynced the two
+                // sides of a convention that had never been compared against
+                // each other before, because `aim` is fed every tick, never
+                // compared (see `feed_disc_inputs`). The fix landed here is
+                // the coordinated one: this arm AND every internal
+                // `disc.aim == PlayerId::One`/`Two` use in disc.rs/player.rs
+                // flipped together in the same commit, so `PlayerId::One`
+                // now means real player 1 consistently everywhere, including
+                // for this field. All nine tracecheck gates hold at their
+                // pre-flip numbers or higher; see reports/part12-farbank.md.
                 aim: match t.own {
-                    Some(0) | None => disc_core::PlayerId::One,
-                    Some(_) => disc_core::PlayerId::Two,
+                    Some(0) | None => disc_core::PlayerId::Two,
+                    Some(_) => disc_core::PlayerId::One,
                 },
                 // `disc+$12`, the steering hook. Parsed here purely as the
                 // trace's OWN value for `want`/comparison -- `disc-core`

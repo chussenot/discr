@@ -194,7 +194,14 @@ Why each waiver or exclusion:
   stays **waived, not compared**: the field is fed every tick because
   `disc-core` still has no WRITER for it (or for the four possession counters
   it steers -- that gap is discr-st8's), not because the polarity is unknown
-  any more. `tracecheck` feeds `active` in every tick, the way it feeds
+  any more. **discr-ovl.8 (Part 12) is CLOSED**: the feed mapping in
+  `main.rs`'s `seed()` and every internal `disc.aim == PlayerId::One`/`Two`
+  check in `disc.rs`/`player.rs` were flipped together in one commit, so
+  `PlayerId::One` now names real player 1 consistently everywhere `disc.aim`
+  is read, including here -- not the self-consistent-but-backwards internal
+  convention `main.rs`'s comment used to cite as the reason this arm alone
+  couldn't be flipped. All nine tracecheck gates hold unchanged; see
+  `reports/part12-farbank.md`. `tracecheck` feeds `active` in every tick, the way it feeds
   `$6c58`, and says so in its header. **discr-ovl.1's player-2 half is
   closed**; its player-1 half, the racket path at `$11030`-`$110a8`, is
   untested because neither player ever swings in either fixture.

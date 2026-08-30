@@ -462,8 +462,16 @@ pub fn step(
     // outright when the OTHER player is out -- `$a564 tst.b $6d2d; bne $a570`
     // then `addq.b #4,($10,a5)` and `subq.w #1,$6d8a`. That is what ends a
     // round: every disc in play is taken off the board.
+    //
+    // `disc.aim` is real-player-consistent as of discr-ovl.8 (Part 12), so the
+    // holder is simply the player `disc.aim` names -- `PlayerId::index()`,
+    // the same mapping every other PlayerId use in the crate goes through.
+    // Before the flip this line inverted the index by hand (`if aim == One
+    // {1} else {0}`) to land on the real holder despite `aim`'s internal
+    // convention disagreeing with it elsewhere; the coordinated flip is what
+    // let the hand inversion go.
     {
-        let holder = if disc.aim == PlayerId::One { 1 } else { 0 };
+        let holder = disc.aim.index();
         if players[holder].round_over || players[holder].down {
             disc.active = disc.active.wrapping_add(ACTIVE_RETIRE_STEP);
             players[holder].discs_out = players[holder].discs_out.saturating_sub(1);
@@ -505,19 +513,19 @@ pub fn step(
         next if next < Z_NEAR => {
             disc.hook = SteerHook::None;
             disc.world_z = Z_NEAR;
-            if disc.aim == PlayerId::One {
-                // $a618: this owner value forces dir_kind to +1 -- NOT the
-                // neg.w, which would give +3 off the -3 return leg -- and then
-                // calls the near grid's damage routine $a24c. tile_damage.ndjson
-                // f70 is exactly this: dir_kind -3 -> +1 and cell 6 destroyed
-                // on the same frame.
+            if disc.aim == PlayerId::Two {
+                // $a618: owner arriving at 0 (real player 2's disc) forces
+                // dir_kind to +1 -- NOT the neg.w, which would give +3 off
+                // the -3 return leg -- and then calls the near grid's damage
+                // routine $a24c. tile_damage.ndjson f70 is exactly this:
+                // dir_kind -3 -> +1 and cell 6 destroyed on the same frame.
                 disc.dir_kind = SERVE_DIR_KIND;
                 let cell = disc_cell(disc.world_x, disc.world_y);
                 impact(disc, cell, tiles, collapse, _events);
             } else {
-                // $a624: the other owner value transfers possession instead,
-                // moving four counters this crate does not model. The neg.w
-                // from $a602 stands. // UNKNOWN: see bd discr-ovl.2.
+                // $a624: owner arriving non-zero transfers possession
+                // instead, moving four counters this crate does not model.
+                // The neg.w from $a602 stands. // UNKNOWN: see bd discr-st8.
                 disc.dir_kind = disc.dir_kind.wrapping_neg();
             }
         }
@@ -626,7 +634,10 @@ pub fn serve(
     discs[slot] = DiscSlot {
         // $a9b8: st ($10,a1).
         active: ACTIVE_LIVE,
-        aim: PlayerId::One,
+        // $a9bc: clr.b ($11,a1) -- every serve is unconditionally owner 0,
+        // real player 2's, per discr-ovl.8's settled polarity (PlayerId::Two
+        // here, not the pre-flip PlayerId::One this line used to read).
+        aim: PlayerId::Two,
         hook: SteerHook::None,
         world_x: thrower.world_x + x_offset,
         world_y: SERVE_WORLD_Y,
@@ -810,6 +821,9 @@ mod tests {
         let mut disc = DiscSlot {
             world_z: 53,
             dir_kind: RETURN_DIR_KIND,
+            // Real player 2's disc (raw owner 0, discr-ovl.8's polarity) --
+            // the near wall's force-and-damage arm, not the transfer one.
+            aim: PlayerId::Two,
             ..flying(48, 81)
         };
         let mut tiles = [Tile::default(); TILE_CELLS];
@@ -927,6 +941,9 @@ mod tests {
             world_z: 2,
             dir_kind: RETURN_DIR_KIND,
             damage: 3,
+            // Real player 2's disc (raw owner 0, discr-ovl.8's polarity) --
+            // the near wall's force-and-damage arm, not the transfer one.
+            aim: PlayerId::Two,
             ..flying(67, 81)
         };
         let mut tiles = [Tile::default(); TILE_CELLS];
