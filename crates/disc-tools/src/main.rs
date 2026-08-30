@@ -450,10 +450,39 @@ impl Frame {
                 // `disc+$10` verbatim. A pre-Part-10 trace has no column, and
                 // there a nonzero dir_kind is the only liveness proxy going.
                 active: t.act.unwrap_or(if t.flag != 0 { 0xff } else { 0 }),
-                // `disc+$11`. Which byte value names which player is not
-                // settled -- every trace reads 0 -- so 0 maps to One and
-                // anything else to Two, and the row stays waived.
-                // // UNKNOWN: see bd discr-ovl.2.
+                // `disc+$11`. Part 12 (discr-ovl.2) settled which REAL player
+                // owns which raw value: `$a9aa`/`$a9bc` (the serve routine,
+                // called only from player 2's control routine `$abb2`) bump
+                // `$6d8a` and clear the owner byte in the same instruction
+                // pair, so a freshly served disc always reads owner 0 and is
+                // charged to PLAYER 2's own throw-cap ledger. The wall
+                // handlers confirm it dynamically: `tests/fixtures/
+                // handover.ndjson` frame 259 (owner 0->255, the FAR wall)
+                // moves `players[1]` (P2)'s `discs_out`/`disc_cap` DOWN and
+                // `players[0]` (P1)'s UP in the same tick, and frame 339
+                // (owner 255->0, the NEAR wall) reverses both -- exactly
+                // `$6d8a--/$6d8c--/$6d0c++/$6d0a++` and its mirror, read live
+                // off `$a5d0`-`$a63c`. So RAW owner 0 is PLAYER 2's disc and
+                // raw 0xFF is PLAYER 1's. See reports/part12-owner.md for the
+                // full chain (static + two independent trace confirmations).
+                //
+                // The mapping below is NOT flipped to match: `disc_core::
+                // PlayerId::One`/`Two` as used for `aim` is an internal
+                // boolean this crate's own wall/cascade logic (disc.rs,
+                // player.rs) was written against under the OPPOSITE
+                // convention (raw 0 <-> One), and `aim` is fed every tick,
+                // never compared (see `feed_disc_inputs`) -- so the two
+                // conventions never clash today. Flipping only this arm
+                // measurably regresses `p1_walk` 274 -> 10 ticks (tried and
+                // reverted; see reports/part12-owner.md), because it desyncs
+                // from `disc.rs`'s and `player.rs`'s own `aim ==
+                // PlayerId::One` checks, which encode the ST's raw-0 branch
+                // under the CURRENT convention. A correct fix has to flip
+                // this arm and every internal `PlayerId::One`/`Two` use for
+                // `aim` in disc-core together; that is cross-crate and
+                // tracked separately (message sent to disc.rs's and
+                // player.rs's current owners; file a follow-up bead if one
+                // does not already exist).
                 aim: match t.own {
                     Some(0) | None => disc_core::PlayerId::One,
                     Some(_) => disc_core::PlayerId::Two,
@@ -658,8 +687,10 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
     // 255 from frame 268, and `disc-core` has no writer for it, so leaving it
     // at the frame-0 seed made player 1's anticipation cascade ($112f4, whose
     // third gate is `tst.b ($11,a5); beq`) unreachable for the whole trace.
-    // // UNKNOWN (what writes it, and which value names which player):
-    // see bd discr-ovl.2.
+    // Part 12 named which real player owns which raw value (see `seed()`
+    // above and reports/part12-owner.md); disc-core still has no WRITER for
+    // the four possession counters the ST moves alongside it, which is why
+    // this stays fed rather than compared. See bd discr-ovl.2.
     for (s, w) in state.discs.iter_mut().zip(&want.discs) {
         s.aim = w.aim;
     }
@@ -875,7 +906,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     }
     println!(
-        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); updates and outer, the $96ba\n         \x20              pass count and the $96b6 outer-iteration count (Parts 11f, 11h);\n         \x20              and, since Part 11j, ONE disc field -- disc+$11, the owner byte,\n         \x20              whose writer is not located and which p1_walk is the first trace\n         \x20              to move (discr-ovl.2)."
+        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6c/$6e/$70, four per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); updates and outer, the $96ba\n         \x20              pass count and the $96b6 outer-iteration count (Parts 11f, 11h);\n         \x20              and disc+$11, the owner byte -- polarity settled Part 12 (0 = player\n         \x20              2's disc, 0xFF = player 1's; reports/part12-owner.md), but disc-core\n         \x20              still has no WRITER for it or the four possession counters it\n         \x20              steers, so it stays fed rather than compared (discr-ovl.2)."
     );
     println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",
