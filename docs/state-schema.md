@@ -57,8 +57,11 @@ tag or index.
 | `tiles_far[n].hp` | `i16` | `far_tile+$02` | compared |
 | `players[0].discs_out` | `i16` | `player+$6a` (`$6d0a`) | compared |
 | `players[0].disc_cap` | `i16` | `player+$6c` (`$6d0c`) | compared |
+| `players[0].anim_cursor` | `u32` | `player+$3a` (`$6cda`) | compared |
+| `players[0].x_delta` | `i16` | `player+$1a` (`$6cba`) | compared |
+| `players[0].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` (`$6cbc`..`$6cc2`) | compared |
 
-20 compared fields.
+25 compared fields.
 
 Notes on individual rows:
 
@@ -153,15 +156,34 @@ Notes on individual rows:
   wall). `tests/fixtures/p1_walk.ndjson` reaches the far-wall transfer live
   (frame 220) within its own `--min-agree 274` gate. Full chain:
   `reports/part12-round.md`.
+* `players[0].anim_cursor` / `x_delta` / `hit_box` -- **added in discr-rxx.1
+  (Part 12).** `player+$3a`/`$1a`/`$1c`..`$22`, reconstructed from the
+  animation sequence tables (`crate::player::Anim`/`Frame`, extracted from
+  `discram.bin` with their ST address ranges cited in `player.rs`) rather
+  than read off the trace. `anim_cursor` is `anim_base + 6*anim_cell`, kept
+  live by `enter_anim`/`anim_tick`; `x_delta`/`hit_box` are the two fields of
+  each cell's frame block this crate carries, copied in every `anim_tick`
+  call the same tick the ST's `$f1ca` would. **Player 1 only** -- `golden`,
+  `tile_damage` and `p1_walk` all reproduce these three fields for player 1
+  across their WHOLE established `--min-agree` window (99/214/274 ticks)
+  with nothing waived or resynced. Player 2's copies stay fed (folded into
+  `players[1].*` below): its own sequences are not fully catalogued (a sixth
+  table surfaces within the first few ticks of `golden.ndjson` alone, ST
+  `$449e`), and the serve gate (`crate::disc::THROW_STATES`) reads player 2's
+  `anim_cursor` directly, so a wrong reconstructed value there would desync
+  the serve and corrupt the disc simulation for both players --
+  `crate::player::step` snapshots and restores player 2's three fields around
+  the call that would otherwise touch them, so retiring the feed for player 1
+  cannot regress player 2. Full format spec and the per-fixture agreement
+  table: `reports/part12-anim.md`.
 
 ## Waived and excluded
 
 | field path | Rust type | ST address | status |
 | --- | --- | --- | --- |
-| `players[1].*` (all 5 fields) | as `players[0]` | `$6d20` + `$02`/`$06`/`$09`/`$0e`/`$10` | waived:discr-b6x |
+| `players[1].*` (8 fields) | as `players[0]` | `$6d20` + `$02`/`$06`/`$09`/`$0e`/`$10`/`$3a`/`$1a`/`$1c`..`$22` | waived:discr-b6x |
 | -- (the opponent's policy) | -- | `$d2cc`, the rule table at `$efa8` | waived:discr-b6x |
 | `discs[n].aim` | `PlayerId` | `disc+$11` | waived:discr-ovl.2 |
-| `players[n].anim_cursor` | `u32` | `player+$3a` | waived:discr-75o |
 | `players[n].throw_dir_kind` / `throw_damage` | `i16` | `player+$6e` / `+$70` | waived:discr-qqt |
 | -- (round init, round-over threshold, win/loss) | -- | `$aa50`, `$6c83`, `$6ca0`, `player+$72` | waived:discr-st8 |
 | -- (player state semantics) | -- | `$10e2c` entries 5,11,14,19,20,21,23,24,27,31 | waived:discr-75o |
@@ -169,20 +191,23 @@ Notes on individual rows:
 | -- (what places a bonus on a cell) | -- | `tile+$02` bit 7, and `$6e3a` | waived:discr-ovl.4 |
 | -- (the bonus effects) | -- | `$6d9a`/`$6d9c`/`$6d9e`, table `$9aa2` | waived:discr-z8m |
 | -- (the animation engine) | `pending_state`, `anim_hold`, `anim_cell`, `anim_shown` | `$6caa`, `$6cda`, `$6ce2`, `$6ce4` | waived:discr-75o |
-| `players[n].hit_box` | `[i16; 4]` | `player+$1c`..`+$22` | waived:discr-75o |
 | `players[n].reach` | `i16` | `player+$12` | waived:discr-b6x |
-| `players[n].x_delta` | `i16` | `player+$1a` | waived:discr-75o |
 | -- (disc screen X) | -- | `disc+$0c` | excluded:projection |
 | -- (disc screen Y) | -- | `disc+$0e` | excluded:projection |
 | -- (disc sub-record pointers) | -- | `disc+$1a`, `disc+$3e` | excluded:pointer |
 | -- (tile trailing long) | -- | `tile+$04` | excluded:always-zero |
 | -- (sound, palette, screen base) | -- | `$6c5b`, `$6c5c`, `$6aac`, `$6ab0` | excluded:io |
 
-19 waived or excluded rows: 14 waived against a filed unknown, 5 excluded by
-scope. **Three of the seventeen waived rows before Part 12 came off**: the far
-wall's tile grid and the far bank's 16 cells, both `waived:discr-ovl.3`, moved
-up to the Compared table above as `tiles_far[n].tile_type`/`tiles_far[n].hp`;
-and `players[n].disc_cap`'s standalone waiver row is gone (discr-st8, Part
+16 waived or excluded rows: 11 waived against a filed unknown, 5 excluded by
+scope. **Three waived rows came off in discr-rxx.1 (Part 12)**:
+`players[n].anim_cursor`/`hit_box`/`x_delta`, the generic `discr-75o` rows
+that used to cover both players uniformly. Player 1's copies are compared now
+(above); player 2's are folded into `players[1].*`, which grows from 5 fields
+to 8 rather than gaining a row of its own -- the same shape `disc_cap` used
+when it lost its standalone waiver in discr-st8. Before that: the far wall's
+tile grid and the far bank's 16 cells, both `waived:discr-ovl.3`, moved up to
+the Compared table above as `tiles_far[n].tile_type`/`tiles_far[n].hp`; and
+`players[n].disc_cap`'s standalone waiver row is gone (discr-st8, Part
 12/round), folded into the compared `players[0].disc_cap` and the general
 `players[1].*` waiver, the same way `discs_out` never had a row of its own.
 Before that, the count had been unchanged from before Part 10, which was
@@ -194,7 +219,7 @@ one row moved from `excluded:rendering` to `waived:discr-75o`, because
 rendering detail. What changed is not how many unknowns there are but where
 they sit: six of them used to stand between the disc model and the fixture,
 and now one does.
-`reports/part10-report.md` has the before-and-after gate numbers. With the 22
+`reports/part10-report.md` has the before-and-after gate numbers. With the 25
 compared rows above, that is the whole table, and
 `tracecheck`'s header prints these three numbers so a drift between tool and
 file is visible on every run.
@@ -281,10 +306,14 @@ Why each waiver or exclusion:
   -- which is every state player 1 reaches anywhere in either fixture. The mechanism behind all 32 is also known: each
   handler ends in the animation tail at `$f1c4`, which counts `$6ce2` down and
   advances the six-byte sequence cursor `$6cda`, and **running off the end of a
-  sequence is what changes state**. What stays waived is the other 28 handlers'
-  behaviour and the frame-block data their sequences point at, which this crate
-  does not carry. State 17 is partly explained -- `$c0c4 move.b #$11,$6d2e` is
-  the serve setting it.
+  sequence is what changes state**. `discr-rxx.1` (Part 12) decoded the cell
+  format and this crate now carries the frame-block data (`x_delta`/`hit_box`)
+  for the 20 sequences player 1's own seven states and player 2's already-
+  modelled throw/smash/intercept/reach/struck states reach -- see the
+  `players[0].anim_cursor`/`x_delta`/`hit_box` note above. What stays waived
+  is the other 28 handlers' behaviour, and player 2's own idle/walk sequences
+  specifically (not fully catalogued -- discr-b6x, not this bead). State 17
+  is partly explained -- `$c0c4 move.b #$11,$6d2e` is the serve setting it.
 * The tile unknowns are **narrower than they were**. Bit 7 of `tile+$02` is now
   known to mark a cell as carrying a bonus, and `$a29c andi.w #$0f` is the
   writer that clears it on pickup, which closes the old discr-dc0. What is left

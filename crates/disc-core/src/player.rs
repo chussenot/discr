@@ -115,76 +115,687 @@ pub const NO_CELL: u8 = 0xff;
 /// picks a cell partway into the block at `$45ea`, and the sequence then runs
 /// forward from there to the same zero terminator. So a sequence is identified
 /// by its **starting cursor**, which is what [`Player::anim_base`] holds, and
-/// the holds recorded here are the ones from that cursor on.
-///
-/// The frame-block pointers are sprite data this crate does not carry; only the
-/// holds matter to the state machine's timing.
+/// the holds and frames recorded here are the ones from that cursor on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Anim {
     /// The ST address the handler loads into `$6cda` / `$6d5a`.
     pub start: u32,
     /// The hold count of each cell from there to the terminator.
     pub holds: &'static [u16],
+    /// The authored `x_delta`/`hit_box` pair `$f1ca` copies out of each cell's
+    /// frame block, same length and order as `holds`.
+    pub frames: &'static [Frame],
+}
+
+/// The two fields of a cell's frame block this crate carries: `player+$1a`
+/// (`x_delta`) and `player+$1c`..`+$22` (`hit_box`), both read out of the
+/// pointer a cell's own first four bytes hold.
+///
+/// `$f1ca`'s 20-byte copy is `a1 = (cursor)` -- the cell's frame-pointer word
+/// dereferenced -- then ten bytes of sprite/graphics data this crate does not
+/// carry, then these two fields, in this order, at frame-block offsets `$0a`
+/// (`x_delta`, one word) and `$0c`-`$13` (`hit_box`, four words): confirmed by
+/// reading every sequence below out of `discram.bin` and finding the holds
+/// already recorded here (Part 10h, transcribed by hand) fall out exactly,
+/// and the one measured value Part 10d named -- standing hit box `[-3, 11,
+/// -20, 18]` -- at cell 0 of both idle tables.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Frame {
+    /// `player+$1a`. Zero on every cell but one per throw/intercept-recovery
+    /// sequence, where it is the sole reason a standing player's `world_x`
+    /// moves (Part 10i/10j).
+    pub x_delta: i16,
+    /// `player+$1c`..`+$22`, in that order.
+    pub hit_box: [i16; 4],
 }
 
 macro_rules! anims {
-    ($($name:ident = $addr:literal, $holds:expr, $doc:literal;)*) => {
+    ($($name:ident = $addr:literal, $holds:expr, $frames:expr, $doc:literal;)*) => {
         $(
             #[doc = $doc]
-            pub const $name: Anim = Anim { start: $addr, holds: &$holds };
+            pub const $name: Anim = Anim { start: $addr, holds: &$holds, frames: &$frames };
         )*
         /// Every sequence transcribed so far, for [`anim_for`].
         pub const ANIMS: &[Anim] = &[$($name),*];
     };
 }
 
+// The frame-block data below is read directly out of `discram.bin` at the
+// pointer each cell's own first four bytes hold (Part 12, `docs/disc-notes.md`
+// "The animation tables" / "$f1ca copies 20 bytes"). One array per sequence,
+// same order and length as its `holds`; the doc comment on each `anims!` entry
+// names the ST addresses the pointers came from.
+
+// ANIM_P1_IDLE ($2c78): frame blocks at $16ce, $16b8, $16a2, $16b8, $16ce,
+// $16b8, $16a2, $16b8, $16ce, $16e4, $16fa, $16e4, $16ce, $16e4, $16fa, $16e4.
+const FRAMES_P1_IDLE: [Frame; 16] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+];
+
+// ANIM_TURN ($2f7e): frame block at $28da.
+const FRAMES_TURN: [Frame; 1] = [Frame {
+    x_delta: 0,
+    hit_box: [-3, 11, -20, 18],
+}];
+
+// ANIM_STRUCK_DOWN ($2d50): frame blocks at $202c, $2042.
+const FRAMES_STRUCK_DOWN: [Frame; 2] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-6, 11, -18, 16],
+    },
+];
+
+// ANIM_STRUCK_UP ($2d60): frame blocks at $2058, $206e.
+const FRAMES_STRUCK_UP: [Frame; 2] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-7, 11, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -15, 13],
+    },
+];
+
+// ANIM_DEAD ($2d70): frame blocks at $2084, $209a, $20b0, $20c6, $20dc, $20f2,
+// $20dc, $20c6, $20dc, $20f2, $2108, $211e, $2134, $214a, $2160, $2176.
+const FRAMES_DEAD: [Frame; 16] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -14, 12],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 10],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -11, 9],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -13, 12],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -13, 12],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -16, 14],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-2, 5, -14, 12],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-1, 5, -13, 12],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [0, 5, -11, 9],
+    },
+];
+
+// ANIM_P1_WALK_LEFT ($2a8a): frame blocks at $1794, $17aa, $17c0, $17d6,
+// $17ec, $1802.
+const FRAMES_P1_WALK_LEFT: [Frame; 6] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [0, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-1, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-2, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 17],
+    },
+];
+
+// ANIM_P2_IDLE ($468c): frame blocks at $30e2, $30cc, $30b6, $30cc, $30e2,
+// $30cc, $30b6, $30cc, $30e2, $30f8, $310e, $30f8, $30e2, $30f8, $310e, $30f8.
+const FRAMES_P2_IDLE: [Frame; 16] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+];
+
+// ANIM_INTERCEPT ($4612): frame blocks at $42ee, $3f7e, $3f94, $3faa.
+const FRAMES_INTERCEPT: [Frame; 4] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-13, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-19, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-11, 11, -20, 18],
+    },
+];
+
+// ANIM_REACH ($466a): frame blocks at $42c2, $3e60, $3e76, $3e8c, $3ea2.
+const FRAMES_REACH: [Frame; 5] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -18, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -18, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -18, 15],
+    },
+];
+
+// ANIM_AFTER_INTERCEPT ($45f0): frame blocks at $3d42, $3d58, $3d6e, $3d84,
+// $3d9a. The last cell is where Part 10i's "-4" idle-path X delta comes from
+// -- 39 (state 18's commit) + 20 (5 cells x hold 4) = 59, exactly where that
+// part's `--watch` trace shows it.
+const FRAMES_AFTER_INTERCEPT: [Frame; 5] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-2, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 18],
+    },
+    Frame {
+        x_delta: -4,
+        hit_box: [-8, 11, -20, 18],
+    },
+];
+
+// ANIM_MISSED_CATCH ($462e): frame blocks at $3fc0, $3fd6.
+const FRAMES_MISSED_CATCH: [Frame; 2] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-19, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-11, 11, -20, 17],
+    },
+];
+
+// ANIM_P2_THROW_LEFT ($45c2): frame blocks at $3ca8, $3cbe, $3cd4, $3cea,
+// $3d00, $3d16.
+const FRAMES_P2_THROW_LEFT: [Frame; 6] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-10, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-5, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [1, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 4,
+        hit_box: [-1, 11, -20, 18],
+    },
+];
+
+// ANIM_P2_SMASH_LEFT ($472a): frame blocks at $3e08, $3e1e, $3e34, $3e4a,
+// $3d42, $3d58, $3d6e, $3d84, $3d9a.
+const FRAMES_P2_SMASH_LEFT: [Frame; 9] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-6, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-9, 16, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-10, 16, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-11, 16, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-2, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 18],
+    },
+    Frame {
+        x_delta: -4,
+        hit_box: [-8, 11, -20, 18],
+    },
+];
+
+// ANIM_P2_SMASH_RIGHT ($46f0): frame blocks at $3db0, $3dc6, $3ddc, $3df2,
+// $3cbe, $3cd4, $3cea, $3d00, $3d16.
+const FRAMES_P2_SMASH_RIGHT: [Frame; 9] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-7, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-7, 16, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-5, 16, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 16, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-10, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-5, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [1, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 4,
+        hit_box: [-1, 11, -20, 18],
+    },
+];
+
+// ANIM_P1_INTERCEPT ($2bfe): frame blocks at $28da, $256a, $2580, $2596.
+const FRAMES_P1_INTERCEPT: [Frame; 4] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-13, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-19, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-11, 11, -20, 18],
+    },
+];
+
+// ANIM_P1_REACH ($2c56): frame blocks at $28ae, $244c, $2462, $2478, $248e.
+const FRAMES_P1_REACH: [Frame; 5] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -18, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -18, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -18, 15],
+    },
+];
+
+// ANIM_P2_STRUCK_DOWN ($4764): frame blocks at $3a40, $3a56.
+const FRAMES_P2_STRUCK_DOWN: [Frame; 2] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-6, 11, -18, 16],
+    },
+];
+
+// ANIM_P2_STRUCK_UP ($4774): frame blocks at $3a6c, $3a82.
+const FRAMES_P2_STRUCK_UP: [Frame; 2] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-7, 11, -17, 15],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -15, 13],
+    },
+];
+
+// ANIM_P2_THROW_RIGHT ($45ea): frame blocks at $3d2c, $3d42, $3d58, $3d6e,
+// $3d84, $3d9a. Its second cell ($3d42) is `ANIM_AFTER_INTERCEPT`'s first --
+// the shared-tail relationship Part 10h names.
+const FRAMES_P2_THROW_RIGHT: [Frame; 6] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-2, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 18],
+    },
+    Frame {
+        x_delta: -4,
+        hit_box: [-8, 11, -20, 18],
+    },
+];
+
+// ANIM_P1_CATCH19_COMMIT ($2bb4): frame blocks at $22aa, $22c0, $22d6, $22ec,
+// $2302.
+const FRAMES_P1_CATCH19_COMMIT: [Frame; 5] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-10, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-5, 16, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [1, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 4,
+        hit_box: [-1, 11, -20, 18],
+    },
+];
+
 anims! {
-    ANIM_P1_IDLE      = 0x2c78, [6, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6],
+    ANIM_P1_IDLE      = 0x2c78, [6, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6], FRAMES_P1_IDLE,
         "ST `$2c78`, loaded at `$f202`: player 1 standing, with three long pauses.";
-    ANIM_TURN         = 0x2f7e, [4],
+    ANIM_TURN         = 0x2f7e, [4], FRAMES_TURN,
         "ST `$2f7e`, loaded at `$f27a` / `$f2ce` / `$f7c4` / `$f9e0`: the turn transient.";
-    ANIM_STRUCK_DOWN  = 0x2d50, [4, 4],
+    ANIM_STRUCK_DOWN  = 0x2d50, [4, 4], FRAMES_STRUCK_DOWN,
         "ST `$2d50`, loaded at `$11226`: knocked down.";
-    ANIM_STRUCK_UP    = 0x2d60, [4, 4],
+    ANIM_STRUCK_UP    = 0x2d60, [4, 4], FRAMES_STRUCK_UP,
         "ST `$2d60`, loaded at `$11210`: knocked upward.";
-    ANIM_DEAD         = 0x2d70, [4; 16],
+    ANIM_DEAD         = 0x2d70, [4; 16], FRAMES_DEAD,
         "ST `$2d70`, loaded at `$f1a0`: out of energy. State 23 never leaves it.";
-    ANIM_P1_WALK_LEFT = 0x2a8a, [4, 4, 4, 4, 4, 4],
+    ANIM_P1_WALK_LEFT = 0x2a8a, [4, 4, 4, 4, 4, 4], FRAMES_P1_WALK_LEFT,
         "ST `$2a8a`, loaded at `$f296`: player 1 walking left.";
-    ANIM_P2_IDLE      = 0x468c, [6, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6],
+    ANIM_P2_IDLE      = 0x468c, [6, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6], FRAMES_P2_IDLE,
         "ST `$468c`: player 2 standing -- the same shape as player 1's.";
-    ANIM_INTERCEPT    = 0x4612, [6, 6, 6, 6],
+    ANIM_INTERCEPT    = 0x4612, [6, 6, 6, 6], FRAMES_INTERCEPT,
         "ST `$4612`, loaded at `$cc26`: player 2 stepping across to intercept.";
-    ANIM_REACH        = 0x466a, [6, 6, 4, 4, 4],
+    ANIM_REACH        = 0x466a, [6, 6, 4, 4, 4], FRAMES_REACH,
         "ST `$466a`, loaded at `$cbb6`: player 2 reaching without moving.";
-    ANIM_AFTER_INTERCEPT = 0x45f0, [4, 4, 4, 4, 4],
+    ANIM_AFTER_INTERCEPT = 0x45f0, [4, 4, 4, 4, 4], FRAMES_AFTER_INTERCEPT,
         "ST `$45f0`, loaded at `$c1d4` when the intercept commits. Five cells of \
          four, so state 15 and the state 17 that follows the serve share twenty \
          frames between them -- which is what ends state 17.";
-    ANIM_MISSED_CATCH = 0x462e, [6, 6],
+    ANIM_MISSED_CATCH = 0x462e, [6, 6], FRAMES_MISSED_CATCH,
         "ST `$462e`, loaded at `$cab8` when a catch misses.";
-    ANIM_P2_THROW_LEFT = 0x45c2, [4, 4, 4, 4, 4, 4],
+    ANIM_P2_THROW_LEFT = 0x45c2, [4, 4, 4, 4, 4, 4], FRAMES_P2_THROW_LEFT,
         "ST `$45c2`, loaded at `$ae70`: player 2's throw after stepping left.";
-    ANIM_P2_SMASH_LEFT = 0x472a, [4, 4, 4, 4, 4, 4, 4, 4, 4],
+    ANIM_P2_SMASH_LEFT = 0x472a, [4, 4, 4, 4, 4, 4, 4, 4, 4], FRAMES_P2_SMASH_LEFT,
         "ST `$472a`, loaded at `$aed4`: player 2's running smash to the left.";
-    ANIM_P2_SMASH_RIGHT = 0x46f0, [4, 4, 4, 4, 4, 4, 4, 4, 4],
+    ANIM_P2_SMASH_RIGHT = 0x46f0, [4, 4, 4, 4, 4, 4, 4, 4, 4], FRAMES_P2_SMASH_RIGHT,
         "ST `$46f0`, loaded at `$af34`: the same, to the right.";
-    ANIM_P1_INTERCEPT = 0x2bfe, [6, 6, 6, 6],
+    ANIM_P1_INTERCEPT = 0x2bfe, [6, 6, 6, 6], FRAMES_P1_INTERCEPT,
         "ST `$2bfe`, loaded at `$113ea`: player 1 stepping across to intercept -- \
          the same four cells of six as player 2's `$4612`.";
-    ANIM_P1_REACH     = 0x2c56, [6, 6, 4, 4, 4],
+    ANIM_P1_REACH     = 0x2c56, [6, 6, 4, 4, 4], FRAMES_P1_REACH,
         "ST `$2c56`, loaded at `$1137a`: player 1 reaching without moving, the \
          same shape as player 2's `$466a`.";
-    ANIM_P2_STRUCK_DOWN = 0x4764, [4, 4],
+    ANIM_P2_STRUCK_DOWN = 0x4764, [4, 4], FRAMES_P2_STRUCK_DOWN,
         "ST `$4764`, loaded at `$ca5e`: player 2 knocked down. Read out of the \
          image -- two cells of four, the same shape as player 1's `$2d50`.";
-    ANIM_P2_STRUCK_UP = 0x4774, [4, 4],
+    ANIM_P2_STRUCK_UP = 0x4774, [4, 4], FRAMES_P2_STRUCK_UP,
         "ST `$4774`, loaded at `$ca48`: player 2 knocked upward, mirroring \
          player 1's `$2d60`.";
-    ANIM_P2_THROW_RIGHT = 0x45ea, [4, 4, 4, 4, 4, 4],
+    ANIM_P2_THROW_RIGHT = 0x45ea, [4, 4, 4, 4, 4, 4], FRAMES_P2_THROW_RIGHT,
         "ST `$45ea`, loaded at `$ae0e`: the same, stepping right. `$45f0` -- the \
          sequence the intercept commits into -- is this table's second cell.";
-    ANIM_P1_CATCH19_COMMIT = 0x2bb4, [4, 4, 4, 4, 4],
+    ANIM_P1_CATCH19_COMMIT = 0x2bb4, [4, 4, 4, 4, 4], FRAMES_P1_CATCH19_COMMIT,
         "ST `$2bb4`, loaded at `$10932` when state 19 commits: five cells of \
          four, the same shape as `$45f0`/`ANIM_AFTER_INTERCEPT`.";
 }
@@ -223,18 +834,40 @@ pub enum AnimStep {
 
 /// Load a sequence and enter its first cell. ST: the three-instruction preamble
 /// every handler writes before setting `$6cae` --
-/// `lea <seq>,a1; move.w ($04,a1),$6ce2; move.l a1,$6cda`.
+/// `lea <seq>,a1; move.w ($04,a1),$6ce2; move.l a1,$6cda`, i.e. `$6cda` (this
+/// crate's [`Player::anim_cursor`]) becomes the sequence base immediately --
+/// before the tail has copied anything out of the first cell.
 pub fn enter_anim(player: &mut Player, anim: Anim) {
     player.anim_base = anim.start;
     player.anim_cell = 0;
     player.anim_shown = NO_CELL;
     player.anim_hold = anim.holds.first().copied().unwrap_or(1);
+    // `$6cda = a1` in the same preamble, six-byte cells from `anim_base`.
+    player.anim_cursor = anim.start;
+}
+
+/// Load a sequence via the tail's OWN generic fallback (`$f202`-`$f218`),
+/// reached when the sequence just ended has nowhere more specific to hand
+/// off to. Unlike [`enter_anim`] followed by a second [`anim_tick`] (a
+/// distinct, fresh dispatch such as `enter_turn`'s), this fallback is part of
+/// the SAME tail invocation that just ran the copy for the OLD sequence --
+/// so it does not copy again (`golden.ndjson` frame 71 still shows the OLD
+/// sequence's `hit_box` on the tick `anim_cursor` already reads the new
+/// base), but it DOES consume one unit of the fresh hold immediately, the
+/// same `$f1ee subq.w #1,$6ce2` instruction the tail always runs, just
+/// operating on the value `$f206` only just loaded: `golden.ndjson`'s second
+/// idle stretch (frames 32-37) shows cell 0's 6-hold cell for five samples,
+/// not six, which is one accounted for here.
+fn enter_anim_fallback(player: &mut Player, anim: Anim) {
+    enter_anim(player, anim);
+    player.anim_hold = player.anim_hold.saturating_sub(1);
 }
 
 /// The animation tail every handler ends in. ST `$f1c4`, faithfully in order:
 /// the frame block is copied *first* (which is what makes `$6ce4` the
-/// previous frame's cell for the next handler run), then the hold is
-/// decremented, then the cursor may advance.
+/// previous frame's cell for the next handler run, and `$6cba`/`$6cbc`..`$6cc2`
+/// this frame's `x_delta`/`hit_box`), then the hold is decremented, then the
+/// cursor may advance.
 pub fn anim_tick(player: &mut Player) -> AnimStep {
     // The sequence is whichever one the handler that entered this state loaded.
     let Some(anim) = anim_for(player.anim_base) else {
@@ -243,8 +876,13 @@ pub fn anim_tick(player: &mut Player) -> AnimStep {
         return AnimStep::Holding;
     };
     let holds = anim.holds;
-    // $f1ca: the copy, before anything else. Only the cell identity matters here.
+    // $f1ca: the copy, before anything else -- the cell identity, and (Part
+    // 12) the two fields of its frame block this crate carries.
     player.anim_shown = player.anim_cell;
+    if let Some(frame) = anim.frames.get(player.anim_cell as usize) {
+        player.x_delta = frame.x_delta;
+        player.hit_box = frame.hit_box;
+    }
 
     // $f1ee: subq.w #1,$6ce2.
     player.anim_hold = player.anim_hold.saturating_sub(1);
@@ -253,6 +891,9 @@ pub fn anim_tick(player: &mut Player) -> AnimStep {
     }
     // $f1f4/$f1f6: six bytes on, and reload the hold from the new cell.
     player.anim_cell = player.anim_cell.saturating_add(1);
+    // `$6cda = a1` (`$f218`): the cursor tracks the cell six bytes at a time,
+    // whether it just advanced or is about to fall back to idle below.
+    player.anim_cursor = player.anim_base + u32::from(player.anim_cell) * 6;
     match holds.get(player.anim_cell as usize) {
         Some(&hold) => {
             player.anim_hold = hold;
@@ -364,6 +1005,17 @@ fn walk(player: &mut Player, input: Input, facing: u8, held: DirBits, step_x: i1
 
     // ST $f65c onward: the cell in $6cb0 is recomputed from the new X.
     player.grid_cell = grid_cell(player.world_x, player.world_y);
+
+    // The handler's own fall-through to the shared tail -- but only while
+    // `anim_base` genuinely names the sequence this crate has data for
+    // (player 1's left walk, `$2a8a`). Walking right and player 2's own walk
+    // have no decoded sequence (`// UNKNOWN: see bd discr-75o`); ticking a
+    // stale, unrelated `anim_base` there would apply a WRONG table's
+    // `x_delta`/`hit_box` rather than leaving them honestly unmodelled, so
+    // this stays a no-op for every combination but the one that is known.
+    if player.anim_base == ANIM_P1_WALK_LEFT.start {
+        anim_tick(player);
+    }
 }
 
 /// Enter the turn transient. ST `$f27a`-`$f288`, `$f2ce`-`$f2dc`, `$f7c4`-`$f7d2`
@@ -386,6 +1038,20 @@ fn enter_turn(player: &mut Player) {
 /// reach state 26 all lead into handlers whose behaviour is unrecovered, so
 /// this leaves `state_index` alone for them rather than entering a state it
 /// cannot then run. `// UNKNOWN: see bd discr-75o`.
+/// The idle path's own share of the shared tail: run it, and if the idle
+/// sequence itself just ran out (`golden.ndjson`/`tile_damage.ndjson` both
+/// wrap `ANIM_P1_IDLE`'s 16 cells back to cell 0 -- `tile_damage` frame 157
+/// is the measured case, six full samples of the restarted cell 0, matching
+/// `struck_down`'s no-discount ending rather than `turn`'s), reload it.
+/// `$f202`'s fallback is idle's OWN table whenever nothing more specific is
+/// queued, which is exactly what happens when idle's own copy of that table
+/// is what just ended.
+fn idle_tick(player: &mut Player, who: PlayerId) {
+    if anim_tick(player) == AnimStep::Ended {
+        enter_anim(player, idle_anim(who));
+    }
+}
+
 fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE_CELLS]) {
     // $f110-$f118 / $abbe-$abc6: consume the animation's X delta. Read, cleared,
     // and added to world_x -- and nothing recomputes grid_cell here, so the cell
@@ -411,6 +1077,9 @@ fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE
     // stamp from the throw it just finished stays put.
     if input.dir == DirBits(0) && !input.fire_held {
         player.facing = 0;
+        // $f1c0 falls straight through to $f1c4 -- no branch between them, so
+        // the tail runs even on a frame with nothing to react to.
+        idle_tick(player, who);
         return;
     }
 
@@ -427,7 +1096,9 @@ fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE
     } else if input.dir == DirBits::RIGHT {
         STATE_WALK_RIGHT
     } else {
-        // Up, down, fire and every combination: unmodelled.
+        // Up, down, fire and every combination: unmodelled, so control falls
+        // through to the tail exactly as the "nothing pressed" case above.
+        idle_tick(player, who);
         return;
     };
 
@@ -440,6 +1111,15 @@ fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE
         enter_turn(player);
     } else {
         player.state_index = pending;
+        // `$f296` -- the skip-turn commit for player 1's left walk -- `lea
+        // $2a8a,a1` before falling into the shared tail (Part 10h). No
+        // equivalent address is decoded for walking right or for player 2's
+        // own walk (`// UNKNOWN: see bd discr-75o`), so only this one case
+        // loads a real sequence; the others leave whatever was running.
+        if who == PlayerId::One && pending == STATE_WALK_LEFT {
+            enter_anim(player, ANIM_P1_WALK_LEFT);
+        }
+        anim_tick(player);
     }
 }
 
@@ -447,11 +1127,33 @@ fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE
 ///
 /// Stamps `$6ca9`, runs the animation tail, and on the frame the `$2f7e`
 /// sequence runs out writes `$6caa` into `$6cae` (`$1099a`).
-fn turn(player: &mut Player) {
+fn turn(player: &mut Player, who: PlayerId) {
     player.facing = STATE_TURN;
     // $1099a: the sequence running out is what writes $6caa into $6cae.
     if anim_tick(player) == AnimStep::Ended {
         player.state_index = player.pending_state;
+        // The turn's own sequence is spent, and landing in a walk state loads
+        // THAT state's sequence in turn (Part 10h names `$f296` for player 1's
+        // left walk; no address is decoded for walking right or for player
+        // 2's own walk, `// UNKNOWN: see bd discr-75o`, so only this one case
+        // has real data to load).
+        // The two arms are NOT symmetric, and both halves are measured, not
+        // assumed. Landing on idle reuses the copy this same tail invocation
+        // already ran rather than running it again -- `golden.ndjson` frame
+        // 71 (a struck-down player landing on idle) still reads the OLD
+        // sequence's `hit_box` on the very tick `state_index`/`anim_cursor`
+        // already show the new one. Landing on the walk gets a SECOND,
+        // immediate copy -- frame 14 shows `hit_box` ALREADY at `$2a8a`
+        // cell 0's `[0, 11, -19, 17]`, not the turn's stale `[-3, 11, -20,
+        // 18]` -- so unlike the generic idle fallback, committing to a walk
+        // is its own fresh dispatch (`$f296`) that reruns the tail, the same
+        // shape as `enter_turn`'s own entry.
+        if who == PlayerId::One && player.pending_state == STATE_WALK_LEFT {
+            enter_anim(player, ANIM_P1_WALK_LEFT);
+            anim_tick(player);
+        } else if player.pending_state == STATE_IDLE {
+            enter_anim_fallback(player, idle_anim(who));
+        }
     }
 }
 
@@ -525,6 +1227,12 @@ fn struck_down(player: &mut Player, who: PlayerId) {
     // $10578 bra $f1c4: the plain tail, so the sequence ending lands on state 0.
     if anim_tick(player) == AnimStep::Ended {
         player.state_index = STATE_IDLE;
+        // `$f202`'s generic fallback, reusing the copy this same tail
+        // invocation already ran (not a second tick -- see `turn`'s doc).
+        // Measured (`golden.ndjson` frames 71-77, six full samples of idle
+        // cell 0): this transition, unlike `turn`'s, does NOT lose a tick --
+        // see `enter_anim_fallback`'s doc for why the two differ.
+        enter_anim(player, idle_anim(who));
     }
     player.grid_cell = grid_cell(player.world_x, player.world_y);
 }
@@ -670,6 +1378,8 @@ fn struck_up(player: &mut Player, who: PlayerId) {
     }
     if anim_tick(player) == AnimStep::Ended {
         player.state_index = STATE_IDLE;
+        // Same measured shape as `struck_down`'s ending: no discount.
+        enter_anim(player, idle_anim(who));
     }
     player.grid_cell = grid_cell(player.world_x, player.world_y);
 }
@@ -1546,6 +2256,36 @@ pub fn step(
     who: PlayerId,
     input: Input,
     own_bank: &[Tile; TILE_CELLS],
+    events: &mut Vec<Event>,
+) {
+    // Part 12: `anim_cursor`/`x_delta`/`hit_box` are now genuinely WRITTEN by
+    // `enter_anim`/`anim_tick`, not just fed -- but only for player 1's
+    // sequences (`ANIM_P1_*`) is that write proven against the fixtures.
+    // Player 2 already runs several correctly-modelled sequences (its throw,
+    // smash, intercept, reach and struck states all predate this bead), but
+    // its OWN idle/walk tables are not fully catalogued -- a sixth,
+    // uncatalogued sequence surfaces within the first few ticks of
+    // `golden.ndjson` alone (`$449e`) -- and `disc::THROW_STATES`' release
+    // gate reads player 2's `anim_cursor` directly, so a wrong reconstructed
+    // value there desyncs the serve and corrupts the disc simulation for
+    // BOTH players. So player 2's three fields stay exactly as fed: this
+    // wrapper snapshots them, runs the real step (which may still update
+    // them internally, exactly as before this bead), and restores the
+    // snapshot for player 2 only. Player 1 is untouched by this wrapper.
+    let snapshot = (player.anim_cursor, player.x_delta, player.hit_box);
+    step_inner(player, who, input, own_bank, events);
+    if who == PlayerId::Two {
+        player.anim_cursor = snapshot.0;
+        player.x_delta = snapshot.1;
+        player.hit_box = snapshot.2;
+    }
+}
+
+fn step_inner(
+    player: &mut Player,
+    who: PlayerId,
+    input: Input,
+    own_bank: &[Tile; TILE_CELLS],
     _events: &mut Vec<Event>,
 ) {
     // See stamps_facing: 28 of the 31 handlers in either table open by stamping
@@ -1587,7 +2327,7 @@ pub fn step(
 
     match player.state_index {
         STATE_IDLE => idle(player, who, input, own_bank),
-        STATE_TURN => turn(player),
+        STATE_TURN => turn(player, who),
         STATE_STRUCK_DOWN => struck_down(player, who),
         STATE_STRUCK_UP => struck_up(player, who),
         STATE_DEAD => dead(player),

@@ -56,18 +56,22 @@ use clap::Parser;
 use disc_core::{DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, TILE_CELLS, Tile};
 use serde::Deserialize;
 
-/// `docs/state-schema.md`, "Compared fields": 22 rows marked `compared`.
+/// `docs/state-schema.md`, "Compared fields": 25 rows marked `compared`.
 ///
 /// 18 through Part 10, +2 in Part 12 (discr-ovl.3, the far bank's
 /// `tiles_far[n].tile_type`/`.hp`), +2 in Part 12 (discr-st8,
-/// `players[0].discs_out`/`.disc_cap`).
-const SCHEMA_COMPARED: usize = 22;
-/// `docs/state-schema.md`, "Waived and excluded": 14 rows marked `waived:`.
+/// `players[0].discs_out`/`.disc_cap`), +3 in Part 12 (discr-rxx.1,
+/// `players[0].anim_cursor`/`.x_delta`/`.hit_box`).
+const SCHEMA_COMPARED: usize = 25;
+/// `docs/state-schema.md`, "Waived and excluded": 11 rows marked `waived:`.
 ///
 /// 17 through Part 10, -2 in Part 12 (discr-ovl.3: the far bank's rows moved
 /// to compared), -1 in Part 12 (discr-st8: `disc_cap`'s standalone row folded
-/// into compared/players[1].*).
-const SCHEMA_WAIVED: usize = 14;
+/// into compared/players[1].*), -3 in Part 12 (discr-rxx.1: the generic
+/// `anim_cursor`/`hit_box`/`x_delta` rows split by player, player 1's moving
+/// to compared and player 2's folding into `players[1].*`, same shape as
+/// `disc_cap`'s fold).
+const SCHEMA_WAIVED: usize = 11;
 /// `docs/state-schema.md`, "Waived and excluded": 5 rows marked `excluded:`.
 const SCHEMA_EXCLUDED: usize = 5;
 /// serde default for [`Frame::updates`]: a trace recorded before Part 11f has no
@@ -548,6 +552,49 @@ impl Frame {
     }
 }
 
+/// The state a replay actually starts from: `frames[0].seed()`, corrected for
+/// player 1's `anim_cell`/`anim_hold` -- two fields with no trace column of
+/// their own, which `seed()` otherwise assumes are `0` (freshly entered at
+/// cell 0). That is wrong whenever the trace's own frame 0 does not happen to
+/// catch the sequence at its very start: `golden.ndjson`'s frame 0 reads
+/// `anim` = `$2c90`, `ANIM_P1_IDLE` cell 4 (one of the three 48-hold pauses),
+/// with only 7 ticks left on it, not 48. `anim_cursor` (`t.anim`) DOES have a
+/// column and every cursor this crate's tables produce is `base + 6*cell`, so
+/// the true starting cell is recoverable from it; the true remaining hold is
+/// recovered by counting how many of the FOLLOWING frames still show that
+/// same cursor unchanged, which is exactly how many ticks `anim_tick` has
+/// left to run before it advances -- the whole trace is on disk already, so
+/// this is available at seed time, not a guess about the future.
+///
+/// Needed only now that player 1's `anim_cursor`/`x_delta`/`hit_box` are
+/// reconstructed rather than fed (discr-rxx.1, Part 12): player 2 stays fed
+/// every tick regardless of its own `anim_cell`/`anim_hold`, so an imprecise
+/// seed there never surfaces. Falls back to the plain `seed()` (cell 0, an
+/// unknown hold left at the caller's default) when frame 0's cursor is not on
+/// player 1's idle table at all -- a trace seeded mid-sequence elsewhere,
+/// which neither committed fixture is.
+fn seed_from(frames: &[Frame]) -> GameState {
+    let [first, ..] = frames else {
+        panic!("seed_from: empty trace");
+    };
+    let mut st = first.seed();
+    let idle = disc_core::player::idle_anim(disc_core::PlayerId::One);
+    let cursor = first.player[0].anim;
+    if cursor >= idle.start
+        && (cursor - idle.start).is_multiple_of(6)
+        && let cell = ((cursor - idle.start) / 6) as usize
+        && idle.holds.get(cell).is_some()
+    {
+        let run = frames
+            .iter()
+            .take_while(|f| f.player[0].anim == cursor)
+            .count();
+        st.players[0].anim_cell = cell as u8;
+        st.players[0].anim_hold = run.max(1) as u16;
+    }
+    st
+}
+
 // ---------------------------------------------------------------------------
 // Comparison
 // ---------------------------------------------------------------------------
@@ -629,6 +676,34 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
             e.disc_cap.into(),
             g.disc_cap.into(),
         );
+        // discr-rxx.1 (Part 12): player+$3a/+$1a/+$1c..+$22, reconstructed
+        // from the animation tables (docs/disc-notes.md, reports/
+        // part12-anim.md) rather than fed -- for PLAYER 1 ONLY. Player 2's
+        // copies stay fed (see `feed_disc_inputs`), and a fed field can never
+        // be pushed into this same list: `got` would just be the ECHO of
+        // last tick's own trace value `feed_disc_inputs` set moments ago,
+        // never this tick's, so it would mismatch on every tick the ST value
+        // actually moves -- exactly how `throw_dir_kind`/`throw_damage`/
+        // `reach` (still fed for both players) have no row here either.
+        if n == 0 {
+            push(
+                format!("players[{n}].anim_cursor"),
+                i64::from(e.anim),
+                i64::from(g.anim_cursor),
+            );
+            push(
+                format!("players[{n}].x_delta"),
+                e.x_delta.into(),
+                g.x_delta.into(),
+            );
+            for k in 0..4 {
+                push(
+                    format!("players[{n}].hit_box[{k}]"),
+                    e.hit_box[k].into(),
+                    g.hit_box[k].into(),
+                );
+            }
+        }
     }
 
     for (n, (e, g)) in expected.disc.iter().zip(&got.discs).enumerate() {
@@ -734,25 +809,38 @@ fn feed_disc_inputs(state: &mut GameState, want: &GameState) {
     // then builds. `player+$6e` and `+$70` have no writer in the analysed image
     // at all (discr-qqt), so they come from the trace too.
 
-    for (s, w) in state.players.iter_mut().zip(&want.players) {
-        s.anim_cursor = w.anim_cursor;
+    for (n, (s, w)) in state.players.iter_mut().zip(&want.players).enumerate() {
         s.throw_dir_kind = w.throw_dir_kind;
         s.throw_damage = w.throw_damage;
-        // `player+$1c`..`+$22` is copied out of the animation frame block every
-        // frame by $f1ca, and this crate does not carry the frame blocks.
-        s.hit_box = w.hit_box;
         // `player+$12` has no writer anywhere in the analysed image and never
         // moves; it is a parameter, not a decision. Part 10f traded a fed
         // `disc+$12` -- which changed 30 times across the two fixtures -- for
         // this constant.
         s.reach = w.reach;
-        // `player+$1a` is copied out of the animation cell, like the hit box.
-        s.x_delta = w.x_delta;
         // `player+$6a`/`+$6c` (`discs_out`/`disc_cap`) came OFF this list in
         // discr-st8 (Part 12/round): serve, catch and now the wall transfer
         // (`crate::round::transfer_at_far_wall`/`transfer_at_near_wall`,
         // called from `disc::step`) are all disc-core writes, so both fields
         // are compared rather than fed -- see `reports/part12-round.md`.
+
+        // `player+$3a`/`+$1a`/`+$1c`..`+$22` (`anim_cursor`/`x_delta`/`hit_box`)
+        // came OFF this list for PLAYER 1 in discr-rxx.1 (Part 12):
+        // `disc-core` reconstructs them from the animation tables now
+        // (`crate::player::Anim`/`Frame`, `docs/disc-notes.md`) rather than
+        // reading them off the trace -- see `reports/part12-anim.md`.
+        // Player 2's copies stay fed: its own idle/walk sequences are not
+        // fully catalogued (a sixth table surfaces within the first few
+        // ticks of `golden.ndjson` alone, at ST `$449e`), and
+        // `disc::THROW_STATES`' release gate reads player 2's `anim_cursor`
+        // directly, so a wrong reconstructed value there would desync the
+        // serve and corrupt the disc simulation for BOTH players --
+        // `crate::player::step`'s own snapshot/restore wrapper keeps player
+        // 2 untouched by the new mechanism regardless of what this feeds.
+        if n == 1 {
+            s.anim_cursor = w.anim_cursor;
+            s.hit_box = w.hit_box;
+            s.x_delta = w.x_delta;
+        }
     }
 
     // `disc+$11`, the owner byte -- the FIRST disc-side field this replay has
@@ -802,6 +890,17 @@ fn resync(state: &mut GameState, want: &GameState, skip: &impl Fn(&str) -> bool)
         }
         if skip(&format!("players[{n}].disc_cap")) {
             s.disc_cap = w.disc_cap;
+        }
+        if skip(&format!("players[{n}].anim_cursor")) {
+            s.anim_cursor = w.anim_cursor;
+        }
+        if skip(&format!("players[{n}].x_delta")) {
+            s.x_delta = w.x_delta;
+        }
+        for k in 0..4 {
+            if skip(&format!("players[{n}].hit_box[{k}]")) {
+                s.hit_box[k] = w.hit_box[k];
+            }
         }
     }
     for n in 0..DISC_SLOTS {
@@ -989,7 +1088,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         );
     }
     println!(
-        "  ST inputs fed each tick, never modelled: player+$3a (the animation cursor\n         \x20              the serve gates on) and player+$1a/$1c..$22 (an X delta and the\n         \x20              hit box, both copied out of the animation cell), discr-75o;\n         \x20              player+$12/$6e/$70, three per-player constants nothing in the\n         \x20              image writes (discr-b6x, discr-qqt); updates and outer, the $96ba\n         \x20              pass count and the $96b6 outer-iteration count (Parts 11f, 11h);\n         \x20              and disc+$11, the owner byte -- polarity settled Part 12 (0 = player\n         \x20              2's disc, 0xFF = player 1's; reports/part12-owner.md). The four\n         \x20              possession counters it steers have their own writer now\n         \x20              (discr-st8, Part 12/round) and are compared, not fed; the owner\n         \x20              byte itself still has none, so it stays fed (discr-ovl.2)."
+        "  ST inputs fed each tick, never modelled: player 2's own player+$3a/$1a/$1c..$22\n         \x20              (animation cursor, X delta, hit box) -- player 1's copies are\n         \x20              reconstructed from the animation tables now (discr-rxx.1, Part 12;\n         \x20              reports/part12-anim.md), but player 2's own idle/walk sequences are\n         \x20              not fully catalogued and the serve gate reads its cursor directly,\n         \x20              so it stays fed (discr-b6x); player+$12/$6e/$70, three per-player\n         \x20              constants nothing in the image writes (discr-b6x, discr-qqt);\n         \x20              updates and outer, the $96ba pass count and the $96b6\n         \x20              outer-iteration count (Parts 11f, 11h); and disc+$11, the owner byte\n         \x20              -- polarity settled Part 12 (0 = player 2's disc, 0xFF = player 1's;\n         \x20              reports/part12-owner.md). The four possession counters it steers\n         \x20              have their own writer now (discr-st8, Part 12/round) and are\n         \x20              compared, not fed; the owner byte itself still has none, so it\n         \x20              stays fed (discr-ovl.2)."
     );
     println!(
         "  seeded from frame {} (ST $6ab4 = {}), driving {ticks} tick(s)",
@@ -997,7 +1096,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     );
 
     let skip = |field: &str| cli.waiver(field).is_some();
-    let mut state = first.seed();
+    let mut state = seed_from(&frames);
     let mut prev_joy = first.joy_6c58;
     let mut prev_ai = first.ai_6da1;
     let mut prev = first;
@@ -1166,10 +1265,14 @@ mod tests {
             // 17th pair compared a non-tile and is no longer a check at all.
             // A second TILE_CELLS * 2 in Part 12 (discr-ovl.3): golden.ndjson
             // carries `banks` (Part 10e emitted it long before this bead used
-            // it), so the far bank's 16 cells are compared too. And discr-st8
-            // (Part 12/round) added discs_out/disc_cap per player, so 8 per
-            // player rather than 6.
-            1 + 2 * 8 + DISC_SLOTS * 9 + TILE_CELLS * 2 + TILE_CELLS * 2,
+            // it), so the far bank's 16 cells are compared too. discr-st8
+            // (Part 12/round) added discs_out/disc_cap for BOTH players (8
+            // each). discr-rxx.1 (Part 12) added anim_cursor, x_delta and the
+            // four hit_box words for PLAYER 1 ONLY -- 14 for player 0, still
+            // 8 for player 1, since player 2's copies stay fed rather than
+            // compared (a fed field can never appear in `checks()`, the same
+            // reason `throw_dir_kind`/`throw_damage`/`reach` do not either).
+            1 + 14 + 8 + DISC_SLOTS * 9 + TILE_CELLS * 2 + TILE_CELLS * 2,
             "one check per compared field instance"
         );
     }
@@ -1184,7 +1287,7 @@ mod tests {
     fn skip_waived_reproduces_the_whole_golden_fixture() {
         let f = golden();
         let skip = |field: &str| WAIVED.iter().any(|(p, _)| field.starts_with(p));
-        let mut state = f[0].seed();
+        let mut state = seed_from(&f);
         let mut prev_joy = f[0].joy_6c58;
         let mut prev_ai = f[0].ai_6da1;
 
@@ -1216,7 +1319,7 @@ mod tests {
     #[test]
     fn nothing_waived_reproduces_the_whole_golden_fixture() {
         let f = golden();
-        let mut state = f[0].seed();
+        let mut state = seed_from(&f);
         let mut prev_joy = f[0].joy_6c58;
         let mut prev_ai = f[0].ai_6da1;
 

@@ -3357,3 +3357,193 @@ exit and into whatever comes next; `scenarios/round_watch.yaml` is the
 scaffold, and `scripts/ramdiff.py` on a `dump: pre`/`dump: post` pair
 bracketing the transition would catch every field it writes, not just the
 ones this pass already guessed.
+
+## The animation cell format, and killing three feeds (Part 12, discr-rxx.1)
+
+Part 10h decoded the *shape* of an animation sequence -- six-byte cells, a
+four-byte frame pointer and a two-byte hold, ending in a zero longword -- and
+named the eleven the fixtures touch by their loading site. What was still
+missing was the frame pointer's OWN target: the 20-byte block `$f1ca` copies
+out of it every frame, which is where `player+$1a` (`x_delta`) and
+`player+$1c`..`+$22` (`hit_box`) actually live. This part reads that block
+directly out of `discram.bin`, reconstructs `anim_cursor`/`x_delta`/`hit_box`
+in `disc-core` from the tables alone, and measures it against all six
+committed fixtures.
+
+### The frame block: two fields at fixed offsets, the rest sprite data
+
+A cell's first four bytes ARE a pointer (already established); dereferencing
+it lands on the frame block `$f1ca` copies 20 bytes of. Reading every cell of
+every sequence `player.rs` already carries a table for (20 sequences, all 20
+already cross-validated below) and comparing against the one measured value
+Part 10d named -- player 1's standing hit box, `[-3, 11, -20, 18]` -- pins two
+of those 20 bytes exactly:
+
+```
+frame block + $00  ten bytes of sprite/graphics data this crate does not carry
+frame block + $0a  word    x_delta        (player+$1a)
+frame block + $0c  word    hit_box[0]     (player+$1c)
+frame block + $0e  word    hit_box[1]     (player+$1e)
+frame block + $10  word    hit_box[2]     (player+$20)
+frame block + $12  word    hit_box[3]     (player+$22)
+```
+
+Confirmed three ways, none of them a guess:
+
+1. **The holds fall out right.** Extracting every cell of all 20 sequences
+   directly from `discram.bin` -- `(ptr, hold)` pairs read as a raw 6-byte
+   struct, no disassembly -- and comparing the `hold` half against the
+   `holds` arrays `player.rs` already carries (hand-transcribed in Part 10h,
+   independently, from the handler disassembly) matches on all 20/20 with
+   zero discrepancies. The cell format was derived purely from the frame
+   BLOCK's own layout; the holds check is a completely independent
+   cross-validation, and it holds.
+2. **A sixth sequence, never catalogued, falls out of the same reader with
+   the same shape.** `golden.ndjson` frame 0 seeds player 2's cursor at
+   `$44b6` -- inside no table Part 10h named. Walking backward by 6-byte
+   cells from it lands on a table base at `$449e`: six cells, hold 4 each,
+   terminating cleanly at `$44c2`. Nothing about the reader was tuned to find
+   this; it is what the SAME extraction produces when pointed at an address
+   the fixtures merely happen to start inside.
+3. **The one measured value matches exactly at the one cell it should.**
+   Player 1's standing hit box, `[-3, 11, -20, 18]` (Part 10d), is cell 0 of
+   BOTH idle tables (`$2c78`/`$468c`) under this offset scheme. Player 1's
+   first frame of being knocked down, `[-4, 11, -19, 16]` (also Part 10d), is
+   cell 0 of `ANIM_STRUCK_DOWN`/`ANIM_P2_STRUCK_DOWN` under the same scheme.
+   Both hit on the first try.
+
+`crates/disc-core/src/player.rs` embeds all 20 sequences' frame data as a
+`Frame { x_delta, hit_box }` array parallel to each `Anim`'s `holds`, one
+`const FRAMES_*` per sequence with the ST addresses of every frame block
+cited in a doc comment -- the same convention the crate already uses for
+other extracted tables.
+
+### The cursor rule: `base + 6*cell`, and the tail's OWN two endings
+
+`anim_cursor` (`player+$3a`) is not a separate piece of state to track --
+it is `anim_base + 6*anim_cell`, recomputed inside `anim_tick` every time the
+cell advances. The interesting part is not the arithmetic; it is exactly
+WHEN a cell's frame data is visible, which turned out to have two different
+answers depending on how the NEXT sequence gets entered.
+
+**A natural mid-sequence advance is one full tick behind its own cursor.**
+`golden.ndjson` frame 7: `anim_cursor` already reads `$2c96` (cell 5), but
+`hit_box` still reads cell 4's `[-3, 11, -20, 18]`, not cell 5's `[-4, 11,
+-20, 18]` -- catching up only at frame 8. `$f1ca`'s copy and the cursor
+advance are both in the SAME tail invocation, but the copy runs first, using
+the cell that is ABOUT to be superseded; the advance that follows updates the
+cursor for next time, not the data just copied. `anim_tick` already does
+this in the right order (copy, then decrement-and-maybe-advance), which is
+why this part changed nothing about it.
+
+**A generic fallback -- `$f202`'s own idle reload, reached when a sequence's
+ending has nowhere more specific to hand off to -- reuses that SAME copy
+rather than running a second one, but a distinct fresh dispatch (a NEW state
+committing to its own sequence) gets a second, immediate tick.** Both halves
+are measured, not assumed, and they read almost identically from `hit_box`
+alone but differ once cross-checked against `anim_cursor`:
+
+* `golden.ndjson` frame 71: a struck-down player's sequence just ended,
+  landing on state 0. `anim_cursor` ALREADY reads `$2c78` (idle's base), but
+  `hit_box` still reads `[-6, 11, -18, 16]` -- struck-down's stale cell, not
+  idle's `[-3, 11, -20, 18]`. `struck_down`'s ending (`enter_anim(idle)`, no
+  second tick) matches this exactly.
+* `golden.ndjson` frame 14: the turn transient's sequence ends into WALKING
+  instead. `hit_box` reads `[0, 11, -19, 17]` on that SAME tick -- `$2a8a`
+  cell 0's real data, not the turn's stale `[-3, 11, -20, 18]`. Landing on a
+  walk gets `enter_anim` FOLLOWED BY an explicit `anim_tick`, the same shape
+  `enter_turn`'s own entry already used.
+
+The hold count carries the same asymmetry, and it is the more consequential
+one: a fallback that does NOT re-tick still consumes one unit of the fresh
+sequence's hold immediately (`enter_anim_fallback`, used only for turn's
+landing-on-idle arm) -- `golden.ndjson`'s second idle stretch (frames 32-37)
+shows cell 0's 6-hold cell for five samples, not six. A fallback OR a natural
+entry that does not go through this specific path (struck-down/up's own
+ending, idle's own 16-cell wraparound, `run_out`'s ending) shows the FULL
+hold: `golden.ndjson` frames 71-77 and `tile_damage.ndjson` frames 157-163
+each show six full samples of idle's cell 0. Both are measured against
+distinguishable evidence (the two idle cells, `[-3,...]` vs a table whose
+cell 0 and cell 1 differ), not inferred from one ambiguous case.
+
+### Player 1: 100%, nothing waived, across every established fixture boundary
+
+`crates/disc-core/tests/anim_measure.rs` -- a standalone measurement, written
+before `main.rs` was free to edit, that copies (not calls into)
+`disc-tools`'s own seed/feed/passes logic so the numbers below carry the same
+weight as `tracecheck`'s -- drives all six fixtures with `anim_cursor`,
+`x_delta` and `hit_box` UNFED for player 1, comparing the reconstruction
+against the trace every tick:
+
+| fixture | ticks reconstructed | player 1 agreement |
+|---|---|---|
+| `golden.ndjson` | 99/99 (whole fixture) | 3/3 fields, 100% |
+| `tile_damage.ndjson` | 214/214 (whole fixture) | 3/3 fields, 100% |
+| `p1_walk.ndjson` | 274/274 (whole fixture) | 3/3 fields, 100% |
+| `handover.ndjson` | 53 (an unrelated `discs[1].world_x` gap) | 100% up to there |
+| `bonus.ndjson` | 64 (an unrelated `discs[1].world_x` gap) | 100% up to there |
+| `farbank.ndjson` | 35 (an unrelated `tiles[7].hp` gap, discr-dc0) | 100% up to there |
+
+Every one of the three fixtures with an established "nothing waived, nothing
+resynced" boundary (golden 99, tile_damage 214, p1_walk 274) reproduces that
+WHOLE boundary with player 1's animation cursor, X delta and hit box
+reconstructed rather than fed -- zero player-1 mismatches on any of the three
+fields, on any tick, in any of the three. The other three fixtures' own
+established boundaries are gated by fields this bead does not touch (disc
+physics, the far bank's bit-7 tile gap); this reconstruction runs cleanly
+through all of them too.
+
+One seeding gap this measurement needed, orthogonal to the format itself:
+`disc-tools`' `Frame::seed` hardcodes `anim_cell`/`anim_hold` to 0 at frame 0,
+which was harmless while `anim_cursor` was fed every tick regardless but is
+wrong whenever frame 0 does not catch player 1's idle sequence at its very
+first cell -- `golden.ndjson` frame 0 sits on `ANIM_P1_IDLE` cell 4 (one of
+the 48-hold pauses) with only 7 ticks left on it. `anim_cursor` DOES have a
+column, and the true remaining hold is recoverable by counting how many of
+the FOLLOWING frames still show the same cursor (the whole trace is on disk
+already, so this is available at seed time). `disc-tools`' new `seed_from`
+helper does this once, at the one call site that seeds a replay's starting
+state; every other `.seed()` call (feeding, resyncing, single-frame
+comparisons) is untouched.
+
+### Player 2 stays fed, and why that is a state-machine gap, not a format one
+
+Player 2's copies of all three fields stay fed. Two independent facts, not
+one waiver of convenience:
+
+* **Its own sequences are not fully catalogued.** The `$449e` table found
+  above is one that surfaces within the first few ticks of `golden.ndjson`
+  alone; player 2's idle/walk cycle is not the same well-understood territory
+  player 1's is (`discr-75o`/`discr-b6x`'s existing scope, not this bead's).
+* **The serve gate reads player 2's `anim_cursor` directly**
+  (`disc::THROW_STATES`, `crate::player::step`'s doc). A wrong reconstructed
+  value there would desync the serve trigger and corrupt the disc simulation
+  for BOTH players -- observed directly while building this: reconstructing
+  player 2 unconditionally regressed the disc loop (`discs[0].world_x`
+  diverging inside what used to be golden's clean 99-tick run) the moment
+  player 2's own uncatalogued sequences produced a wrong cursor.
+
+`crate::player::step` is now a thin wrapper: it snapshots player 2's
+`anim_cursor`/`x_delta`/`hit_box`, runs the real step (which may still touch
+them internally, exactly as it could before this bead), and restores the
+snapshot for player 2 only. Player 1 passes through untouched. This is what
+makes "reconstruct player 1, keep player 2 fed" a real, enforced split rather
+than a hope that nothing internal happens to touch player 2's copies.
+
+### The three schema rows, split by player
+
+`docs/state-schema.md`'s `players[n].anim_cursor`/`hit_box`/`x_delta` --
+generic rows covering both players uniformly under `discr-75o` -- are gone.
+In their place: `players[0].anim_cursor`/`x_delta`/`hit_box`, three new rows
+in the Compared table (25 compared fields now, up from 22); and player 2's
+copies folded into the existing `players[1].*` blanket row (`waived:
+discr-b6x`, unchanged bead, now 8 fields instead of 5) -- the same shape
+`disc_cap` used when discr-st8 gave it a writer for player 1 only. `checks()`
+in `main.rs` only pushes the three new fields for player 0: a fed field can
+never appear there (it would just compare against the echo of last tick's
+own value `feed_disc_inputs` set moments before), which is why
+`throw_dir_kind`/`throw_damage`/`reach` have no row either, for either
+player.
+
+Full format spec, per-fixture numbers and the feed-retirement patch:
+`reports/part12-anim.md`.
