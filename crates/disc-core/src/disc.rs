@@ -569,7 +569,6 @@ pub fn step(
                 crate::round::transfer_at_far_wall(players);
                 disc.dir_kind = disc.dir_kind.wrapping_neg();
             }
-            }
         }
         next if next < Z_NEAR => {
             disc.hook = SteerHook::None;
