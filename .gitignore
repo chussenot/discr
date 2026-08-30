@@ -43,3 +43,4 @@ wt/
 
 # Rust build output
 /target/
+!tmp/.gitkeep
