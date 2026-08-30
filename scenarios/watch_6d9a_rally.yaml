@@ -1,0 +1,31 @@
+name: watch_6d9a_rally
+mode: training
+# discr-z8m: $a310 applies tile damage once, $a31c applies it AGAIN when
+# $6d9a == 1, $a32e tests it against 3 for a further path. What writes $6d9a
+# is not decoded. Training mode has no bonus pickups (the $9aa2 table's usual
+# writer), so a clean rally here isolates whatever else touches it.
+#
+# Serve, then keep the disc going (alternating Left/Right so the ball
+# actually returns instead of running out), long enough to cover several
+# volleys and any tile hits, watching $6d9a the whole time.
+settle: 60
+steps:
+  - {watch: "$6d9a"}
+  - {hold: Fire, frames: 3}
+  - {wait: 40}
+  - {screenshot: mid1}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 40}
+  - {screenshot: mid2}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Fire, frames: 3}
+  - {wait: 60}
+  - {screenshot: post}
+  - {unwatch: true}
