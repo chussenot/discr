@@ -44,6 +44,60 @@
 //! frame's own byte span is still open. See `reports/part13-sprites.md` §2
 //! for the full negative-result writeup (offsets tried, scores, images).
 //!
+//! # PLAYER01/ENEMY01: the blitter's own format, disassembled live
+//!
+//! Where the search above left off, this pass read the game's own sprite
+//! blitter instead of guessing further -- `scripts/ghidra/q.sh`'s query
+//! harness against `discram.bin` (a full flat RAM image; the frame-block
+//! table baked into the game's code/data segment and PLAYER01/ENEMY01's own
+//! depacked pixel bytes are all one address space, ST address == file
+//! offset) found the routine that reads a frame block's pointer and writes
+//! screen RAM directly: `sh scripts/ghidra/q.sh scan 6ce4` names every site
+//! that copies a frame block's first long out to `$6ce4` (the animation
+//! tail, `$f1ca`, matches `docs/disc-notes.md`'s "Part 12" section
+//! byte-for-byte); one of those sites, at `$12dcc`/`$12f7c`, is not the
+//! metadata copy -- it is the actual blit, decompiled straight out of
+//! `discram.bin`'s own code:
+//!
+//! ```text
+//! $12dcc  A0 = ($6ce4).l           ; the frame block's OWN first long is a
+//!                                  ; full 32-bit ABSOLUTE pointer to pixel
+//!                                  ; data (not "category:offset" -- an
+//!                                  ; earlier pass's byte-arithmetic guess
+//!                                  ; at this field, reports/part13-
+//!                                  ; sprites.md, was consistent with this,
+//!                                  ; just not literally a raw pointer)
+//! $12dd0  D7 = ($6cd6).w - 1       ; row counter, from frame block +$04
+//! $12dda  tst.b ($6cb5).w ; bne $12f7c   ; frame block +$15 selects format
+//! -- $12dec (cb5==0): 4 colour planes + 1 mask word, 16px wide, 10 B/row
+//! -- $12f7c (cb5!=0): 3 colour planes + 1 mask word, 32px wide, 16 B/row
+//! ```
+//! Per 16px word-group: `planes` data words then one mask word (mask LAST,
+//! not first), MSB-first, `and.w mask,(dest)` then `or.w data,(dest)+` per
+//! plane -- opaque wherever the mask bit is 0, background preserved where
+//! it's 1. [`decode_sprite_frame`] implements exactly this, generic over
+//! the two widths/plane-counts the disassembly shows (the code also carries
+//! a `ror.l`/`lsr.l` sub-pixel horizontal-shift path and three row-stride
+//! variants selected by frame block +$14 -- both are the blitter's own
+//! runtime screen-positioning machinery, irrelevant to decoding a frame's
+//! pixels in isolation, so this decoder fixes the shift at 0 and ignores
+//! that byte).
+//!
+//! **Proven, not guessed**: decoding player 1's idle/struck-down/dead/walk
+//! frames and player 2's idle/struck-down frames (`disc_core::player`'s own
+//! `ANIMS` table addresses) all produce a crisp, immediately recognisable
+//! humanoid sprite in the right pose -- the idle frame is pixel-for-pixel
+//! the same art as a live Hatari screenshot of the same standing pose
+//! (`reports/part14-psprites.md` has the side-by-side and the disassembly
+//! transcript in full; a template-match score against that screenshot's own
+//! palette-index ground truth, aligned by search, moved from the prior
+//! pass's ~27% (chance level) to a 100% exact index match on all 453 of the
+//! idle frame's own opaque pixels). Player 2's frame-block pointers land inside
+//! ENEMY01's own resident span (confirmed: `$4ac2c` for player 2's idle
+//! cell 0 sits in `[$4A2F4, $59952)`) -- so in this 1-vs-1 game, "player 2"
+//! and "the enemy" are the same on-screen character, drawn from ENEMY01's
+//! data through the `cb5==0` (16px, 4-plane) path.
+//!
 //! # Depack source: codec's real decoder, or a documented dev fallback
 //!
 //! [`depacked_dalles01`] is the one function-call swap point: today it reads
@@ -235,6 +289,190 @@ fn dev_ram_image_slice_at(path: Option<PathBuf>, addr: usize, len: usize) -> Opt
     Some(data[addr..addr + len].to_vec())
 }
 
+/// The full flat RAM image, unsliced -- unlike [`depacked_dalles01`], the
+/// sprite path needs this because a frame block's pointer field and its
+/// pixel data are both plain ST addresses into the *same* address space
+/// (see the module doc's "PLAYER01/ENEMY01" section), so a fixed one-asset
+/// slice can't serve both. Same gitignored dev fallback as everywhere else
+/// in this module: `None` gracefully when the worktree has no capture.
+pub fn depacked_ram_image() -> Option<Vec<u8>> {
+    std::fs::read(ram_image_path()?).ok()
+}
+
+/// PLAYER01's own resident span in the RAM image (`reports/part13-codec.md`'s
+/// proof-pair table). Exposed for callers that want to sanity-check a
+/// resolved sprite pointer against its expected asset.
+pub const PLAYER01_RAM_ADDR: u32 = 0x24FCC;
+pub const PLAYER01_LEN: u32 = 152_360;
+/// ENEMY01's own resident span, same source.
+pub const ENEMY01_RAM_ADDR: u32 = 0x4A2F4;
+pub const ENEMY01_LEN: u32 = 63_070;
+
+/// Sentinel palette index meaning "transparent" -- the blitter's mask word
+/// had a 1 bit here, so the background shows through rather than any
+/// colour-plane bit. Not a valid palette entry (the ST only has 16), so it
+/// can't collide with a real decoded pixel.
+pub const SPRITE_TRANSPARENT: u8 = 0xff;
+
+/// Decode one player/enemy animation frame straight out of `ram`, per the
+/// blitter format the module doc's "PLAYER01/ENEMY01" section disassembles.
+///
+/// `frame_block_addr` is a 6-byte animation cell's own first four bytes,
+/// dereferenced (`disc_core::player::Anim`'s cursor rule: `base + 6*cell`
+/// names the CELL; the cell's own first longword, read out of `ram`, is the
+/// frame block this function wants). `ram` must be the full flat RAM image
+/// ([`depacked_ram_image`]) -- both the frame block's own fields and the
+/// pixel data its first field points to are plain ST addresses into it.
+///
+/// Returns `(width, height, indices)`, row-major, one palette index per
+/// pixel (`SPRITE_TRANSPARENT` where the mask hid it). `None` if `ram` is
+/// too short to hold the frame block or the pixel span its own height
+/// claims -- never panics on a truncated or bogus capture.
+pub fn decode_sprite_frame(ram: &[u8], frame_block_addr: u32) -> Option<(usize, usize, Vec<u8>)> {
+    let fb = usize::try_from(frame_block_addr).ok()?;
+    let hdr = ram.get(fb..fb + 22)?;
+    let ptr = u32::from_be_bytes(hdr[0..4].try_into().ok()?);
+    let height = i16::from_be_bytes(hdr[4..6].try_into().ok()?);
+    if height <= 0 {
+        return None;
+    }
+    let height = height as usize;
+    // Frame block +$15 (`$6cb5` in the blitter): nonzero selects the
+    // 32px/3-plane path ($12f7c), zero the 16px/4-plane one ($12dec).
+    let masked3 = hdr[21] != 0;
+    let (width, planes): (usize, usize) = if masked3 { (32, 3) } else { (16, 4) };
+    let groups = width / 16;
+    let row_bytes = groups * (planes + 1) * 2;
+    let start = usize::try_from(ptr).ok()?;
+    let need = row_bytes.checked_mul(height)?;
+    let src = ram.get(start..start.checked_add(need)?)?;
+
+    let mut out = vec![SPRITE_TRANSPARENT; width * height];
+    let mut pos = 0usize;
+    for y in 0..height {
+        for g in 0..groups {
+            let mut words = [0u16; 4];
+            for w in words.iter_mut().take(planes) {
+                *w = u16::from_be_bytes([src[pos], src[pos + 1]]);
+                pos += 2;
+            }
+            let mask = u16::from_be_bytes([src[pos], src[pos + 1]]);
+            pos += 2;
+            for bit in 0..16 {
+                let b = 15 - bit;
+                if (mask >> b) & 1 != 0 {
+                    continue; // transparent: leave the SPRITE_TRANSPARENT fill
+                }
+                let mut idx = 0u8;
+                for (p, &w) in words.iter().enumerate().take(planes) {
+                    if (w >> b) & 1 != 0 {
+                        idx |= 1 << p;
+                    }
+                }
+                out[y * width + g * 16 + bit] = idx;
+            }
+        }
+    }
+    Some((width, height, out))
+}
+
+/// Which of the two known sprite assets `ptr` (a frame block's own resolved
+/// pixel pointer) falls inside, if either -- used as a sanity gate before
+/// decoding, so a stale or unrelated RAM capture produces a missing texture
+/// (falls back to the placeholder) rather than a decode of garbage bytes
+/// that happen to parse.
+fn sprite_asset_for_ptr(ptr: u32) -> Option<&'static str> {
+    if (PLAYER01_RAM_ADDR..PLAYER01_RAM_ADDR + PLAYER01_LEN).contains(&ptr) {
+        Some("PLAYER01")
+    } else if (ENEMY01_RAM_ADDR..ENEMY01_RAM_ADDR + ENEMY01_LEN).contains(&ptr) {
+        Some("ENEMY01")
+    } else {
+        None
+    }
+}
+
+/// Resolve an `anim_cursor` (`disc_core::types::Player::anim_cursor`, always
+/// `anim_base + 6*anim_cell` -- one catalogued animation cell's own ST
+/// address) to the frame block it points at: the cell's first four bytes.
+pub fn frame_block_addr_for_cursor(ram: &[u8], cursor: u32) -> Option<u32> {
+    let c = usize::try_from(cursor).ok()?;
+    let b = ram.get(c..c + 4)?;
+    Some(u32::from_be_bytes(b.try_into().ok()?))
+}
+
+/// Player/enemy sprite textures, one per `anim_cursor` every sequence in
+/// `disc_core::player::ANIMS` can take -- built once, up front, exactly like
+/// [`TileAtlas`], so drawing stays a read-only lookup (`draw_match` takes
+/// `&MatchState`, not `&mut`). Empty ([`SpriteAtlas::default`]) keeps every
+/// `#[cfg(test)]` `MatchState::new` call site working, same shape as
+/// `TileAtlas`/`audio::Sfx`.
+#[derive(Clone, Default)]
+pub struct SpriteAtlas {
+    frames: std::collections::HashMap<u32, (macroquad::texture::Texture2D, u16, u16)>,
+}
+
+impl SpriteAtlas {
+    /// Build the atlas from whatever [`depacked_ram_image`] can find. `None`
+    /// source, or a cursor whose frame block/pixel span doesn't decode,
+    /// just leaves that entry out -- [`Self::texture`] returning `None` is
+    /// how a caller falls back to the placeholder rendering it already had.
+    pub fn load() -> Self {
+        let Some(ram) = depacked_ram_image() else {
+            return Self::default();
+        };
+        let mut frames = std::collections::HashMap::new();
+        for anim in disc_core::player::ANIMS {
+            for cell in 0..anim.holds.len() as u32 {
+                let cursor = anim.start + 6 * cell;
+                if frames.contains_key(&cursor) {
+                    continue;
+                }
+                let Some(fb) = frame_block_addr_for_cursor(&ram, cursor) else {
+                    continue;
+                };
+                let Some(ptr) = ram
+                    .get(fb as usize..fb as usize + 4)
+                    .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+                else {
+                    continue;
+                };
+                if sprite_asset_for_ptr(ptr).is_none() {
+                    continue;
+                }
+                let Some((w, h, idx)) = decode_sprite_frame(&ram, fb) else {
+                    continue;
+                };
+                let mut rgba = Vec::with_capacity(idx.len() * 4);
+                for i in idx {
+                    if i == SPRITE_TRANSPARENT {
+                        rgba.extend_from_slice(&[0, 0, 0, 0]);
+                    } else {
+                        let [r, g, b] = st_color_to_rgb(TRAINING_PALETTE[(i & 0xf) as usize]);
+                        rgba.extend_from_slice(&[r, g, b, 255]);
+                    }
+                }
+                let image = macroquad::texture::Image {
+                    width: w as u16,
+                    height: h as u16,
+                    bytes: rgba,
+                };
+                let texture = macroquad::texture::Texture2D::from_image(&image);
+                texture.set_filter(macroquad::texture::FilterMode::Nearest);
+                frames.insert(cursor, (texture, w as u16, h as u16));
+            }
+        }
+        Self { frames }
+    }
+
+    /// The texture and its pixel size for `cursor`
+    /// (`disc_core::types::Player::anim_cursor`), if it decoded. `None` --
+    /// draw the placeholder instead -- when the atlas didn't load or this
+    /// cursor isn't one any catalogued sequence uses.
+    pub fn texture(&self, cursor: u32) -> Option<(&macroquad::texture::Texture2D, u16, u16)> {
+        self.frames.get(&cursor).map(|(t, w, h)| (t, *w, *h))
+    }
+}
+
 /// The six [`TileShape`] icons, built once into GPU textures. Cheap to clone
 /// into a `MatchState` -- `macroquad::texture::Texture2D` is `Arc`-backed
 /// internally, same reasoning `audio::Sfx`'s doc gives for `Sound`.
@@ -392,5 +630,109 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// Hand-build a tiny "RAM image" with a frame block at address 0x100
+    /// pointing at pixel data at 0x200, masked-3-plane (32px) format, and
+    /// check the decode against pixels chosen by hand -- the same
+    /// round-trip self-check `decode_planar`'s own test uses, before this
+    /// decoder is trusted against `discram.bin`.
+    #[test]
+    fn decode_sprite_frame_round_trips_masked_3plane() {
+        let width = 32;
+        let height = 2;
+        let ptr: u32 = 0x200;
+        let mut ram = vec![0u8; 0x200 + width * height]; // grown below
+        ram.resize(0x300, 0);
+        // Frame block at 0x100: ptr(4) height(2) w3(2) w4(2) xdelta(2)
+        // hitbox(8) cb4(1) cb5(1) = 22 bytes.
+        let fb = 0x100usize;
+        ram[fb..fb + 4].copy_from_slice(&ptr.to_be_bytes());
+        ram[fb + 4..fb + 6].copy_from_slice(&(height as i16).to_be_bytes());
+        ram[fb + 20] = 0; // cb4
+        ram[fb + 21] = 1; // cb5 != 0 -> 32px, 3 planes
+
+        // Row 0: leftmost pixel of group 0 = index 5 (0b101, planes 0+2 set),
+        // opaque; second pixel transparent (mask bit 1). Rest 0 and opaque.
+        // Row 1: group 1's leftmost pixel = index 2, opaque.
+        let row_bytes = 16usize; // 2 groups * (3 planes + mask) * 2 bytes
+        let mut pixels = vec![(0u8, true); width * height];
+        pixels[0] = (5, true);
+        pixels[1] = (0, false); // transparent
+        pixels[width + 16] = (2, true); // row 1, group 1, bit 0
+
+        let mut src = vec![0u8; row_bytes * height];
+        for y in 0..height {
+            for g in 0..2 {
+                let mut words = [0u16; 3];
+                let mut mask = 0u16;
+                for bit in 0..16 {
+                    let (idx, opaque) = pixels[y * width + g * 16 + bit];
+                    let b = 15 - bit;
+                    if !opaque {
+                        mask |= 1 << b;
+                        continue;
+                    }
+                    for (p, word) in words.iter_mut().enumerate() {
+                        if idx & (1 << p) != 0 {
+                            *word |= 1 << b;
+                        }
+                    }
+                }
+                let base = y * row_bytes + g * 8;
+                for (p, w) in words.iter().enumerate() {
+                    src[base + p * 2..base + p * 2 + 2].copy_from_slice(&w.to_be_bytes());
+                }
+                src[base + 6..base + 8].copy_from_slice(&mask.to_be_bytes());
+            }
+        }
+        ram[ptr as usize..ptr as usize + src.len()].copy_from_slice(&src);
+
+        let (w, h, decoded) = decode_sprite_frame(&ram, fb as u32).unwrap();
+        assert_eq!((w, h), (width, height));
+        assert_eq!(decoded[0], 5);
+        assert_eq!(decoded[1], SPRITE_TRANSPARENT);
+        assert_eq!(decoded[width + 16], 2);
+    }
+
+    #[test]
+    fn decode_sprite_frame_rejects_short_ram() {
+        assert_eq!(decode_sprite_frame(&[0u8; 4], 0x100), None);
+        // A frame block claiming a huge height must fail closed, not panic.
+        let mut ram = vec![0u8; 64];
+        ram[0..4].copy_from_slice(&0u32.to_be_bytes());
+        ram[4..6].copy_from_slice(&30000i16.to_be_bytes());
+        assert_eq!(decode_sprite_frame(&ram, 0), None);
+    }
+
+    #[test]
+    fn decode_sprite_frame_rejects_nonpositive_height() {
+        let mut ram = vec![0u8; 64];
+        ram[4..6].copy_from_slice(&0i16.to_be_bytes());
+        assert_eq!(decode_sprite_frame(&ram, 0), None);
+    }
+
+    #[test]
+    fn frame_block_addr_for_cursor_reads_the_cells_own_pointer() {
+        let mut ram = vec![0u8; 64];
+        ram[16..20].copy_from_slice(&0x1234u32.to_be_bytes());
+        assert_eq!(frame_block_addr_for_cursor(&ram, 16), Some(0x1234));
+        assert_eq!(frame_block_addr_for_cursor(&ram, 61), None); // truncated
+    }
+
+    #[test]
+    fn sprite_atlas_default_has_no_textures() {
+        assert_eq!(SpriteAtlas::default().texture(0x2c78), None);
+    }
+
+    /// PLAYER01's resident span ends exactly where ENEMY01's begins
+    /// (`reports/part13-codec.md`'s proof-pair table: dest `$24FCC` len
+    /// 152360, dest `$4A2F4` len 63070, and `$24FCC + 152360 == $4A2F4`) --
+    /// the two assets are back-to-back in RAM, not just nearby.
+    #[test]
+    fn player01_and_enemy01_spans_are_back_to_back() {
+        assert_eq!(PLAYER01_RAM_ADDR + PLAYER01_LEN, ENEMY01_RAM_ADDR);
+        assert_eq!(ENEMY01_RAM_ADDR, 0x4A2F4);
+        assert_eq!(ENEMY01_RAM_ADDR + ENEMY01_LEN, 0x59952);
     }
 }
