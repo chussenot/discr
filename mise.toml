@@ -139,6 +139,29 @@ BONUS_FULL_MIN_AGREE = "22"
 FARBANK = "tests/fixtures/farbank.ndjson"
 FARBANK_MIN_AGREE = "34"
 
+# The seventh fixture, minted in Part 12 (tests/fixtures/bonus_code1.
+# provenance.md): the first with the shared $6c5d PRNG stream columns
+# (rng_6c5d, latch_id/latch_prio, gate_6e3c/mint_6e3a/code_6d9e/code_6d9c --
+# reports/part12-walls.md), and the first to catch bonus code 1 (the disc's
+# damage applied twice, $a314/$a31c) live -- three prior phases (bonus,
+# multiplier, this one) left that half of discr-z8m unexercised.
+#
+# 1100 frames, scripted (a rally, not idle -- code 1 needs ~130 gate-fires
+# for reasonable odds, which this project's own challenge rounds do not
+# stay live long enough to give while idle). Informational numbers only,
+# NOT wired into core-check's fixed ten-invocation gate list -- this
+# fixture's job is crates/disc-core/src/ai.rs's rng_verify test and
+# tile.rs's tile_bonus_code1 test, both of which DO gate `cargo test`.
+#
+# --skip-waived: 27 -- players[0].anim_cursor, a pre-existing animation-table
+# gap this fixture's own input shape reaches earlier than any other fixture
+# does, not a regression.
+# Full: 17 -- player 2's own unhandled $c6ec states, the same discr-b6x
+# limitation every other fixture already waives around.
+BONUS_CODE1 = "tests/fixtures/bonus_code1.ndjson"
+BONUS_CODE1_MIN_AGREE = "27"
+BONUS_CODE1_FULL_MIN_AGREE = "17"
+
 # The repository's first three commits predate conventional commits (`bd init`
 # is not one of them), so cog is pointed at the range after them rather than
 # being told to ignore a rule. Everything since is compliant.

@@ -102,6 +102,20 @@ pub const STATE_STRUCK_UP: u8 = 0x0c;
 /// ST state 23: out of energy (`$10a72`). Terminal -- nothing leaves it.
 pub const STATE_DEAD: u8 = 0x17;
 
+/// ST state 5: player 2 holding UP from a standing start (`$b550`, dispatched
+/// from idle at `$aca6`). Player 1's own state 5 (`$fb6e`) is a different,
+/// undecoded mechanism (Part 12's tier-1 list) -- this constant and
+/// [`STATE_DOWN`] are player 2's own two, decoded in discr-rxx.2 only far
+/// enough to keep its animation correct: the floor clamp and the further
+/// transition into states 24/25 are not modelled (`// UNKNOWN: see bd
+/// discr-75o`), the same shape as the racket path elsewhere in this file.
+pub const STATE_UP: u8 = 5;
+
+/// ST state 6: player 2 holding DOWN from a standing start (`$b7f6`,
+/// dispatched from idle at `$acc4`). See [`STATE_UP`]'s doc -- same shape,
+/// same scope.
+pub const STATE_DOWN: u8 = 6;
+
 /// The value [`Player::anim_shown`] takes on entering a sequence.
 ///
 /// ST: `$6ce4` still holds the *previous* sequence's frame block, so the
@@ -749,6 +763,155 @@ const FRAMES_P1_CATCH19_COMMIT: [Frame; 5] = [
     },
 ];
 
+// ANIM_P2_WALK_LEFT ($449e): frame blocks at $31a8, $31be, $31d4, $31ea,
+// $3200, $3216. Read out of the image (discr-rxx.2): walking backward from
+// `golden.ndjson`'s own frame-0 cursor ($44b6, cell 4) is what surfaced this
+// table in the first place -- Part 12 (discr-rxx.1) named it but did not
+// catalogue it, since player 2 stayed fed throughout that bead.
+const FRAMES_P2_WALK_LEFT: [Frame; 6] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [0, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-4, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-1, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-2, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 11, -20, 17],
+    },
+];
+
+// ANIM_P2_WALK_RIGHT ($434a): frame blocks at $3124, $313a, $3150, $3166,
+// $317c, $3192. ST `$ad66`/`$ad7e` for the skip-turn commit, `$c2a2`-family's
+// mirror at `$c306`+ never runs it -- this table is loaded purely from
+// `$6d5e`, the pending-sequence pointer `$abb2`'s walk dispatch (`$ad3c`)
+// stashes for the turn transient to hand off once it ends.
+const FRAMES_P2_WALK_RIGHT: [Frame; 6] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-5, 11, -19, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-5, 11, -19, 16],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-8, 11, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-9, 11, -20, 17],
+    },
+];
+
+// ANIM_P2_TURN_LEFT ($4992): frame block at $42ee. Player 2's turn transient
+// when turning from (or into) a LEFT walk -- unlike player 1, which loads the
+// same $2f7e for both directions, player 2 has two distinct one-cell tables.
+// ST `$acf6` (idle's skip-turn gate false, entering a left walk from
+// standing) and `$c26e`'s own ending (a left walk exiting into idle) both
+// load it; `golden.ndjson` frame 7 is the latter.
+const FRAMES_P2_TURN_LEFT: [Frame; 1] = [Frame {
+    x_delta: 0,
+    hit_box: [-3, 11, -20, 18],
+}];
+
+// ANIM_P2_TURN_RIGHT ($4988): frame block at $42d8. The mirror of
+// `ANIM_P2_TURN_LEFT` for the right-hand direction. ST `$ad4a` (entering a
+// right walk from standing) and the equivalent ending off a right walk;
+// `golden.ndjson` frame 86 is the latter.
+const FRAMES_P2_TURN_RIGHT: [Frame; 1] = [Frame {
+    x_delta: 0,
+    hit_box: [-4, 11, -20, 18],
+}];
+
+// ANIM_P2_UP ($4522): frame blocks at $322c, $3242, $3258, $326e, $3284,
+// $329a. State 5, holding UP from a standing start -- ST `$aca6`, a direct
+// dispatch (no turn transient, unlike the two walks). `handover.ndjson` does
+// not reach it; catalogued from the image, not measured live (discr-rxx.2).
+const FRAMES_P2_UP: [Frame; 6] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+];
+
+// ANIM_P2_DOWN ($459a): frame blocks at $329a, $3284, $326e, $3258, $3242,
+// $322c -- the SAME six frame blocks as `ANIM_P2_UP`, played back in reverse
+// order (the game reuses one piece of art for both). State 6, holding DOWN
+// from a standing start -- ST `$acc4`, the same direct-dispatch shape as
+// state 5. `handover.ndjson` frame 157 reaches it (discr-rxx.2's own catch:
+// fixing `intercept`/`turn`/the throw-gate ordering elsewhere in this bead
+// extended handover's clean window from frame 53 to past this point).
+const FRAMES_P2_DOWN: [Frame; 6] = [
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 17],
+    },
+    Frame {
+        x_delta: 0,
+        hit_box: [-3, 5, -20, 18],
+    },
+];
+
 anims! {
     ANIM_P1_IDLE      = 0x2c78, [6, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6, 48, 6, 6, 6], FRAMES_P1_IDLE,
         "ST `$2c78`, loaded at `$f202`: player 1 standing, with three long pauses.";
@@ -798,6 +961,30 @@ anims! {
     ANIM_P1_CATCH19_COMMIT = 0x2bb4, [4, 4, 4, 4, 4], FRAMES_P1_CATCH19_COMMIT,
         "ST `$2bb4`, loaded at `$10932` when state 19 commits: five cells of \
          four, the same shape as `$45f0`/`ANIM_AFTER_INTERCEPT`.";
+    ANIM_P2_WALK_LEFT = 0x449e, [4, 4, 4, 4, 4, 4], FRAMES_P2_WALK_LEFT,
+        "ST `$449e`, loaded at `$ad12` (skip-turn) and `$c284` (turn's own \
+         ending): player 2 walking left, six cells of four -- the same shape \
+         as player 1's `$2a8a` (discr-rxx.2).";
+    ANIM_P2_WALK_RIGHT = 0x434a, [4, 4, 4, 4, 4, 4], FRAMES_P2_WALK_RIGHT,
+        "ST `$434a`, loaded at `$ad66` (skip-turn) and `$c284` (turn's own \
+         ending): player 2 walking right. Neither player 1's walk right nor \
+         player 2's own walk had a decoded address before this bead \
+         (discr-rxx.2) -- `walk()`'s per-frame tick gate stayed a no-op for \
+         both until now.";
+    ANIM_P2_TURN_LEFT = 0x4992, [4], FRAMES_P2_TURN_LEFT,
+        "ST `$4992`, loaded at `$acf6`/`$c26e`-side dispatch: player 2's turn \
+         transient off a LEFT walk. Player 2 has two of these where player 1 \
+         has one (discr-rxx.2).";
+    ANIM_P2_TURN_RIGHT = 0x4988, [4], FRAMES_P2_TURN_RIGHT,
+        "ST `$4988`, loaded at `$ad4a`/the equivalent ending off a RIGHT \
+         walk: player 2's other turn transient (discr-rxx.2).";
+    ANIM_P2_UP = 0x4522, [4, 4, 4, 4, 4, 4], FRAMES_P2_UP,
+        "ST `$4522`, loaded at `$aca6`: player 2 holding UP from standing \
+         (state 5). Direct dispatch, no turn transient (discr-rxx.2).";
+    ANIM_P2_DOWN = 0x459a, [4, 4, 4, 4, 4, 4], FRAMES_P2_DOWN,
+        "ST `$459a`, loaded at `$acc4`: player 2 holding DOWN from standing \
+         (state 6) -- the same six frame blocks as `ANIM_P2_UP`, in reverse \
+         (discr-rxx.2).";
 }
 
 /// The sequence a handler loaded, by its ST address.
@@ -810,6 +997,31 @@ pub fn anim_for(start: u32) -> Option<&'static Anim> {
     ANIMS.iter().find(|a| a.start == start)
 }
 
+/// Which catalogued table (and cell within it) a raw `anim_cursor` value
+/// names, if any. `anim_cursor` is always `base + 6*cell` for a table this
+/// crate has data for, so a trace's own frame-0 cursor -- landing anywhere
+/// inside a sequence's run, not just at its first cell -- is enough to
+/// recover both without guessing.
+///
+/// Generalises `disc-tools`' original `seed_from` (discr-rxx.1), which only
+/// ever checked player 1's idle table: this crate now catalogues twenty-plus
+/// sequences across both players (discr-rxx.2), and a trace can start mid-walk
+/// or mid-throw for either one, not just mid-idle.
+#[must_use]
+pub fn anim_cell_for_cursor(cursor: u32) -> Option<(&'static Anim, u8)> {
+    ANIMS.iter().find_map(|a| {
+        if cursor < a.start {
+            return None;
+        }
+        let delta = cursor - a.start;
+        if !delta.is_multiple_of(6) {
+            return None;
+        }
+        let cell = (delta / 6) as usize;
+        (cell < a.frames.len()).then_some((a, cell as u8))
+    })
+}
+
 /// Which sequence a player falls back to when one runs out. ST `$f202` for
 /// player 1 and the same shape in player 2's tail.
 #[must_use]
@@ -817,6 +1029,41 @@ pub const fn idle_anim(who: PlayerId) -> Anim {
     match who {
         PlayerId::One => ANIM_P1_IDLE,
         PlayerId::Two => ANIM_P2_IDLE,
+    }
+}
+
+/// The sequence a walk in `dir` (`FACING_LEFT`/`FACING_RIGHT`) loads, per
+/// player. `None` where no address is decoded -- player 1 walking right, ST
+/// disassembly confirms (discr-rxx.2), still has none. Player 2's own two
+/// walks (`discr-rxx.2`) fill in the other previously-`None` half of this
+/// table; `walk()`'s per-frame tick gate and `idle()`/`turn()`'s dispatch
+/// sites all key off this one function so the three stay in lockstep.
+#[must_use]
+pub const fn walk_anim(who: PlayerId, dir: u8) -> Option<Anim> {
+    match (who, dir) {
+        (PlayerId::One, FACING_LEFT) => Some(ANIM_P1_WALK_LEFT),
+        (PlayerId::Two, FACING_LEFT) => Some(ANIM_P2_WALK_LEFT),
+        (PlayerId::Two, FACING_RIGHT) => Some(ANIM_P2_WALK_RIGHT),
+        _ => None,
+    }
+}
+
+/// The turn transient for a turn associated with `dir` (`FACING_LEFT`/
+/// `FACING_RIGHT`) -- the direction being turned INTO from standing, or the
+/// direction of the walk being turned OUT OF back to standing; both call
+/// sites use the same table for a given `dir`, confirmed against
+/// `golden.ndjson` frames 7 (left, `$4992`) and 86 (right, `$4988`).
+///
+/// Player 1 loads one table (`$2f7e`) for both directions (four ST sites:
+/// `$f27a`/`$f2ce`/`$f7c4`/`$f9e0`). Player 2 has two distinct one-cell
+/// tables instead (`discr-rxx.2`) -- a real per-player asymmetry, not a
+/// simplification.
+#[must_use]
+pub const fn turn_anim(who: PlayerId, dir: u8) -> Anim {
+    match who {
+        PlayerId::One => ANIM_TURN,
+        PlayerId::Two if dir == FACING_LEFT => ANIM_P2_TURN_LEFT,
+        PlayerId::Two => ANIM_P2_TURN_RIGHT,
     }
 }
 
@@ -844,23 +1091,6 @@ pub fn enter_anim(player: &mut Player, anim: Anim) {
     player.anim_hold = anim.holds.first().copied().unwrap_or(1);
     // `$6cda = a1` in the same preamble, six-byte cells from `anim_base`.
     player.anim_cursor = anim.start;
-}
-
-/// Load a sequence via the tail's OWN generic fallback (`$f202`-`$f218`),
-/// reached when the sequence just ended has nowhere more specific to hand
-/// off to. Unlike [`enter_anim`] followed by a second [`anim_tick`] (a
-/// distinct, fresh dispatch such as `enter_turn`'s), this fallback is part of
-/// the SAME tail invocation that just ran the copy for the OLD sequence --
-/// so it does not copy again (`golden.ndjson` frame 71 still shows the OLD
-/// sequence's `hit_box` on the tick `anim_cursor` already reads the new
-/// base), but it DOES consume one unit of the fresh hold immediately, the
-/// same `$f1ee subq.w #1,$6ce2` instruction the tail always runs, just
-/// operating on the value `$f206` only just loaded: `golden.ndjson`'s second
-/// idle stretch (frames 32-37) shows cell 0's 6-hold cell for five samples,
-/// not six, which is one accounted for here.
-fn enter_anim_fallback(player: &mut Player, anim: Anim) {
-    enter_anim(player, anim);
-    player.anim_hold = player.anim_hold.saturating_sub(1);
 }
 
 /// The animation tail every handler ends in. ST `$f1c4`, faithfully in order:
@@ -980,17 +1210,21 @@ fn grid_cell(world_x: i16, world_y: i16) -> u16 {
 ///   stepping by 3. Same evidence: from idle X = 117 the Right run ended on
 ///   152, which is not 117 + 3n (150 + 3 = 153, clamped), and the Left run
 ///   ended on 8, which is not 117 - 3n (9 - 3 = 6, clamped).
-fn walk(player: &mut Player, input: Input, facing: u8, held: DirBits, step_x: i16) {
+fn walk(player: &mut Player, who: PlayerId, input: Input, facing: u8, held: DirBits, step_x: i16) {
     // ST $f5e2 / $f7f6: the handler sets $6ca9 on entry.
     player.facing = facing;
 
     // ST $f654 / $f868: `cmpi.b #$04,(a0); bne $f7b8` -- a WHOLE-BYTE compare,
     // so anything other than exactly this direction leaves the walk. The exit
     // clears the pending state ($f7b8 / $f9ce) and enters the turn transient
-    // ($f7d2 / $f9e8 write #$14), which then lands on state 0.
+    // ($f7d2 / $f9e8 write #$14), which then lands on state 0. The table this
+    // loads is keyed on the walk being EXITED (`facing`, this call's own
+    // direction), not the idle it is heading to -- `golden.ndjson` frame 7
+    // (exiting a left walk) loads player 2's `$4992`, frame 86 (exiting a
+    // right walk) loads `$4988`; see [`turn_anim`] (discr-rxx.2).
     if input.dir != held {
         player.pending_state = STATE_IDLE;
-        enter_turn(player);
+        enter_turn(player, who, facing);
         player.grid_cell = grid_cell(player.world_x, player.world_y);
         return;
     }
@@ -1007,24 +1241,45 @@ fn walk(player: &mut Player, input: Input, facing: u8, held: DirBits, step_x: i1
     player.grid_cell = grid_cell(player.world_x, player.world_y);
 
     // The handler's own fall-through to the shared tail -- but only while
-    // `anim_base` genuinely names the sequence this crate has data for
-    // (player 1's left walk, `$2a8a`). Walking right and player 2's own walk
-    // have no decoded sequence (`// UNKNOWN: see bd discr-75o`); ticking a
-    // stale, unrelated `anim_base` there would apply a WRONG table's
-    // `x_delta`/`hit_box` rather than leaving them honestly unmodelled, so
-    // this stays a no-op for every combination but the one that is known.
-    if player.anim_base == ANIM_P1_WALK_LEFT.start {
+    // `anim_base` genuinely names the sequence this crate has data for.
+    // Player 1 walking right still has no decoded address (`// UNKNOWN: see
+    // bd discr-75o`); ticking a stale, unrelated `anim_base` there would
+    // apply a WRONG table's `x_delta`/`hit_box` rather than leaving them
+    // honestly unmodelled, so this stays a no-op for that one remaining
+    // combination. Player 2's own two walks are decoded now (discr-rxx.2),
+    // via the same [`walk_anim`] lookup [`idle`]/[`turn`] dispatch through.
+    //
+    // A walk that outlasts its own table wraps back to its own cell 0 -- the
+    // player is still walking, not handing off to anything more specific.
+    // Missing this let `anim_cell` run past the table's own end
+    // (`p1_walk.ndjson` frame 107, six-cell `ANIM_P2_WALK_RIGHT` exhausted
+    // for the first time in any fixture, discr-rxx.2). Unlike `idle_tick`'s
+    // OWN reload (a plain `enter_anim`, no second tick -- `$f202`'s generic
+    // fallback, verified stale via `struck_down`'s differing values), THIS
+    // wrap shows FRESH cell-0 data on the very tick it happens: frame 107's
+    // `hit_box` is already `[-5, 11, -19, 17]` (`ANIM_P2_WALK_RIGHT` cell 0),
+    // not cell 5's stale `[-9, 11, -20, 17]`. So this is its own fresh
+    // dispatch, the same shape as `turn`'s two endings, not idle's generic
+    // one -- landing specifically on idle is the only stale case measured so
+    // far.
+    if let Some(anim) = walk_anim(who, facing)
+        && player.anim_base == anim.start
+        && anim_tick(player) == AnimStep::Ended
+    {
+        enter_anim(player, anim);
         anim_tick(player);
     }
 }
 
 /// Enter the turn transient. ST `$f27a`-`$f288`, `$f2ce`-`$f2dc`, `$f7c4`-`$f7d2`
-/// and `$f9e0`-`$f9e8`: load the `$2f7e` sequence, set `$6ce2` from its hold,
-/// write `$6cae = $14`, and fall into the animation tail in the same tick --
-/// which is the `- 1` here.
-fn enter_turn(player: &mut Player) {
+/// and `$f9e0`-`$f9e8` for player 1 (one table, `$2f7e`, for both directions);
+/// `$acf6`/`$ad4a` and their two walk-exit mirrors for player 2 (two tables,
+/// picked by `dir` -- see [`turn_anim`], discr-rxx.2). Loads the sequence,
+/// sets `$6ce2` from its hold, writes `$6cae = $14`, and falls into the
+/// animation tail in the same tick -- which is the `- 1` here.
+fn enter_turn(player: &mut Player, who: PlayerId, dir: u8) {
     player.state_index = STATE_TURN;
-    enter_anim(player, ANIM_TURN);
+    enter_anim(player, turn_anim(who, dir));
     // $f292 / $f7d8: the entering tick falls straight into the tail, so the
     // count is already down one before the frame is sampled.
     anim_tick(player);
@@ -1091,6 +1346,25 @@ fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE
         return;
     }
 
+    // $ac9e / $acbc: player 2 checks UP then DOWN next, ahead of the two
+    // walks -- both direct dispatches, no turn transient. Player 1's own UP
+    // (`$f222`) and DOWN (`$f240`) go to undecoded handlers (`// UNKNOWN: see
+    // bd discr-75o`), so this stays player-2-only.
+    if who == PlayerId::Two && input.dir.has(DirBits::UP) {
+        player.state_index = STATE_UP;
+        enter_anim(player, ANIM_P2_UP);
+        // $acba: bra $ac40 -- the tail runs on the entering tick too.
+        anim_tick(player);
+        return;
+    }
+    if who == PlayerId::Two && input.dir.has(DirBits::DOWN) {
+        player.state_index = STATE_DOWN;
+        enter_anim(player, ANIM_P2_DOWN);
+        // $acd8: bra $ac40, same shape as the UP arm above.
+        anim_tick(player);
+        return;
+    }
+
     let pending = if input.dir == DirBits::LEFT {
         STATE_WALK_LEFT
     } else if input.dir == DirBits::RIGHT {
@@ -1108,16 +1382,17 @@ fn idle(player: &mut Player, who: PlayerId, input: Input, own_bank: &[Tile; TILE
     // shows it on f11 (after ten idle frames) and again on f29.
     player.pending_state = pending;
     if player.facing == 0 {
-        enter_turn(player);
+        enter_turn(player, who, pending);
     } else {
         player.state_index = pending;
         // `$f296` -- the skip-turn commit for player 1's left walk -- `lea
-        // $2a8a,a1` before falling into the shared tail (Part 10h). No
-        // equivalent address is decoded for walking right or for player 2's
-        // own walk (`// UNKNOWN: see bd discr-75o`), so only this one case
-        // loads a real sequence; the others leave whatever was running.
-        if who == PlayerId::One && pending == STATE_WALK_LEFT {
-            enter_anim(player, ANIM_P1_WALK_LEFT);
+        // $2a8a,a1` before falling into the shared tail (Part 10h). Player
+        // 2's own two walks (`$ad12`/`$ad66`) are the same shape, decoded in
+        // discr-rxx.2 -- see [`walk_anim`]. Player 1 walking right still has
+        // no decoded address (`// UNKNOWN: see bd discr-75o`), so that one
+        // combination alone leaves whatever was running.
+        if let Some(anim) = walk_anim(who, pending) {
+            enter_anim(player, anim);
         }
         anim_tick(player);
     }
@@ -1134,25 +1409,29 @@ fn turn(player: &mut Player, who: PlayerId) {
         player.state_index = player.pending_state;
         // The turn's own sequence is spent, and landing in a walk state loads
         // THAT state's sequence in turn (Part 10h names `$f296` for player 1's
-        // left walk; no address is decoded for walking right or for player
-        // 2's own walk, `// UNKNOWN: see bd discr-75o`, so only this one case
-        // has real data to load).
-        // The two arms are NOT symmetric, and both halves are measured, not
-        // assumed. Landing on idle reuses the copy this same tail invocation
-        // already ran rather than running it again -- `golden.ndjson` frame
-        // 71 (a struck-down player landing on idle) still reads the OLD
-        // sequence's `hit_box` on the very tick `state_index`/`anim_cursor`
-        // already show the new one. Landing on the walk gets a SECOND,
-        // immediate copy -- frame 14 shows `hit_box` ALREADY at `$2a8a`
-        // cell 0's `[0, 11, -19, 17]`, not the turn's stale `[-3, 11, -20,
-        // 18]` -- so unlike the generic idle fallback, committing to a walk
-        // is its own fresh dispatch (`$f296`) that reruns the tail, the same
-        // shape as `enter_turn`'s own entry.
-        if who == PlayerId::One && player.pending_state == STATE_WALK_LEFT {
-            enter_anim(player, ANIM_P1_WALK_LEFT);
+        // left walk; player 2's own two walks are the same shape, discr-rxx.2
+        // -- see [`walk_anim`]). Player 1 walking right still has no decoded
+        // address (`// UNKNOWN: see bd discr-75o`).
+        // Landing on idle is the SAME shape, not the asymmetric "reuse the
+        // stale copy" this comment used to claim: that reading came from
+        // `golden.ndjson` frame 71 (a STRUCK_DOWN player landing on idle,
+        // `struck_down`'s own plain `enter_anim` with no follow-up tick,
+        // correctly stale there) misattributed to turn's own ending, which
+        // player 1's data alone cannot tell apart from a fresh tick --
+        // `ANIM_TURN`'s hit box (`[-3, 11, -20, 18]`) happens to equal
+        // `ANIM_P1_IDLE` cell 0's. Player 2's `ANIM_P2_TURN_RIGHT`
+        // (`[-4, 11, -20, 18]`) does not share that coincidence, and
+        // `golden.ndjson` frame 89 (turning out of a right walk, back to
+        // idle) shows `hit_box` ALREADY at idle's `[-3, 11, -20, 18]` on the
+        // very tick `state_index` changes -- discr-rxx.2, the first case that
+        // disambiguates it. So both arms here are one shape: a fresh
+        // dispatch that reruns the tail immediately, the same as
+        // `enter_turn`'s own entry.
+        if let Some(anim) = walk_anim(who, player.pending_state)
+            .or_else(|| (player.pending_state == STATE_IDLE).then(|| idle_anim(who)))
+        {
+            enter_anim(player, anim);
             anim_tick(player);
-        } else if player.pending_state == STATE_IDLE {
-            enter_anim_fallback(player, idle_anim(who));
         }
     }
 }
@@ -1195,6 +1474,41 @@ fn slide_left(player: &mut Player, who: PlayerId) {
     run_out(player, who);
 }
 
+/// States 5 (UP) and 6 (DOWN), player 2 holding a vertical direction from a
+/// standing start. ST `$b550`/`$b7f6`:
+///
+/// ```text
+/// $b57c  btst #0,(a0) ; bne $b594   ; still held -> the floor/ceiling clamp,
+///                                   ; the diagonal horizontal slide, and the
+///                                   ; further transition into states 24/25
+///                                   ; ($b5a8/$b84e) -- not modelled here,
+///                                   ; the same shape as the racket path
+///                                   ; elsewhere in this file. UNKNOWN: bd
+///                                   ; discr-75o.
+/// $b57e  lea $468c,a1 ; ... ; $6d2e = 0 ; rts  ; released -> straight to
+///                                   ; idle, ending in `rts` (not `bra
+///                                   ; $ac40`) -- a plain re-load with no
+///                                   ; second tick, the same "stale copy"
+///                                   ; shape as `struck_down`'s ending.
+/// ```
+///
+/// Player 1's own state 5 (`$fb6e`) is a different, undecoded mechanism
+/// (Part 12's tier-1 list), and player 1 has no state 6 at all -- so this is
+/// player-2-only, and every other player 1 path through here is the
+/// existing opaque pass-through.
+fn vertical(player: &mut Player, who: PlayerId, input: Input, down: bool) {
+    if who != PlayerId::Two {
+        return;
+    }
+    let held = if down { DirBits::DOWN } else { DirBits::UP };
+    if !input.dir.has(held) {
+        player.state_index = STATE_IDLE;
+        enter_anim(player, idle_anim(who));
+        return;
+    }
+    anim_tick(player);
+}
+
 /// State 11, knocked down. ST `$10554` for player 1, `$be54` for player 2.
 ///
 /// ```text
@@ -1227,11 +1541,15 @@ fn struck_down(player: &mut Player, who: PlayerId) {
     // $10578 bra $f1c4: the plain tail, so the sequence ending lands on state 0.
     if anim_tick(player) == AnimStep::Ended {
         player.state_index = STATE_IDLE;
-        // `$f202`'s generic fallback, reusing the copy this same tail
-        // invocation already ran (not a second tick -- see `turn`'s doc).
+        // `$f202`'s generic fallback: a plain `enter_anim` with no follow-up
+        // tick, so `hit_box`/`x_delta` stay the OLD sequence's for this one
+        // tick -- `state_index`/`anim_cursor` already show idle, but the copy
+        // does not run again until idle's own tail invocation next frame.
         // Measured (`golden.ndjson` frames 71-77, six full samples of idle
-        // cell 0): this transition, unlike `turn`'s, does NOT lose a tick --
-        // see `enter_anim_fallback`'s doc for why the two differ.
+        // cell 0 once it does). Unlike `turn`'s two endings (discr-rxx.2),
+        // which both rerun the tail immediately -- this one genuinely does
+        // not, and player 2's struck-down landing (`p1_walk` frame 256's
+        // neighbourhood) does not contradict it.
         enter_anim(player, idle_anim(who));
     }
     player.grid_cell = grid_cell(player.world_x, player.world_y);
@@ -1293,18 +1611,30 @@ fn stub(player: &mut Player, who: PlayerId) {
 /// `// retract: see docs/disc-notes.md, Part 12 (discr-75o)`.
 fn intercept(player: &mut Player, who: PlayerId, input: Input) {
     let (release_a, release_b) = intercept_release(who);
-    if player.anim_cursor != release_a && player.anim_cursor != release_b {
+    let committing = player.anim_cursor == release_a || player.anim_cursor == release_b;
+    if committing
+        && input.fire_held
+        && !input.dir.has(DirBits::DOWN)
+        && player.discs_out != player.disc_cap
+    {
+        player.world_x -= INTERCEPT_STEP;
+        player.grid_cell = grid_cell(player.world_x, player.world_y);
+        // $c1d4-$c1e2: the throw's own sequence, then the state, then $c1e8's
+        // bra into the tail -- so the entering tick advances it once like
+        // every other fresh dispatch.
+        player.state_index = STATE_THROW_STANDING;
+        enter_anim(player, ANIM_AFTER_INTERCEPT);
+        anim_tick(player);
         return;
     }
-    if !input.fire_held || input.dir.has(DirBits::DOWN) || player.discs_out == player.disc_cap {
-        return;
-    }
-    player.world_x -= INTERCEPT_STEP;
-    player.grid_cell = grid_cell(player.world_x, player.world_y);
-    // $c1d4-$c1e2: the throw's own sequence, then the state, then $c1e8's bra
-    // into the tail -- so the entering tick advances it once like every other.
-    player.state_index = STATE_THROW_STANDING;
-    enter_anim(player, ANIM_AFTER_INTERCEPT);
+    // $c1b0/$c1b8/$c1cc: every one of the three gates that is NOT the commit
+    // (cursor off the checkpoint, fire not held, down held, or the disc cap
+    // already reached) is a `bne`/`beq` to `$ac40` -- the shared tail runs
+    // regardless, which is what keeps the intercept pose's own animation
+    // advancing while it waits for its release frame. Missing this left
+    // player 2's `hit_box`/`x_delta` frozen at state 18's entry cell for the
+    // whole intercept, caught measuring `golden.ndjson`'s 18-frame window
+    // (discr-rxx.2).
     anim_tick(player);
 }
 
@@ -1989,8 +2319,19 @@ pub fn anticipate(
         };
         player.state_index = STATE_INTERCEPT;
         enter_anim(player, intercept_anim(who));
+        // $cc3e: `rts`, NOT a `bra $ac40` -- this dispatch (called from the
+        // disc loop, `$a4ea`, ahead of the player control dispatch in the
+        // same VBL: `GameState::update` mirrors that order) does not itself
+        // run the tail. `intercept`'s own per-frame handler does, on the very
+        // same tick (state_index is already 18 by the time `player::step`
+        // runs), which is what performs the `$f1ca` copy -- adding a second
+        // tick here double-advances the hold. Measured: `golden.ndjson`
+        // frame 22 (discr-rxx.2).
     } else {
-        // $cbae-$cbc4 / $11372-$11388: the wide hook stays installed.
+        // $cbae-$cbc4 / $11372-$11388: the wide hook stays installed. Same
+        // reasoning as the intercept arm: `run_out` (state 27's own handler)
+        // ticks unconditionally on the same tick, so this needs no tick of
+        // its own.
         player.state_index = STATE_REACH;
         enter_anim(player, reach_anim(who));
     }
@@ -2137,13 +2478,33 @@ pub const THROW_PROBE: i16 = 0x0d;
 /// Not modelled: `$af50` (down+fire) and the `$6d29` 1-and-2 variants at
 /// `$ae90`/`$aef0`. `// UNKNOWN: see bd discr-b6x`.
 fn p2_throw_choice(player: &mut Player, input: Input, own_bank: &[Tile; TILE_CELLS]) {
-    // $ad82: exactly $80 -- fire with no direction -- does nothing at all.
-    if input.dir == DirBits(0)
-        || input.dir.has(DirBits::DOWN)
-        || player.discs_out >= player.disc_cap
-        || player.facing == 1
-        || player.facing == 2
-    {
+    // $ad82: exactly $80 -- fire with no direction -- picks no throw, but
+    // still falls through to `bra $ac40` (the tail runs regardless). Missing
+    // this left `hit_box`/`x_delta` frozen at whatever the last throw left
+    // them for any all-fire frame -- `tile_damage.ndjson` frame 60 (the AI
+    // holding `$80` right after a throw, Part 10j) is where discr-rxx.2
+    // caught it: `world_x` moved correctly (idle's own `x_delta` consumption
+    // is a separate, already-correct step above this handler in `idle`) but
+    // `hit_box` stayed stale.
+    if input.dir == DirBits(0) {
+        anim_tick(player);
+        return;
+    }
+    // $ad8a: fire+down goes to `$af50`, a separate path this crate does not
+    // model. `// UNKNOWN: see bd discr-b6x`.
+    if input.dir.has(DirBits::DOWN) {
+        return;
+    }
+    // $ad92: already at the disc cap -- `bge $ac40`, the tail still runs.
+    if player.discs_out >= player.disc_cap {
+        anim_tick(player);
+        return;
+    }
+    // $ad9e/$ada8: mid-walk stamp still set -- `step_inner`'s own upfront
+    // smash-choice check (on `state_index`, not this stamp) handles the
+    // walking case; this is the narrower "just left a walk" window, still
+    // undecoded. `// UNKNOWN: see bd discr-b6x`.
+    if player.facing == 1 || player.facing == 2 {
         return;
     }
 
@@ -2258,20 +2619,39 @@ pub fn step(
     own_bank: &[Tile; TILE_CELLS],
     events: &mut Vec<Event>,
 ) {
-    // Part 12: `anim_cursor`/`x_delta`/`hit_box` are now genuinely WRITTEN by
-    // `enter_anim`/`anim_tick`, not just fed -- but only for player 1's
-    // sequences (`ANIM_P1_*`) is that write proven against the fixtures.
-    // Player 2 already runs several correctly-modelled sequences (its throw,
-    // smash, intercept, reach and struck states all predate this bead), but
-    // its OWN idle/walk tables are not fully catalogued -- a sixth,
-    // uncatalogued sequence surfaces within the first few ticks of
-    // `golden.ndjson` alone (`$449e`) -- and `disc::THROW_STATES`' release
-    // gate reads player 2's `anim_cursor` directly, so a wrong reconstructed
-    // value there desyncs the serve and corrupts the disc simulation for
-    // BOTH players. So player 2's three fields stay exactly as fed: this
-    // wrapper snapshots them, runs the real step (which may still update
-    // them internally, exactly as before this bead), and restores the
-    // snapshot for player 2 only. Player 1 is untouched by this wrapper.
+    // Part 12 (discr-rxx.1 / discr-rxx.2): `anim_cursor`/`x_delta`/`hit_box`
+    // are genuinely WRITTEN by `enter_anim`/`anim_tick` for BOTH players now
+    // -- player 2's own idle/walk/turn/up/down tables (`$449e`, `$434a`,
+    // `$4992`, `$4988`, `$4522`, `$459a`) are catalogued (see
+    // `reports/part12-p2anim.md`), and real bugs this bead found while
+    // measuring against them (`intercept`'s missing per-tick advance,
+    // `turn`'s ending, `p2_throw_choice`'s missing tick, `walk`'s missing
+    // self-wrap, `THROW_STATES`' release-gate ordering in `lib.rs`) are
+    // fixed for both players.
+    //
+    // What is NOT yet decoded is a further mechanic inside player 2's own
+    // walk handlers (`$b1d8`/`$b246` onward for the right walk, the mirror
+    // for left): a probe against the column tables that can substitute a
+    // "step over a hole" sequence (`$439a`) or hand off into a wall-approach
+    // parabola, gated on exact `world_x` -- and it measurably changes the
+    // per-cell hold timing on a walk long enough to matter. `golden.ndjson`
+    // and `tile_damage.ndjson`'s own walks are short enough to never surface
+    // it (2-3 ticks), and reconstruct at 100%; `p1_walk.ndjson` (frame 135,
+    // `ANIM_P2_WALK_RIGHT` cell 1->2) and `bonus.ndjson` (frame 144, cell
+    // 0->1) both have longer runs and both diverge by exactly one tick where
+    // this crate's `walk` does not yet model it. `// UNKNOWN: see bd
+    // discr-75o`.
+    //
+    // Per house rules this bead does not retire player 2's feed on a partial
+    // result: `main.rs`'s `feed_disc_inputs` keeps feeding these three
+    // fields for player 2 (unchanged), and this wrapper keeps the
+    // snapshot/restore that discards whatever `step_inner` computes for
+    // player 2 -- exactly as it did before this bead, so every currently
+    // established gate holds at its current number. Player 1 passes through
+    // untouched, and DOES benefit from the bug fixes above (they are real
+    // fixes to shared code, not player-2-specific hacks) -- verified not to
+    // regress player 1's own already-100% fixtures before landing (see
+    // `reports/part12-p2anim.md`).
     let snapshot = (player.anim_cursor, player.x_delta, player.hit_box);
     step_inner(player, who, input, own_bank, events);
     if who == PlayerId::Two {
@@ -2342,8 +2722,8 @@ fn step_inner(
         // fixture's twenty-three frames in it match the sequence exactly.
         // // UNKNOWN: see bd discr-b6x.
         STATE_REACH => run_out(player, who),
-        1 => walk(player, input, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
-        2 => walk(player, input, FACING_RIGHT, DirBits::RIGHT, WALK_STEP),
+        1 => walk(player, who, input, FACING_LEFT, DirBits::LEFT, -WALK_STEP),
+        2 => walk(player, who, input, FACING_RIGHT, DirBits::RIGHT, WALK_STEP),
         STATE_SLIDE_LEFT => slide_left(player, who),
         // Tier-1 states: the handler address is known, the behaviour is not.
         // Opaque pass-through -- moving a field we cannot justify would only
@@ -2355,7 +2735,12 @@ fn step_inner(
         // hook, then state 31's unconditional round-reset) this crate has no
         // event for. Inventing one would be exactly the guess the house
         // rules forbid; see bd discr-75o.
-        5 => {}  // $fb6e: Up from idle, rising. -> 24 at the $19 (25) clamp.
+        // State 5 is two different mechanisms sharing one number: player 1's
+        // own `$fb6e` (Up from idle, rising -> 24 at the $19 (25) clamp) is
+        // still opaque, but player 2's `$b550` is decoded far enough to keep
+        // its animation right (discr-rxx.2) -- see [`vertical`].
+        STATE_UP => vertical(player, who, input, false),
+        STATE_DOWN => vertical(player, who, input, true),
         14 => {} // $106b2: Right+Fire windup. -> 31 when it completes.
         24 => {} // $10ac4: the hover atop a rise. -> 31 when it completes.
         31 => {} // $10dda: sets $6d2d and $6cac every frame -- a round reset.

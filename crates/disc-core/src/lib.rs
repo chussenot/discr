@@ -120,6 +120,22 @@ impl GameState {
             );
         }
 
+        // `$c06e cmpi.l #$4602,$6d5a` (state 15's own handler, and state 16's
+        // `$c0fe` mirror) reads the animation cursor as THIS frame's dispatch
+        // begins -- i.e. whatever the PREVIOUS frame's own tail copy left
+        // there -- and only afterward runs `$c068`'s own copy of that same
+        // tail, which moves the cursor for the NEXT frame's read. The
+        // `THROW_STATES` check below runs after `player::step` (which is
+        // where that tail copy now genuinely happens, discr-rxx.2), so it
+        // needs THIS snapshot -- the cursor as of before this tick's own
+        // advance -- to land on the same frame the ST does. Discovered
+        // measuring `golden.ndjson`'s serve one frame early once player 2's
+        // `anim_cursor` stopped being fed (feeding it, the old arrangement,
+        // masked this: `feed_disc_inputs` sets it from the PREVIOUS frame's
+        // own trace value before every tick, which happened to reproduce the
+        // same one-frame lag by a different route).
+        let throw_gate_cursor = self.players[1].anim_cursor;
+
         // ST $f5d0: the player state dispatch, per player.
         // A player's "own bank" is the one their movement code indexes: $7616
         // for player 1, $7596 for player 2. `tiles` is the walkability gate for
@@ -157,7 +173,7 @@ impl GameState {
         // // UNKNOWN: see bd discr-b6x.
         if let Some(&(_, _, x_offset, step)) =
             disc::THROW_STATES.iter().find(|&&(state, gate, _, _)| {
-                self.players[1].state_index == state && self.players[1].anim_cursor == gate
+                self.players[1].state_index == state && throw_gate_cursor == gate
             })
         {
             let thrower = self.players[1];
