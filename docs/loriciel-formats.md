@@ -45,7 +45,7 @@ in Ghidra.
 ```
 +0x00  char name[14]   ASCII, NUL-padded (8.3 names)
 +0x0E  u8   pad
-+0x0F  u8   flag        0 = LAUNCHER.HA, DISC.ALL, *.NSQ; 1 = everything else (semantics unconfirmed)
++0x0F  u8   flag        0 = LAUNCHER.HA, DISC.ALL, *.NSQ; 1 = everything else
 +0x10  u16  start_track
 +0x12  u16  start_sector   (1-based)
 +0x14  u16  sector_count
@@ -57,22 +57,99 @@ in Ghidra.
 - Verified: consecutive entries are exactly contiguous under this formula
   (e.g. LAUNCHER.HA ends where DISC.ALL begins; DISC.ALL ends where 50.NSQ begins).
 
+**Flag byte, bounded (2026-08-31, discr-rxx.6).** The `flag=0` class
+(LAUNCHER.HA, DISC.ALL, `*.NSQ`) is loaded through a mechanism proven,
+address-by-address, to never consult this directory at all: the 512-byte
+physical boot sector (`DSC` offset `0`) loads its second stage via
+hardcoded, literal sector counts with no name/flag reference (full
+`capstone` disassembly, `$0`-`$1fe`), LAUNCHER.HA sits at the fixed
+track1/sector1 position that bootstrap seeks to, and LAUNCHER.HA's own
+resident code plays `*.NSQ` by walking the `.NSQ` file's *own* embedded
+offset table (§4) — a different structure from this directory. `flag=0`
+files are therefore the disc's bootstrap dependencies, loaded by hardcoded
+position before any named-resource lookup exists; `flag=1` covers every
+other (ordinary, presumably name/index-looked-up) resource. The specific
+instruction that reads a record's `+0x0F` byte and branches on it was not
+located — not in LAUNCHER.HA's full disassembly, not in either disk image's
+boot region (PP's `DSC` zeroes that span; the `.st` crack release's
+equivalent span is the crack group's own greeting-text loader, not
+Loriciel's code). The remaining candidate is PROGRAM.HA, packed and not
+statically disassemblable (see depack's reports). Full evidence chain:
+`reports/part13-formats.md` §3.
+
 ## 4. Embedded file formats (34 files, all extracted)
 
 | Pattern | Format | Notes |
 |---|---|---|
 | `LAUNCHER.HA` | `HABS` header: magic(4) + u32×6 = 28 B; load addr `0x1000`, code len `0x1F72`; entry `BRA.W` at +0x1C | Loriciel absolute executable |
 | `PROGRAM.HA` | No HABS magic; high-entropy signed bytes | Main game program, packed or encrypted (80,340 B) |
-| `*.NSQ` | `NSEQ` + u8 count (`50.NSQ`: count=0x32=50; `LORI.NSQ`: count=0x24=36) + offset table | Loriciel animation sequence (intro/logo). Offset encoding not fully decoded |
+| `*.NSQ` | `NSEQ` + u8 count (`50.NSQ`: count=0x32=50; `LORI.NSQ`: count=0x24=36) + offset table | Loriciel animation sequence (intro/logo). Fully decoded, see below |
 | `*.SPL` | Headerless signed 8-bit PCM | Sound samples; French names map to game events (CHUTE=fall, DESDALLE=tile destroyed, MORT=death, PARADE=block, VICTOIRE, GONG…) |
 | `CONVERTX/Y.DAT` | Signed-byte LUTs, 2094 / 1071 B | Coordinate/projection conversion tables (X ≈ 2× Y — screen aspect) |
 | `HEADS.DAT` | Exactly 256 B, periodic signed 8-byte rows | Small LUT — likely sprite hotspot/bobbing offsets (speculative) |
 | `DECOR*.DAT`, `DALLES01.DAT`, `PLAYER01.DAT`, `ENEMY01.DAT`, `VIC.DAT`, etc. | Signed-byte / delta-looking data | Graphics, likely Loriciel-packed; decoder lives in PROGRAM.HA / bootstrap |
-| `DISC.ALL` | u16 count=18(?) then u32 table | Master data/level index; partially decoded |
+| `DISC.ALL` | u16 field + 4×u32 header, then nested 0xFFFF-terminated sub-tables (see below) | Master index over its own packed-payload region — not a flat index of the 29 aliased files (mechanically tested and rejected, see below) |
 
 Directory total: 758,847 B of file data in a 773,120 B (0xBCC00 = 1,510
 sectors = 151 logical tracks) container; the difference is boot/directory
 area plus sector-rounding slack.
+
+### `*.NSQ` animation-sequence format, decoded end-to-end (discr-rxx.6)
+
+`NSEQ` magic (4 B) + `u8 count` at `+4` (real per-frame entry count — no
+scaling) + a table of `count` 3-byte, byte-swapped entries starting at `+8`:
+`off = (b0<<16) | (b2<<8) | b1` for bytes `(b0,b1,b2)` of each entry (the
+same "high byte, then a byte-swapped 16-bit word" idiom used throughout this
+format). Confirmed against `LAUNCHER.HA`'s disassembly (`$1048`-`$1072`,
+`mulu.w #$3,d0` fixes the stride).
+
+Per frame index, `off` points at a 32-byte record. If the record's first
+16-bit word (byte-swapped) masked with `$f800` equals `$f800`, the record is
+skipped structurally (no descrambling) and the frame's row-offset table
+starts *at* `off` itself; otherwise the 32 bytes are bit-unscrambled via
+`LAUNCHER.HA`'s `$126a` into a fixed shared destination (animation-wide
+state, not needed for byte accounting) and the row-offset table starts at
+`off + 0x20`. From there, 16-bit words (same byte-swap) are scanned until a
+literal `0xFFFF` terminator; if the very first word already *is* `0xFFFF`,
+the frame is legitimately empty (a "hold" frame — `LAUNCHER.HA`'s `$10ac`/
+`$10b2`, a clean early return, not an error). Otherwise, immediately after
+the terminator, the control-word stream begins — already documented and
+implemented in `scripts/loriciel_depack.py`'s `decode_nsq_control_stream()`
+(`$10c4`-`$1170`), unchanged by this pass.
+
+Validated end-to-end against the real disk image: **50/50** of `50.NSQ`'s
+frames decode cleanly (a clean control-word terminator or a legitimate empty
+frame) and **36/36** of `LORI.NSQ`'s (27 clean decodes + 9 legitimate empty
+frames) — zero unaccounted frames, zero decode failures, in either file.
+Several of `50.NSQ`'s later frames' control-word streams read a few dozen to
+~340 bytes past `50.NSQ`'s own declared end, directly into the following
+file on disk (`LORI.NSQ`'s header, confirmed by literal `NSEQ` magic match)
+— this is the original session's one unresolved "10th offset": not a
+different record type or a second table, just `LAUNCHER.HA` never
+bounds-checking a frame's control stream against its own file's
+`byte_size`, harmless on real hardware since the whole region loads into one
+contiguous buffer. Full evidence chain and validation script:
+`reports/part13-formats.md` §1.
+
+### `DISC.ALL`'s internal header (discr-rxx.6)
+
+The "u16 count + u32 table indexes the 29 aliased files" hypothesis from §6
+is **rejected**, tested mechanically: none of the header's values (plain,
+byte-swapped, absolute-`DSC`, or `DISC.ALL`-relative) land on any of the 29
+aliased files' start offsets. What the header *does* encode: `u16` field at
+`+0`, then 4×`u32` at `+2..+18` — three of those four (`764`, `918`, `1648`)
+are each the file offset immediately following a literal `0xFFFF` word (the
+same terminator convention `*.NSQ`'s row table uses); the fourth (`138`) is
+exactly where a fixed 20-entry, 6-byte-stride sub-table starting at `+18`
+ends (`18 + 20*6 = 138`) — that sub-table's `u32` half is a strictly
+descending, always-in-bounds sequence of offsets into `DISC.ALL` itself,
+with several deltas repeating exactly (paired chunk boundaries, not random
+data). Reads as `DISC.ALL`'s own internal packed-payload index, not a
+directory of the 29 aliased files. A descending offset table is also
+exactly the shape a *backward*-processing decompressor would need — a
+concrete new lead for `reports/part13-depack.md`'s still-unproven
+Pack-Ice-class decoder (Finding 3), not chased further this wave. Full
+evidence chain: `reports/part13-formats.md` §2.
 
 ## 5. Gameplay facts from INSTRUCT.TXT relevant to disc-core
 
