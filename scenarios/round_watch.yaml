@@ -1,0 +1,62 @@
+name: round_watch
+mode: training
+# discr-st8: arm a live change-watch across a round TRANSITION -- the one
+# thing the oracle can never see (past round-end the game loads from floppy,
+# the FDC boundary; live Hatari sails through it). Not yet run to completion
+# in this pass -- reports/part12-round.md's static decode (Ghidra + a raw
+# capstone byte scan of discram.bin, no live capture) is what this project
+# has today. This scenario is the scaffold a future pass needs, not a result.
+#
+# What it watches, and why (addresses from reports/part12-round.md):
+#   $6c83  the round-over tally: a GLOBAL (not per-player) "deaths this
+#          round" counter, cleared at round-init ($9682) and bumped +1 by
+#          each player's own state-23 terminal handler ($10abe p1, $c3b6 p2).
+#          Training's own threshold is $6c83 != 0 (ANY death ends the round,
+#          $9746-$9752) -- the fastest round-end this project can script,
+#          which is why this scenario runs in training mode rather than
+#          challenge (whose threshold is $6c83 >= 2, $9756-$975c).
+#   $6cad  player 1's round_over flag (player+$0d, $6ca0 base).
+#   $6cac  player 1's down flag (player+$0c).
+#   $6d2d  player 2's round_over flag (player+$0d, $6d20 base).
+#   $6d2c  player 2's down flag (player+$0c).
+#   $6d12  a previously undocumented field, player+$72 (player 1's own) --
+#          compared against $6d92 at $97b2-$97cc to decide the loser once
+#          $6c83 clears the round for the OTHER reason (not modelled by
+#          discr-st8's threshold path); a BCD-style incrementer at $9938
+#          writes it, and no fixture on hand has ever moved it, so this is
+#          the scenario's best chance of finally naming it (score display,
+#          by the incrementer's shape, but unconfirmed).
+#   $6d92  the same field, player 2's own ($6d20 base).
+#   $6c4a  the "round active" flag: set at $9658 (init chain), cleared at
+#          $97ea (the round-over exit). Watching it brackets the exact tick
+#          the round ends, independent of $6c83's own value.
+#
+# The plan a future pass should follow: settle to a live match, then hold a
+# direction that walks player 1 into player 2's disc repeatedly (the golden
+# fixture's own energy-death recipe, docs/disc-notes.md's death-sequence
+# section) until $6cac latches -- watching the whole time, not just
+# afterward, so the FIRST write to each address is caught rather than only
+# the eventual steady state. `scripts/ramdiff.py` on `dump: pre`/`dump: post`
+# around the transition is the other half: it catches every field the
+# transition writes, not just the ones this list already guessed.
+settle: 90
+steps:
+  - {watch: "$6c83"}
+  - {watch: "$6cad"}
+  - {watch: "$6cac"}
+  - {watch: "$6d2d"}
+  - {watch: "$6d2c"}
+  - {watch: "$6d12"}
+  - {watch: "$6d92"}
+  - {watch: "$6c4a"}
+  - {dump: pre}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 25}
+  - {hold: Right, frames: 20}
+  - {wait: 25}
+  - {hold: Left, frames: 20}
+  - {wait: 200}
+  - {dump: post}
+  - {unwatch: true}

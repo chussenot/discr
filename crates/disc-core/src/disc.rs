@@ -111,6 +111,14 @@ pub const AIM_Y_OFFSET: i16 = 0x10;
 /// starts climbing.
 pub const SERVE_DIR_KIND: i16 = 1;
 
+/// `dir_kind` forced when the far wall damages its own grid.
+///
+/// ST `$a5d6`: `move.w #-1,($000a,a5)`, the mirror of [`SERVE_DIR_KIND`]'s
+/// `$a618`. Not simply `wrapping_neg()` of whatever `dir_kind` carried in, for
+/// the same reason `$a618` isn't either (see [`step`]'s near-wall branch): a
+/// multi-bounce disc could arrive with a magnitude other than 1.
+pub const FAR_WALL_DIR_KIND: i16 = -SERVE_DIR_KIND;
+
 /// `dir_kind` on the return leg: the disc comes back three times faster.
 ///
 /// Observed on both discs of `tests/fixtures/tile_damage.ndjson` and in
@@ -131,9 +139,17 @@ pub const Z_NEAR: i16 = 0;
 /// The far bound on `world_z`. ST `$a5ba`: `cmp.w #$4f,d2`.
 ///
 /// Reaching it clears the hook, negates `dir_kind` and clamps `world_z` to 79.
-/// **No trace reaches it** -- every disc we have recorded is retired or
-/// returned by player 2 well before, the deepest observed `world_z` being 54 --
-/// so this bound is a code read with no trace behind it.
+/// **Retracted (Part 12)**: this note used to say no trace reaches it,
+/// citing a deepest observed `world_z` of 54. Three fixtures now do:
+/// `tests/fixtures/handover.ndjson` frame 259 and `tests/fixtures/
+/// p1_walk.ndjson` frame 220 (the disc reaches exactly 79 and its owner
+/// byte flips 0 -> 255 in the same tick -- `$a5e2`'s transfer arm, taken
+/// because owner arrived at 0), plus `tests/fixtures/farbank.ndjson`, a
+/// dedicated capture of the far bank. No trace reaches the OTHER arm
+/// (`$a5d6`, owner arriving non-zero, which damages the far grid at
+/// `$9f5e`) -- see [`step`]'s far-wall branch and bd discr-ovl.3. The old
+/// claim was about the traces on hand at the time, not a property of the
+/// bound.
 ///
 /// It is emphatically *not* where the old "dwell at 54" came from. That was
 /// `disc+$10` losing bit 7; see [`crate::DiscSlot::active`].
@@ -376,6 +392,13 @@ pub fn aim_for(hook: SteerHook, players: &[Player; 2]) -> (Option<i16>, Option<i
 /// with the observed tile events -- cells 6, 7 and 8 changed under disc impact
 /// and cell 14, in the floor bank, changed under something else (bd discr-b4q).
 ///
+/// **Shared by the far grid too (Part 12, discr-ovl.3)**: `$9f5e` is `$a24c`
+/// instruction-for-instruction with `lea $7596` substituted for `$7616` (see
+/// `docs/disc-notes.md`, "There are TWO 16-cell tile banks") -- the column
+/// read at `d0`/`d1` and this whole cell computation are upstream of that
+/// substitution, so [`step`]'s far-wall branch reuses this same function
+/// rather than re-deriving it.
+///
 /// Outside the table the ST reads 0, the same "not in the arena" value the
 /// player's own lookup gives, so the cell comes out as 0 or 4. `world_x` is
 /// bounded to `0..=155` by [`X_MIN`]/[`X_MAX`] and the table is
@@ -409,16 +432,34 @@ pub fn disc_cell(world_x: i16, world_y: i16) -> usize {
 ///    [`Z_NEAR`]/[`Z_FAR`] flipping `dir_kind`.
 /// 5. `$a640` -- `vel_y` decays one step toward zero.
 ///
-/// Two ST behaviours inside this loop are deliberately **not** reproduced,
-/// because their triggers are outside it:
+/// Two more ST behaviours live inside the wall bounds themselves, both now
+/// modelled (Part 12: discr-ovl.8, discr-ovl.3, discr-st8):
 ///
-/// * the near wall additionally forces `dir_kind` to `+1` and calls the
-///   tile-damage routine (`$a618`), and the far wall forces `-1` and calls the
-///   far grid's (`$a5d6`) -- but *only* for one value of `disc+$11`, whose
-///   polarity is not settled (`// UNKNOWN: see bd discr-ovl.2`), and the
-///   tile-damage call needs the `$7bfe` column table this crate does not carry
-///   (`// UNKNOWN: see bd discr-5w5`). So the bounds here negate `dir_kind` and
-///   stop, and `tiles` is untouched.
+/// * **the near wall** (`$a612`/`$a618`/`$a624`) additionally forces
+///   `dir_kind` to [`SERVE_DIR_KIND`] and, per `disc.aim`, either calls the
+///   near grid's damage routine (`$a24c`, [`disc_cell`] + [`impact`]) or
+///   takes the transfer arm, which moves the four possession counters
+///   ([`crate::round::transfer_at_near_wall`], discr-st8) and only negates
+///   `dir_kind`, matching what `$a602`'s unconditional `neg.w` already does
+///   before the owner test overwrites it.
+/// * **the far wall** (`$a5d0`/`$a5d6`/`$a5e2`) is the mirror: forces
+///   [`FAR_WALL_DIR_KIND`], damages the far grid for the *other* value of
+///   `disc.aim` (`$9f5e`, the *same* [`disc_cell`] against `tiles_far`,
+///   discr-ovl.3), and its transfer arm moves the counters the other way
+///   ([`crate::round::transfer_at_far_wall`]). The polarity is
+///   real-player-consistent since discr-ovl.8's flip (raw owner 0 is player
+///   2's disc, 0xFF player 1's -- `reports/part12-owner.md`), so the two
+///   walls' owner tests are opposites of each other, not independently
+///   chosen. In the ST both transfer arms are additionally gated on
+///   `$6ca0.b != 1` (the game-mode byte: training gates the transfer off,
+///   `reports/part12-round.md`) -- not modelled; no committed trace crosses
+///   a wall bound in training with the transfer-owner value. **Untested by
+///   any committed fixture**: the far wall's damage arm -- every trace that
+///   reaches it does so on a disc's first arrival (the transfer arm),
+///   matching discr-ovl.1's player-1 racket path as a
+///   modelled-from-the-disassembly, fixture-unexercised gap. See [`Z_FAR`]
+///   and `tests/fixtures/farbank.provenance.md`.
+///
 /// * the two hit tests at `$a652`/`$a656` are what install hooks and retire
 ///   discs. Hook installation is decoded and modelled --
 ///   [`crate::player::anticipate`], bd discr-ovl.1 CLOSED. Retirement is not:
@@ -462,8 +503,16 @@ pub fn step(
     // outright when the OTHER player is out -- `$a564 tst.b $6d2d; bne $a570`
     // then `addq.b #4,($10,a5)` and `subq.w #1,$6d8a`. That is what ends a
     // round: every disc in play is taken off the board.
+    //
+    // `disc.aim` is real-player-consistent as of discr-ovl.8 (Part 12), so the
+    // holder is simply the player `disc.aim` names -- `PlayerId::index()`,
+    // the same mapping every other PlayerId use in the crate goes through.
+    // Before the flip this line inverted the index by hand (`if aim == One
+    // {1} else {0}`) to land on the real holder despite `aim`'s internal
+    // convention disagreeing with it elsewhere; the coordinated flip is what
+    // let the hand inversion go.
     {
-        let holder = if disc.aim == PlayerId::One { 1 } else { 0 };
+        let holder = disc.aim.index();
         if players[holder].round_over || players[holder].down {
             disc.active = disc.active.wrapping_add(ACTIVE_RETIRE_STEP);
             players[holder].discs_out = players[holder].discs_out.saturating_sub(1);
@@ -496,28 +545,52 @@ pub fn step(
     match disc.world_z.saturating_add(disc.dir_kind) {
         next if next > Z_FAR => {
             disc.hook = SteerHook::None;
-            disc.dir_kind = disc.dir_kind.wrapping_neg();
             disc.world_z = Z_FAR;
-            // $a5d0-$a5e0: for the OTHER owner value the ST forces dir_kind to
-            // -1 and damages the far grid at $7596, a second 8-cell bank this
-            // crate does not carry. // UNKNOWN: see bd discr-ovl.3.
+            if disc.aim == PlayerId::One {
+                // $a5d6: owner arriving non-zero (real player 1's disc, per
+                // discr-ovl.8's settled polarity) forces dir_kind to
+                // FAR_WALL_DIR_KIND -- NOT the neg.w, for the same
+                // multi-bounce reason $a618 isn't either -- and calls the far
+                // grid's damage routine $9f5e, which is $a24c
+                // instruction-for-instruction against tiles_far (bd
+                // discr-ovl.3). Untested by any committed fixture: see
+                // [`Z_FAR`]'s doc and `tests/fixtures/farbank.provenance.md`.
+                disc.dir_kind = FAR_WALL_DIR_KIND;
+                let cell = disc_cell(disc.world_x, disc.world_y);
+                impact(disc, cell, tiles_far, collapse, _events);
+            } else {
+                // $a5e2-$a5fa: owner arriving at 0 (real player 2's disc)
+                // transfers possession instead: the four counters move from
+                // player 2's ledger to player 1's
+                // (crate::round::transfer_at_far_wall, discr-st8;
+                // p1_walk.ndjson frame 220 exercises this live). The neg.w
+                // from $a5c0 stands. The ST gates the transfer on $6ca0.b !=
+                // 1 (training) -- not modelled, see the module docs.
+                crate::round::transfer_at_far_wall(players);
+                disc.dir_kind = disc.dir_kind.wrapping_neg();
+            }
         }
         next if next < Z_NEAR => {
             disc.hook = SteerHook::None;
             disc.world_z = Z_NEAR;
-            if disc.aim == PlayerId::One {
-                // $a618: this owner value forces dir_kind to +1 -- NOT the
-                // neg.w, which would give +3 off the -3 return leg -- and then
-                // calls the near grid's damage routine $a24c. tile_damage.ndjson
-                // f70 is exactly this: dir_kind -3 -> +1 and cell 6 destroyed
-                // on the same frame.
+            if disc.aim == PlayerId::Two {
+                // $a618: owner arriving at 0 (real player 2's disc) forces
+                // dir_kind to +1 -- NOT the neg.w, which would give +3 off
+                // the -3 return leg -- and then calls the near grid's damage
+                // routine $a24c. tile_damage.ndjson f70 is exactly this:
+                // dir_kind -3 -> +1 and cell 6 destroyed on the same frame.
                 disc.dir_kind = SERVE_DIR_KIND;
                 let cell = disc_cell(disc.world_x, disc.world_y);
                 impact(disc, cell, tiles, collapse, _events);
             } else {
-                // $a624: the other owner value transfers possession instead,
-                // moving four counters this crate does not model. The neg.w
-                // from $a602 stands. // UNKNOWN: see bd discr-ovl.2.
+                // $a624-$a63c: the other owner value transfers possession
+                // instead, the exact mirror of the far wall's transfer:
+                // owner := 0, possession moves from player 1's own ledger
+                // back to player 2's (discr-st8, reports/part12-round.md).
+                // The neg.w from $a602 stands. Also gated on $6ca0.b != 1 in
+                // the ST (training) -- not modelled, see the far wall's
+                // comment above and the module docs.
+                crate::round::transfer_at_near_wall(players);
                 disc.dir_kind = disc.dir_kind.wrapping_neg();
             }
         }
@@ -626,7 +699,10 @@ pub fn serve(
     discs[slot] = DiscSlot {
         // $a9b8: st ($10,a1).
         active: ACTIVE_LIVE,
-        aim: PlayerId::One,
+        // $a9bc: clr.b ($11,a1) -- every serve is unconditionally owner 0,
+        // real player 2's, per discr-ovl.8's settled polarity (PlayerId::Two
+        // here, not the pre-flip PlayerId::One this line used to read).
+        aim: PlayerId::Two,
         hook: SteerHook::None,
         world_x: thrower.world_x + x_offset,
         world_y: SERVE_WORLD_Y,
@@ -810,6 +886,9 @@ mod tests {
         let mut disc = DiscSlot {
             world_z: 53,
             dir_kind: RETURN_DIR_KIND,
+            // Real player 2's disc (raw owner 0, discr-ovl.8's polarity) --
+            // the near wall's force-and-damage arm, not the transfer one.
+            aim: PlayerId::Two,
             ..flying(48, 81)
         };
         let mut tiles = [Tile::default(); TILE_CELLS];
@@ -927,6 +1006,9 @@ mod tests {
             world_z: 2,
             dir_kind: RETURN_DIR_KIND,
             damage: 3,
+            // Real player 2's disc (raw owner 0, discr-ovl.8's polarity) --
+            // the near wall's force-and-damage arm, not the transfer one.
+            aim: PlayerId::Two,
             ..flying(67, 81)
         };
         let mut tiles = [Tile::default(); TILE_CELLS];
@@ -953,6 +1035,60 @@ mod tests {
                 hp: 0
             },
             "hp 1 - 3 clamps to 0 and $a354 clears the type"
+        );
+        assert!(!events.is_empty(), "the impact is reported");
+    }
+
+    /// $a5ba/$a5d6: reaching the far bound damages the cell the disc is over
+    /// -- in the FAR bank, `tiles_far`, via the *same* [`disc_cell`] formula
+    /// -- and forces `dir_kind` to [`FAR_WALL_DIR_KIND`]. The mirror of
+    /// [`the_near_bound_damages_the_cell_the_disc_is_over`], and, unlike it,
+    /// **not exercised by any committed fixture** (see [`Z_FAR`]'s doc):
+    /// this is the code-level proof the far-wall branch is wired correctly
+    /// from the disassembly, the same role the near-wall test played before
+    /// `tile_damage.ndjson` existed to confirm it live.
+    #[test]
+    fn the_far_bound_damages_the_far_banks_cell_the_disc_is_over() {
+        let mut players = players_at(117, 63);
+        let mut disc = DiscSlot {
+            world_z: 77,
+            dir_kind: 3,
+            damage: 3,
+            // Real player 1's disc (raw owner 0xFF, discr-ovl.8's polarity)
+            // -- the far wall's force-and-damage arm, not the transfer one.
+            aim: PlayerId::One,
+            ..flying(67, 81)
+        };
+        let mut tiles = [Tile::default(); TILE_CELLS];
+        let mut tiles_far = [Tile::default(); TILE_CELLS];
+        tiles_far[6] = Tile {
+            tile_type: 1,
+            hp: 1,
+        };
+        let mut events = Vec::new();
+
+        step(
+            &mut disc,
+            0,
+            &mut players,
+            &mut tiles,
+            &mut [None, None, None, None],
+            &mut tiles_far,
+            &mut events,
+        );
+        assert_eq!((disc.world_z, disc.dir_kind), (Z_FAR, FAR_WALL_DIR_KIND));
+        assert_eq!(
+            tiles_far[6],
+            Tile {
+                tile_type: 0,
+                hp: 0
+            },
+            "hp 1 - 3 clamps to 0 and $a354 clears the type, mirrored onto tiles_far"
+        );
+        assert_eq!(
+            tiles,
+            [Tile::default(); TILE_CELLS],
+            "the near bank is a separate array and is untouched"
         );
         assert!(!events.is_empty(), "the impact is reported");
     }

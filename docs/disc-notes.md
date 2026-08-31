@@ -3088,3 +3088,462 @@ proven and cheap to re-run; it has just not yet been lucky. See
 model yet for a bit-7-carrying cell, so its plain damage subtraction gives
 `132 -> 129` instead of the ST's `132 -> 4`. That gap is discr-ovl.4/z8m's
 open half, not a new bug.
+
+## Part 12 (farbank) -- the coordinated PlayerId flip, and the far bank compared
+
+Two beads, landed together because the second depends on the first's polarity
+being real-player-consistent rather than internally-consistent-and-backwards:
+**discr-ovl.8** (flip `disc.aim`'s convention to match the real polarity Part
+12/owner pinned) and **discr-ovl.3** (compare the far wall's second tile grid,
+open since Part 10 -- "There are TWO 16-cell tile banks", above). Every claim
+below ties to an ST address, a Ghidra citation already in this file, or a
+measured `tracecheck`/oracle run in this worktree.
+
+### discr-ovl.8: `PlayerId::One` now means real player 1, everywhere
+
+Part 12 (owner) pinned raw `disc+$11` == 0 to PLAYER 2's disc and 0xFF to
+PLAYER 1's, and left `main.rs`'s feed mapping unflipped because `disc-core`'s
+OWN internal `disc.aim == PlayerId::One` checks (`disc.rs`'s wall match arms,
+`player.rs`'s owner-gated docks and catch window, and `anticipate`'s "is this
+still my own disc" test) were written under the opposite, self-consistent
+convention: raw 0 <-> `PlayerId::One`. Flipping the feed alone desynced the
+two sides of a comparison that had never faced each other before (`aim` is
+fed every tick, never compared) and regressed `p1_walk` 274 -> 10.
+
+The fix is exactly what Part 12 (owner) filed discr-ovl.8 to do: flip the feed
+AND every internal `disc.aim ==`/`!=` `PlayerId::One`/`Two` comparison in the
+same commit, so the two sides agree on what `PlayerId::One` names -- real
+player 1 -- consistently with every OTHER `PlayerId` use in the crate (the
+`who` parameter to `anticipate`/`hit_test`/`p2_hit_test`, `PlayerId::index()`,
+the per-player animation tables). The inventory, found by grepping the enum
+and following the compiler's own logic errors where the flip changed a type:
+
+| site | before | after | why |
+|---|---|---|---|
+| `main.rs` `seed()`, the feed | `Some(0) => One` | `Some(0) => Two` | raw 0 is real player 2 |
+| `disc.rs::step`, the retire-check holder | `if aim==One {1} else {0}` | `aim.index()` | the hand inversion this line used, to land on the real holder despite the old internal convention, is what the flip lets go -- `PlayerId::index()` now IS the real holder |
+| `disc.rs::step`, near wall force-or-transfer | `if aim==One` | `if aim==Two` | raw 0 (real player 2's serve) is what forces `dir_kind`+damages the near grid |
+| `disc.rs::serve`, the served disc's `aim` | `PlayerId::One` | `PlayerId::Two` | every serve is unconditionally owner 0 (`$a9bc`), real player 2's |
+| `player.rs::hit_test`, player 1's dock | `if aim==One` | `if aim==Two` | raw 0 docks player 1 (`$1116e`) |
+| `player.rs::p2_hit_test`, the catch window | `if aim==One` | `if aim==Two` | raw 0 (still player 2's own serve) is what opens player 2's catch states |
+| `player.rs::strike`, player 2's dock | `if aim!=One` | `if aim!=Two` | raw non-zero docks player 2 (`$c9a6`) |
+| `player.rs::anticipate`, `theirs` | `match who {One => aim!=One, Two => aim==One}` | `disc.aim == who` | the two hand-tuned arms were compensating for the same mismatch `holder` was; once `aim` and `who` share a convention the gate collapses to one comparison |
+| `disc.rs::step`, far wall force-or-transfer (new) | not modelled | `if aim==One` | raw 0xFF (real player 1) is what forces `dir_kind` and damages the far grid -- discr-ovl.3's other half |
+
+Every site above that pre-existed is a **literal swap of the `PlayerId::One`/
+`Two` compared against `disc.aim`**, nothing more -- the polarity change is
+entirely at the boundary and at each comparison, never in the surrounding
+logic, which is why the fixture numbers hold exactly rather than needing new
+tolerance. Verified against all nine tracecheck gates, unchanged from their
+pre-flip numbers (`golden`/`tile_damage` 99/214 both modes, `p1_walk` 274,
+`handover` 21 bare / 222 skip-waived, `bonus` 150 skip-waived / 22 bare) --
+`handover.ndjson` is the fixture that actually exercises both raw values on
+the same disc slot (frames 259 and 339), so it is the trace that would have
+caught a wrong flip, the way the lone tracecheck-only attempt was caught by
+`p1_walk` regressing to 10. `docs/state-schema.md`'s `discs[n].aim` row is
+updated with the closure; the row itself stays `waived:discr-ovl.2` (fed, not
+compared) since `disc-core` still has no writer for the field or the four
+possession counters it steers (discr-st8).
+
+### discr-ovl.3: the far bank, compared
+
+The far bank ($7596, `disc_core::GameState::tiles_far`) has existed in
+`disc-core` since the four-slot collapse work, and the oracle has emitted it
+(`banks`, both bank's 16 cells each) since Part 10e -- but nothing ever
+compared it: `tracecheck`'s `checks()` had no `tiles_far[n]` rows, and
+`scripts/oracle_diff.py`'s labeller fell through to "unlabelled" for
+`$7596..$7616` even though the differ's window ($6a00-$76a0) already covered
+those bytes.
+
+Both gaps are closed the same way the near bank's own rows work: `checks()`
+gains `tiles_far[n].tile_type`/`tiles_far[n].hp`, gated on the trace actually
+carrying `banks` (`not_in_trace` reports the two rows by name on an older
+trace, the same shape `discs[n].damage` already uses for a pre-Part-10
+trace); `oracle_diff.py`'s `label_for` gains a `$7596..$7616` case. Since the
+column and the seeding already existed, `disc::step`'s far-wall branch is the
+only genuinely new code: `$a5d6`/`$9f5e` mirrors the near wall's
+`$a618`/`$a24c` exactly (the cell-index formula, `disc_cell`, is shared --
+"$9f5e is $a24c instruction-for-instruction" already established above, and
+the substitution touches only the bank base and `$6d9a`/`$6d1c`, not the
+column read), forcing `dir_kind` to `FAR_WALL_DIR_KIND` (`-1`, the mirror of
+[`SERVE_DIR_KIND`]) and calling `impact()` against `tiles_far` instead of
+`tiles`.
+
+`tests/fixtures/farbank.ndjson` (295 idle frames, a fresh CHALLENGE seed,
+`tests/fixtures/farbank.provenance.md` has the full recipe) confirms the
+seeded bank against a live trace for 34 ticks -- both banks' cell 7 loses its
+bonus flag (bit 7) in lockstep at frame 35, the same placer
+(`$9b28`/`$9b32`, "SETS BIT 7, near bank ... and the far bank, same slot",
+above) already named for the near bank, and `disc-core` has no model for bit
+7 on either bank (the same discr-dc0/discr-ovl.4 gap `bonus.ndjson` already
+gates around), so it diverges there -- reported on the near bank's
+pre-existing `tiles[7].hp` row since schema order checks it first, not
+because the far bank disagreed any earlier. `FARBANK_MIN_AGREE = 34` in
+`mise.toml`, both bare and `--skip-waived` (this capture's player 2 rows do
+not diverge before tick 34 either).
+
+**What the fixture does not reach, and what was tried**: a genuine far-wall
+DAMAGE hit needs a disc already owned by real player 1 to cross `$7596`'s
+wall a SECOND time, which needs player 1 to reflect it (body-box bounce)
+before it reaches the near wall and transfers back unconditionally. Multiple
+idle captures (three fresh seeds) all show the same disc transferring out and
+back with no interruption; a scripted attempt landed player 1 within single
+digits of the disc's X at the crossing frame with no bounce resulting,
+suggesting either the body-box test wants more than X overlap at one sampled
+frame or the real collision resolves inside a multi-pass tick a single-sample
+trace cannot see (Part 11f/11g's "0, 1 or 2 passes a frame" applies here
+too); every attempt also hit the same hard ceiling, an unstubbed floppy/PSG
+access around frame 460-500 consistent with a round-transition disk load the
+oracle's stub list was never built to cover. The far-wall damage branch is
+therefore modelled from the disassembly and code-reviewed against the
+near-wall branch it mirrors, but **untested by any committed fixture** --
+the same shape as discr-ovl.1's player-1 racket path (`$11030`-`$110a8`,
+closed as "decoded, not fixture-exercised" since neither player ever swings
+in either fixture). Full attempt log and recipe for whoever picks this up:
+`tests/fixtures/farbank.provenance.md`.
+
+Files: `crates/disc-core/src/disc.rs` (the flip's `disc.rs` sites, the
+far-wall branch, `FAR_WALL_DIR_KIND`, a new unit test mirroring the near-wall
+one), `crates/disc-core/src/player.rs` (the flip's four sites),
+`crates/disc-tools/src/main.rs` (the feed flip, `tiles_far[n]` compared
+rows, `SCHEMA_COMPARED`/`SCHEMA_WAIVED`), `docs/state-schema.md` (two rows
+moved Waived -> Compared, both owner-polarity and far-bank prose updated),
+`scripts/oracle_diff.py` (the far-bank label), `oracle/disc-oracle.c`
+(comment only), `mise.toml` (`FARBANK*`, wired into `core-check`/
+`tracecheck`), `tests/fixtures/farbank.ndjson` + `.provenance.md`. Full gate
+table and the flip's own regression history: `reports/part12-farbank.md`.
+
+## Part 12 (round): the four counters get a writer, and init/round-over/win are named without a fixture (discr-st8)
+
+`bd discr-st8` asked for round init, scoring and win/loss -- the last
+undecoded gameplay system. `reports/part12-owner.md` had already pinned the
+four possession counters' writer PCs and directions (the serve and the two
+wall handlers); this part gives them a `disc-core` writer, and decodes --
+from the static image only, no fixture crosses a round transition -- what
+starts a round, what ends it, and what decides who won it. Full chain, every
+instruction: `reports/part12-round.md`.
+
+### The four counters are computed now
+
+`crates/disc-core/src/round.rs` (new): `transfer_at_far_wall` and
+`transfer_at_near_wall`, called from `disc::step`'s two wall-bound match
+arms, move `players[0]`/`players[1]`'s `discs_out`/`disc_cap` in lockstep --
+the far wall moves player 2's pair DOWN and player 1's UP, the near wall the
+exact mirror. Serve (`GameState::update`) and catch (`player::hit_test`/
+`p2_hit_test`) already wrote `discs_out`; this was the missing third writer.
+
+Both fields came OFF `docs/state-schema.md`'s waived list and into the
+compared one (`players[0].discs_out`/`disc_cap`, `crates/disc-tools/src/
+main.rs`'s `checks()`); the unconditional `disc_cap` feed in
+`feed_disc_inputs` is gone. `tests/fixtures/p1_walk.ndjson` (`--min-agree
+274`, the WHOLE trace) now exercises the far-wall transfer live -- frame 220,
+`disc[0].own` 0 -> 255 -- with both fields genuinely computed, and the gate
+holds at 274/274. `tests/fixtures/handover.ndjson` records both directions on
+one disc slot (frames 259 far wall, 339 near wall), but `disc-core`'s own
+replay of it diverges earlier (tick 222 skip-waived, tick 21 bare) on an
+unrelated `discs[0].active` gap, so the near-wall transfer is measured
+against that fixture's own recorded columns, not a passing tracecheck run
+past frame 339 -- documented in `round.rs`'s own module docs rather than
+claimed as tracecheck-verified.
+
+Not modelled: the `$6ca0.b != 1` training gate on both transfers (see below --
+`$6ca0` turned out to be the game-mode byte), so this crate over-transfers in
+training; no fixture on hand is a training-mode capture with a live wall
+crossing to measure it against.
+
+### Where `$aa50` sits: the round-start init chain
+
+Ghidra's own analysis has no xref to `$aa50` and no operand-scan hit either
+(`xref`/`scan aa50` both return zero) -- it sits in the same undissassembled
+span Part 12b's `$968a` RNG reseed was found in, outside Ghidra's own CFG
+walk from its entry points. A raw byte-pattern scan of `discram.bin` with
+`capstone` (same technique as `reports/part12-rng.md`/`part12-dirkind.md`)
+finds the one `bsr.w` that reaches it: `$965c`, inside a ~20-call chain from
+`$9628` to `$96b6` that is unmistakably round-start init -- it falls straight
+through into the already-known main VBL loop at `$96ba` (`move.w
+$6ab8,-(a7)`, `GameState::update`'s own `$a4ea`/`$10eac` calls).
+
+`$aa50` itself (disassembled in full, all 8 disc records): `active` and the
+owner byte cleared, `world_y := 0x52` (82, `disc::SERVE_WORLD_Y`'s value
+minus one -- not the same field, see its own doc comment), and a previously
+undocumented word, `disc+$18 := 3`, right after `damage` (`+$16`) and before
+the excluded pointer at `+$1a`. This crate does not carry it; flagged, not
+chased further (no offset-relative xref technique reaches register-relative
+accesses like this one without a full disassembly of the surrounding loop,
+which was out of this pass's budget).
+
+In the same chain: `$9682 clr.b $6c83` (the round-over tally, below) and the
+already-known `$968a move.b $6ab5,$6c5d` RNG reseed (Part 12b), plus roughly
+twenty other `bsr`/`jsr` calls to subsystems this pass did not open.
+
+### The round-play loop, the round-over threshold, and the mode byte
+
+`$9600`-`$97d6` is the per-VBL loop that plays one round: `$9700`-`$972e` is
+the VBL-pacing wait (computing `$6ab8`, the pass count `GameState::updates`
+already models from the trace side); `$96ba`-`$96cc` is the already-known
+main update (`$a4ea` disc loop, `$10eac` player dispatch); `$97d0 cmpi.b
+#1,$6c56; bne.w $9698` loops back for another frame unless `$6c56 == 1`
+(unidentified, not chased).
+
+`$6c83` is a GLOBAL counter -- not per player -- bumped +1 by each player's
+own state-23 terminal handler: `$10abe` for player 1 (this file's own state-23
+section already named the bump, "$6cab by 3 and $6c83 by 1"), and its exact
+mirror at `$c3b6` for player 2. State 31's shared fallthrough into state 23's
+terminal code (this file's own "state 31 forces an immediate round reset"
+finding) reaches the same bump, so both of this project's known round-ending
+triggers -- energy death and the sustained-jump exploit -- fund the same
+counter.
+
+`$9746`-`$975c` reads it against a threshold gated by `$6ca0`, read as a BYTE
+at player 1's own base address (`+$00` -- distinct from any modelled `Player`
+field, which starts at `+$02`): **`$6ca0` is the game-mode byte.** `cmpi.b
+#1,$6ca0` recurs at `$9746` and `$97a8` in this same loop, and independently
+at `$116c4` (`docs/disc-notes.md`'s discr-qqt section, "set to `$10` only
+when the mode byte `$6ca0` selects training") -- three unrelated call sites
+agreeing that 1 selects training. Training ends the round on the very first
+death (`tst.b $6c83; bne.w $97ea`); challenge and tournament wait for two
+(`cmpi.b #2,$6c83; bge.w $97ea`). This also RETRACTS `reports/
+part12-owner.md`'s framing of the wall transfer's `$6ca0.b != 1` gate as "an
+apparent flag on player 1's own record" -- it is not a flag on the record at
+all, it is the mode selector, and the wall transfer is gated OFF entirely in
+training.
+
+### Win/loss: a previously undocumented field at `player+$72`
+
+`$97b2`-`$97cc`, reached once a separate latch (`$6c9c`) permits it: `move.w
+$6d12,d0; cmp.w $6d92,d0`. `$6d12` is player 1's base (`$6ca0`) plus `$72`;
+`$6d92` is player 2's base (`$6d20`) plus the same offset -- one word past
+`throw_damage` (`+$70`), previously undocumented. Whichever side is SMALLER
+gets `down` set on ITS OWN record, and the LARGER side gets its own
+`round_over` set (consistent with `round_over`'s established meaning,
+"my opponent is out, I should stop too"): `$6d12 < $6d92` sets `$6d2d`
+(p2 round_over) + `$cac` (p1 down); `$6d12 > $6d92` sets `$cad` (p1
+round_over) + `$6d2c` (p2 down); equal does nothing.
+
+A raw scan for writers of `$6d12`/`$6d92` finds a BCD-style
+incrementer-with-carry at `$9938` (mirrored at `$9956` for player 2): `addq.w
+#1` to a second word at `+$74`, then a predecrementing byte-walk back toward
+`+$72` that clears each digit and carries into the one above it once it hits
+`$a` (10). That shape -- a display-ready multi-digit counter with carry --
+reads as a SCORE, but nothing on hand ties it to a specific event: no
+fixture's `player+$72` ever moves, so this is named by its writer's shape,
+not by an observed increment. `scenarios/round_watch.yaml` (new, unrun) is
+built to watch it live across exactly this kind of exchange.
+
+### The round-over exit, and where the FDC boundary actually sits
+
+`$97ea`: `clr.b $6c4a` (the "round active" flag `$9658` set in the init
+chain), a `jsr`, `clr.b $6c4a` again, one more VBL wait, then `rts` back to
+its caller. `reports/part10-report.md` found the round's end without its
+beginning; this part finds the beginning (`$9628`-`$96b6`) and the counter
+that triggers the end (`$6c83` against `$6ca0`'s threshold), but `$97ea`'s
+own caller -- whatever loads the next round or the match summary off floppy --
+is outside every snapshot this project has taken. That caller is where the
+FDC boundary actually sits, one level up from anything disassembled in this
+pass.
+
+### What is implemented, and what stays decoded-only
+
+Only the four counters' wall-transfer writer (`round.rs`) is implemented and
+gated. Round init, the round-over threshold and win/loss are decoded but not
+modelled: no committed fixture crosses a round transition (the oracle cannot,
+by design -- KNOWN_ISSUES -- and no live Hatari capture in this project's
+history brackets one either), so there is nothing on hand to measure a
+`GameState` model against. `docs/state-schema.md`'s round/score/win row stays
+`waived:discr-st8`, reworded to name the addresses now known rather than the
+two it used to cite. A future fixture needs a live Hatari watch armed on
+`$6c83`/`$6ca0`/`$6d12`/`$6d92`/`$6c4a` from mid-round through the `$97ea`
+exit and into whatever comes next; `scenarios/round_watch.yaml` is the
+scaffold, and `scripts/ramdiff.py` on a `dump: pre`/`dump: post` pair
+bracketing the transition would catch every field it writes, not just the
+ones this pass already guessed.
+
+## The animation cell format, and killing three feeds (Part 12, discr-rxx.1)
+
+Part 10h decoded the *shape* of an animation sequence -- six-byte cells, a
+four-byte frame pointer and a two-byte hold, ending in a zero longword -- and
+named the eleven the fixtures touch by their loading site. What was still
+missing was the frame pointer's OWN target: the 20-byte block `$f1ca` copies
+out of it every frame, which is where `player+$1a` (`x_delta`) and
+`player+$1c`..`+$22` (`hit_box`) actually live. This part reads that block
+directly out of `discram.bin`, reconstructs `anim_cursor`/`x_delta`/`hit_box`
+in `disc-core` from the tables alone, and measures it against all six
+committed fixtures.
+
+### The frame block: two fields at fixed offsets, the rest sprite data
+
+A cell's first four bytes ARE a pointer (already established); dereferencing
+it lands on the frame block `$f1ca` copies 20 bytes of. Reading every cell of
+every sequence `player.rs` already carries a table for (20 sequences, all 20
+already cross-validated below) and comparing against the one measured value
+Part 10d named -- player 1's standing hit box, `[-3, 11, -20, 18]` -- pins two
+of those 20 bytes exactly:
+
+```
+frame block + $00  ten bytes of sprite/graphics data this crate does not carry
+frame block + $0a  word    x_delta        (player+$1a)
+frame block + $0c  word    hit_box[0]     (player+$1c)
+frame block + $0e  word    hit_box[1]     (player+$1e)
+frame block + $10  word    hit_box[2]     (player+$20)
+frame block + $12  word    hit_box[3]     (player+$22)
+```
+
+Confirmed three ways, none of them a guess:
+
+1. **The holds fall out right.** Extracting every cell of all 20 sequences
+   directly from `discram.bin` -- `(ptr, hold)` pairs read as a raw 6-byte
+   struct, no disassembly -- and comparing the `hold` half against the
+   `holds` arrays `player.rs` already carries (hand-transcribed in Part 10h,
+   independently, from the handler disassembly) matches on all 20/20 with
+   zero discrepancies. The cell format was derived purely from the frame
+   BLOCK's own layout; the holds check is a completely independent
+   cross-validation, and it holds.
+2. **A sixth sequence, never catalogued, falls out of the same reader with
+   the same shape.** `golden.ndjson` frame 0 seeds player 2's cursor at
+   `$44b6` -- inside no table Part 10h named. Walking backward by 6-byte
+   cells from it lands on a table base at `$449e`: six cells, hold 4 each,
+   terminating cleanly at `$44c2`. Nothing about the reader was tuned to find
+   this; it is what the SAME extraction produces when pointed at an address
+   the fixtures merely happen to start inside.
+3. **The one measured value matches exactly at the one cell it should.**
+   Player 1's standing hit box, `[-3, 11, -20, 18]` (Part 10d), is cell 0 of
+   BOTH idle tables (`$2c78`/`$468c`) under this offset scheme. Player 1's
+   first frame of being knocked down, `[-4, 11, -19, 16]` (also Part 10d), is
+   cell 0 of `ANIM_STRUCK_DOWN`/`ANIM_P2_STRUCK_DOWN` under the same scheme.
+   Both hit on the first try.
+
+`crates/disc-core/src/player.rs` embeds all 20 sequences' frame data as a
+`Frame { x_delta, hit_box }` array parallel to each `Anim`'s `holds`, one
+`const FRAMES_*` per sequence with the ST addresses of every frame block
+cited in a doc comment -- the same convention the crate already uses for
+other extracted tables.
+
+### The cursor rule: `base + 6*cell`, and the tail's OWN two endings
+
+`anim_cursor` (`player+$3a`) is not a separate piece of state to track --
+it is `anim_base + 6*anim_cell`, recomputed inside `anim_tick` every time the
+cell advances. The interesting part is not the arithmetic; it is exactly
+WHEN a cell's frame data is visible, which turned out to have two different
+answers depending on how the NEXT sequence gets entered.
+
+**A natural mid-sequence advance is one full tick behind its own cursor.**
+`golden.ndjson` frame 7: `anim_cursor` already reads `$2c96` (cell 5), but
+`hit_box` still reads cell 4's `[-3, 11, -20, 18]`, not cell 5's `[-4, 11,
+-20, 18]` -- catching up only at frame 8. `$f1ca`'s copy and the cursor
+advance are both in the SAME tail invocation, but the copy runs first, using
+the cell that is ABOUT to be superseded; the advance that follows updates the
+cursor for next time, not the data just copied. `anim_tick` already does
+this in the right order (copy, then decrement-and-maybe-advance), which is
+why this part changed nothing about it.
+
+**A generic fallback -- `$f202`'s own idle reload, reached when a sequence's
+ending has nowhere more specific to hand off to -- reuses that SAME copy
+rather than running a second one, but a distinct fresh dispatch (a NEW state
+committing to its own sequence) gets a second, immediate tick.** Both halves
+are measured, not assumed, and they read almost identically from `hit_box`
+alone but differ once cross-checked against `anim_cursor`:
+
+* `golden.ndjson` frame 71: a struck-down player's sequence just ended,
+  landing on state 0. `anim_cursor` ALREADY reads `$2c78` (idle's base), but
+  `hit_box` still reads `[-6, 11, -18, 16]` -- struck-down's stale cell, not
+  idle's `[-3, 11, -20, 18]`. `struck_down`'s ending (`enter_anim(idle)`, no
+  second tick) matches this exactly.
+* `golden.ndjson` frame 14: the turn transient's sequence ends into WALKING
+  instead. `hit_box` reads `[0, 11, -19, 17]` on that SAME tick -- `$2a8a`
+  cell 0's real data, not the turn's stale `[-3, 11, -20, 18]`. Landing on a
+  walk gets `enter_anim` FOLLOWED BY an explicit `anim_tick`, the same shape
+  `enter_turn`'s own entry already used.
+
+The hold count carries the same asymmetry, and it is the more consequential
+one: a fallback that does NOT re-tick still consumes one unit of the fresh
+sequence's hold immediately (`enter_anim_fallback`, used only for turn's
+landing-on-idle arm) -- `golden.ndjson`'s second idle stretch (frames 32-37)
+shows cell 0's 6-hold cell for five samples, not six. A fallback OR a natural
+entry that does not go through this specific path (struck-down/up's own
+ending, idle's own 16-cell wraparound, `run_out`'s ending) shows the FULL
+hold: `golden.ndjson` frames 71-77 and `tile_damage.ndjson` frames 157-163
+each show six full samples of idle's cell 0. Both are measured against
+distinguishable evidence (the two idle cells, `[-3,...]` vs a table whose
+cell 0 and cell 1 differ), not inferred from one ambiguous case.
+
+### Player 1: 100%, nothing waived, across every established fixture boundary
+
+`crates/disc-core/tests/anim_measure.rs` -- a standalone measurement, written
+before `main.rs` was free to edit, that copies (not calls into)
+`disc-tools`'s own seed/feed/passes logic so the numbers below carry the same
+weight as `tracecheck`'s -- drives all six fixtures with `anim_cursor`,
+`x_delta` and `hit_box` UNFED for player 1, comparing the reconstruction
+against the trace every tick:
+
+| fixture | ticks reconstructed | player 1 agreement |
+|---|---|---|
+| `golden.ndjson` | 99/99 (whole fixture) | 3/3 fields, 100% |
+| `tile_damage.ndjson` | 214/214 (whole fixture) | 3/3 fields, 100% |
+| `p1_walk.ndjson` | 274/274 (whole fixture) | 3/3 fields, 100% |
+| `handover.ndjson` | 53 (an unrelated `discs[1].world_x` gap) | 100% up to there |
+| `bonus.ndjson` | 64 (an unrelated `discs[1].world_x` gap) | 100% up to there |
+| `farbank.ndjson` | 35 (an unrelated `tiles[7].hp` gap, discr-dc0) | 100% up to there |
+
+Every one of the three fixtures with an established "nothing waived, nothing
+resynced" boundary (golden 99, tile_damage 214, p1_walk 274) reproduces that
+WHOLE boundary with player 1's animation cursor, X delta and hit box
+reconstructed rather than fed -- zero player-1 mismatches on any of the three
+fields, on any tick, in any of the three. The other three fixtures' own
+established boundaries are gated by fields this bead does not touch (disc
+physics, the far bank's bit-7 tile gap); this reconstruction runs cleanly
+through all of them too.
+
+One seeding gap this measurement needed, orthogonal to the format itself:
+`disc-tools`' `Frame::seed` hardcodes `anim_cell`/`anim_hold` to 0 at frame 0,
+which was harmless while `anim_cursor` was fed every tick regardless but is
+wrong whenever frame 0 does not catch player 1's idle sequence at its very
+first cell -- `golden.ndjson` frame 0 sits on `ANIM_P1_IDLE` cell 4 (one of
+the 48-hold pauses) with only 7 ticks left on it. `anim_cursor` DOES have a
+column, and the true remaining hold is recoverable by counting how many of
+the FOLLOWING frames still show the same cursor (the whole trace is on disk
+already, so this is available at seed time). `disc-tools`' new `seed_from`
+helper does this once, at the one call site that seeds a replay's starting
+state; every other `.seed()` call (feeding, resyncing, single-frame
+comparisons) is untouched.
+
+### Player 2 stays fed, and why that is a state-machine gap, not a format one
+
+Player 2's copies of all three fields stay fed. Two independent facts, not
+one waiver of convenience:
+
+* **Its own sequences are not fully catalogued.** The `$449e` table found
+  above is one that surfaces within the first few ticks of `golden.ndjson`
+  alone; player 2's idle/walk cycle is not the same well-understood territory
+  player 1's is (`discr-75o`/`discr-b6x`'s existing scope, not this bead's).
+* **The serve gate reads player 2's `anim_cursor` directly**
+  (`disc::THROW_STATES`, `crate::player::step`'s doc). A wrong reconstructed
+  value there would desync the serve trigger and corrupt the disc simulation
+  for BOTH players -- observed directly while building this: reconstructing
+  player 2 unconditionally regressed the disc loop (`discs[0].world_x`
+  diverging inside what used to be golden's clean 99-tick run) the moment
+  player 2's own uncatalogued sequences produced a wrong cursor.
+
+`crate::player::step` is now a thin wrapper: it snapshots player 2's
+`anim_cursor`/`x_delta`/`hit_box`, runs the real step (which may still touch
+them internally, exactly as it could before this bead), and restores the
+snapshot for player 2 only. Player 1 passes through untouched. This is what
+makes "reconstruct player 1, keep player 2 fed" a real, enforced split rather
+than a hope that nothing internal happens to touch player 2's copies.
+
+### The three schema rows, split by player
+
+`docs/state-schema.md`'s `players[n].anim_cursor`/`hit_box`/`x_delta` --
+generic rows covering both players uniformly under `discr-75o` -- are gone.
+In their place: `players[0].anim_cursor`/`x_delta`/`hit_box`, three new rows
+in the Compared table (25 compared fields now, up from 22); and player 2's
+copies folded into the existing `players[1].*` blanket row (`waived:
+discr-b6x`, unchanged bead, now 8 fields instead of 5) -- the same shape
+`disc_cap` used when discr-st8 gave it a writer for player 1 only. `checks()`
+in `main.rs` only pushes the three new fields for player 0: a fed field can
+never appear there (it would just compare against the echo of last tick's
+own value `feed_disc_inputs` set moments before), which is why
+`throw_dir_kind`/`throw_damage`/`reach` have no row either, for either
+player.
+
+Full format spec, per-fixture numbers and the feed-retirement patch:
+`reports/part12-anim.md`.

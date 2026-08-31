@@ -115,6 +115,30 @@ BONUS = "tests/fixtures/bonus.ndjson"
 BONUS_MIN_AGREE = "150"
 BONUS_FULL_MIN_AGREE = "22"
 
+# The sixth fixture, minted in Part 12 (tests/fixtures/farbank.provenance.md):
+# discr-ovl.3's own capture, confirming the far bank ($7596, tiles_far) is
+# read correctly and compares clean against a live trace -- the first fixture
+# to exercise `tiles_far[n].*` as compared rows rather than left at their
+# frame-0 seed with nothing checking them.
+#
+# 34 ticks, both bare and --skip-waived (this run's player 2 rows happen not
+# to diverge before it either): a bonus pickup at frame 35 flips bit 7 on
+# BOTH banks' cell 7 in lockstep (the far bank's own bonus placer, `$9b32`,
+# writes the same slot as the near bank's `$9b28` -- docs/disc-notes.md,
+# "$9b28.../$9b32..."), and disc-core has no model for bit 7 on EITHER bank
+# (discr-dc0/ovl.4's gap), so it diverges there -- reported via the
+# pre-existing `tiles[7].hp` row since schema order checks the near bank
+# first, not because `tiles_far` disagreed any earlier.
+#
+# What this fixture does NOT reach: a genuine far-wall DAMAGE hit (`$a5d6`'s
+# arm, gated on a disc already owned by real player 1 crossing $7596's wall a
+# SECOND time). Attempted and not cheap -- see farbank.provenance.md for the
+# recipe and what was tried; `disc::step`'s far-wall branch is modelled from
+# the disassembly regardless (mirrors discr-ovl.1's player-1 racket path:
+# code-correct, fixture-unexercised).
+FARBANK = "tests/fixtures/farbank.ndjson"
+FARBANK_MIN_AGREE = "34"
+
 # The repository's first three commits predate conventional commits (`bd init`
 # is not one of them), so cog is pointed at the range after them rather than
 # being told to ignore a rule. Everything since is compliant.
@@ -157,7 +181,7 @@ depends = ["oracle"]
 run = "./scripts/oracle_check.sh"
 
 [tasks.core-check]
-description = "The phase gate: fmt + clippy + tests + five tracecheck runs over three fixtures"
+description = "The phase gate: fmt + clippy + tests + ten tracecheck runs over six fixtures"
 run = [
   "cargo fmt --check",
   "cargo clippy --all-targets -- -D warnings",
@@ -172,6 +196,8 @@ run = [
 
   "cargo run -q -p disc-tools --bin tracecheck -- $BONUS --skip-waived --min-agree $BONUS_MIN_AGREE",
   "cargo run -q -p disc-tools --bin tracecheck -- $BONUS --min-agree $BONUS_FULL_MIN_AGREE",
+
+  "cargo run -q -p disc-tools --bin tracecheck -- $FARBANK --min-agree $FARBANK_MIN_AGREE",
 ]
 
 [tasks.tracecheck]
@@ -183,6 +209,8 @@ run = [
   "cargo run -q -p disc-tools --bin tracecheck -- $HANDOVER --skip-waived",
 
   "cargo run -q -p disc-tools --bin tracecheck -- $BONUS --skip-waived",
+
+  "cargo run -q -p disc-tools --bin tracecheck -- $FARBANK --skip-waived",
 ]
 
 [tasks.tracecheck-deep]

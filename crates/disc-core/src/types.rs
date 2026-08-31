@@ -181,8 +181,15 @@ pub struct Player {
     /// `$c104 cmpi.l #$45da,$6d5a` for state 16. It is the one frame of the
     /// throw animation on which the disc leaves the hand.
     ///
-    /// Driven by the animation engine (`$f1c4`), which this crate does not
-    /// model, so it is a fed input. `// UNKNOWN: see bd discr-75o`.
+    /// `anim_base + 6*anim_cell`, recomputed by `crate::player::anim_tick`
+    /// every time the cell advances (Part 12, discr-rxx.1) -- for PLAYER 1.
+    /// Player 2's copy stays fed: its own idle/walk sequences are not fully
+    /// catalogued and this field gates the serve directly, so a wrong
+    /// reconstruction here would desync the throw and corrupt the disc
+    /// simulation for both players. `crate::player::step`'s snapshot/restore
+    /// wrapper keeps player 2 untouched by the reconstruction regardless.
+    /// `docs/disc-notes.md`, "The animation cell format, and killing three
+    /// feeds".
     pub anim_cursor: u32,
     /// ST `player+$6e` (`$6d0e` / `$6d8e`): the `dir_kind` this player's throws
     /// carry, copied into `disc+$0a` at `$a9b4`.
@@ -243,9 +250,10 @@ pub struct Player {
     /// words of this player's hit box, in that order.
     ///
     /// **Copied out of the current animation cell's frame block every frame**
-    /// by `$f1ca`, so the box changes shape as the sprite does. This crate does
-    /// not carry the frame blocks, so it is a fed input.
-    /// `// UNKNOWN: see bd discr-75o`.
+    /// by `$f1ca`, so the box changes shape as the sprite does. `crate::player`
+    /// now carries the frame block data (Part 12, discr-rxx.1) and populates
+    /// this in `anim_tick` -- for PLAYER 1. Player 2's copy stays fed (see
+    /// [`Player::anim_cursor`]'s doc for why).
     ///
     /// The hit test reads them as `x in [px - 8 + b0, px - 8 + b0 + 8 + b1]`
     /// and `y in [99 + b2, 99 + b2 + b3]` (`$110fc`-`$1112c`).
@@ -282,8 +290,9 @@ pub struct Player {
     /// the idle path consumes it: `$f110 move.w $6cba,d0; $f114 clr.w $6cba;
     /// $f118 add.w d0,$6ca2`, mirrored at `$abbe`-`$abc6`. So some movement
     /// lives in the sprite tables rather than in code, and it is the only reason
-    /// a standing player's `world_x` moves at all. A fed input, in the same
-    /// category as the hit box. `// UNKNOWN: see bd discr-75o`.
+    /// a standing player's `world_x` moves at all. Populated by `anim_tick` for
+    /// PLAYER 1 (Part 12, discr-rxx.1); player 2's copy stays fed, same as the
+    /// hit box (see [`Player::anim_cursor`]'s doc).
     pub x_delta: i16,
     /// ST `player+$08` (`$6ca8` / `$6d28`): which way this player last threw.
     ///
