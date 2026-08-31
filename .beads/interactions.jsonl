@@ -97,3 +97,4 @@
 {"id":"int-90f74f70f5bc2035ad59a6b4448bce4e","kind":"field_change","created_at":"2026-08-31T07:09:20.36467939Z","actor":"fs","issue_id":"discr-rxx.4","extra":{"field":"assignee","new_value":"fs","old_value":""}}
 {"id":"int-92247e4b20aea32e893cd3511ce6c648","kind":"field_change","created_at":"2026-08-31T07:09:39.977943277Z","actor":"unpack","issue_id":"discr-rxx.5","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-d1dfd6d05c1e53324f24a42afb21be85","kind":"field_change","created_at":"2026-08-31T07:09:39.97808675Z","actor":"unpack","issue_id":"discr-rxx.5","extra":{"field":"assignee","new_value":"unpack","old_value":""}}
+{"id":"int-7f2280fc29edc5fd80f36857f4a8ede9","kind":"field_change","created_at":"2026-08-31T07:24:36.963800493Z","actor":"fs","issue_id":"discr-rxx.4","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
