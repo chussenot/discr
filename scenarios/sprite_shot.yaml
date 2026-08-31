@@ -1,0 +1,22 @@
+name: sprite_shot
+mode: training
+# discr-rxx.7 (sprites): ground truth for crates/disc-app/src/gfx.rs's pixel
+# decode -- a reference screenshot of a live match (player pose + the
+# arena's DALLES01 wall-icon boxes) alongside the live 16-colour palette,
+# read straight off hardware registers rather than assumed. Resumes from the
+# cached tmp/match_training.sav savestate, so no cold boot is needed.
+#
+# `range` below is scoped to the palette registers, not game state -- $FF8240
+# is outside the usual $0-$8000 state window `collect.py`'s other scenarios
+# dump, so this scenario's own `dump` step means something different from
+# theirs: 16 words (32 bytes) of ST hardware palette, standard 9-bit `0RGB`,
+# decoded by crates/disc-app/src/gfx.rs::st_color_to_rgb.
+#
+# Run: python3 scripts/collect.py --scenario scenarios/sprite_shot.yaml
+# Output: tmp/shots-sprite_shot/reference.bmp (screenshot),
+#         dumps/sprite_shot/palette.bin (32 bytes, $FF8240..$FF8260)
+range: [0xff8240, 0xff8260]
+settle: 30
+steps:
+  - {screenshot: reference}
+  - {dump: palette}

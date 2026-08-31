@@ -35,6 +35,7 @@
 
 mod ai_fallback;
 mod audio;
+mod gfx;
 mod hud;
 mod round;
 
@@ -45,6 +46,7 @@ use disc_core::{DirBits, Event, GameState, Input, TILE_TYPE_DESTROYED, tile};
 use macroquad::prelude::*;
 
 use audio::{Cue, Sfx};
+use gfx::{TileAtlas, TileShape};
 use round::{Match, Mode, Phase};
 
 /// One PAL VBL. ST video is 50 Hz and `$8198` runs once per frame.
@@ -209,6 +211,9 @@ struct MatchState {
     p2_serve_cooldown: u16,
     /// The original `.SPL` samples, silent by default -- see [`Self::with_sfx`].
     sfx: Sfx,
+    /// The original DALLES01 wall-icon tile atlas, unloaded by default --
+    /// see [`Self::with_gfx`].
+    gfx: TileAtlas,
 }
 
 /// Ticks between [`MatchState::serve_workaround`] attempts: a pacing choice
@@ -229,6 +234,7 @@ impl MatchState {
             paused: false,
             p2_serve_cooldown: 0,
             sfx: Sfx::default(),
+            gfx: TileAtlas::default(),
         }
     }
 
@@ -238,6 +244,15 @@ impl MatchState {
     /// working unchanged -- see [`Sfx::default`]'s doc: silent, not missing.
     fn with_sfx(mut self, sfx: Sfx) -> Self {
         self.sfx = sfx;
+        self
+    }
+
+    /// Attach the loaded original tile atlas. Same builder shape as
+    /// [`Self::with_sfx`] and the same reason: every `#[cfg(test)]` call
+    /// site keeps working against [`TileAtlas::default`]'s "unloaded, fall
+    /// back to placeholder shapes" state.
+    fn with_gfx(mut self, gfx: TileAtlas) -> Self {
+        self.gfx = gfx;
         self
     }
 
@@ -424,9 +439,23 @@ fn lerp(from: i16, to: i16, t: f32) -> f32 {
     from + (to - from) * t
 }
 
+/// Chooses which of DALLES01's six wall-icon shapes (`gfx::TileShape`) to
+/// display for a tile at `hp`. **A display heuristic, not a decoded fact**:
+/// `disc-core::tile`'s own `damage` doc does not expose an hp-to-shape
+/// formula, and this crate has not live-verified which ST code site reads
+/// DALLES01's shape index at draw time (`crates/disc-app/src/gfx.rs`'s
+/// module doc). The manual describes a wear cycle across exactly these six
+/// shapes as a tile takes damage, so cycling through them as `hp` drops is a
+/// reasonable stand-in, not a claim about the game's own selection logic.
+fn tile_shape_for_hp(hp: i16) -> TileShape {
+    TileShape::ALL[hp.clamp(0, 5) as usize]
+}
+
 /// Draw one 8-tile bank (see [`BANK_REAL_CELLS`]) at world-space `top`,
 /// `height` tall, using `collapse` to show the delayed copy's own crumble
-/// rather than drawing a confusing second grid for it.
+/// rather than drawing a confusing second grid for it. `gfx` is the original
+/// tile atlas -- `None` textures (unloaded, see [`TileAtlas::default`])
+/// fall back to the flat-rectangle rendering this crate always had.
 fn draw_bank(
     tiles: &[disc_core::Tile; disc_core::TILE_CELLS],
     collapse: &[Option<tile::Collapse>; tile::COLLAPSE_SLOTS],
@@ -434,6 +463,7 @@ fn draw_bank(
     top: f32,
     height: f32,
     frame: u32,
+    gfx: &TileAtlas,
 ) {
     let cell_w = ARENA_W * v.s / BANK_COLS as f32;
     let cell_h = height * v.s / BANK_ROWS as f32;
@@ -493,13 +523,28 @@ fn draw_bank(
         let hp = t.hp & 0x7f;
         let wear = (f32::from(hp).max(0.0) / 8.0).min(1.0);
         let base = if t.tile_type == 1 { 0.35 } else { 0.20 };
-        draw_rectangle(
-            x + pad,
-            y + pad,
-            cell_w - 2.0 * pad,
-            cell_h - 2.0 * pad,
-            Color::new(base, 0.30 + 0.45 * wear, 0.55, 1.0),
-        );
+        match gfx.texture(tile_shape_for_hp(hp)) {
+            // The real DALLES01 wall-icon tile, stretched to the cell.
+            Some(tex) => draw_texture_ex(
+                tex,
+                x + pad,
+                y + pad,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(cell_w - 2.0 * pad, cell_h - 2.0 * pad)),
+                    ..Default::default()
+                },
+            ),
+            // No atlas loaded (dev fallback source unavailable): the
+            // original flat wear-shaded rectangle.
+            None => draw_rectangle(
+                x + pad,
+                y + pad,
+                cell_w - 2.0 * pad,
+                cell_h - 2.0 * pad,
+                Color::new(base, 0.30 + 0.45 * wear, 0.55, 1.0),
+            ),
+        }
         if bonus {
             draw_circle(
                 x + cell_w * 0.5,
@@ -542,8 +587,24 @@ fn draw_match(ms: &MatchState, alpha: f32) {
     let near_h = ARENA_H * 0.28;
     let near_top = ARENA_H - near_h;
 
-    draw_bank(&cur.tiles_far, &cur.collapse, v, far_top, far_h, cur.frame);
-    draw_bank(&cur.tiles, &cur.collapse, v, near_top, near_h, cur.frame);
+    draw_bank(
+        &cur.tiles_far,
+        &cur.collapse,
+        v,
+        far_top,
+        far_h,
+        cur.frame,
+        &ms.gfx,
+    );
+    draw_bank(
+        &cur.tiles,
+        &cur.collapse,
+        v,
+        near_top,
+        near_h,
+        cur.frame,
+        &ms.gfx,
+    );
 
     // The two players, interpolated between ticks. Player 1 (near, index 0)
     // stands on the near platform, player 2 (far, index 1) on the far one.
@@ -733,6 +794,12 @@ async fn main() {
     // `audio`'s module doc). Cheap to clone into every `MatchState` since
     // `macroquad::audio::Sound` is itself an `Arc` internally.
     let sfx = audio::load().await;
+    // Same "load once, clone cheaply" shape as `sfx` above -- see
+    // `TileAtlas`'s own doc. `TileAtlas::load` needs a live graphics
+    // context (this line runs after `#[macroquad::main]` has made one), and
+    // falls back to `TileAtlas::default()` (placeholder rendering) on its
+    // own if no depack source is available.
+    let gfx = TileAtlas::load();
 
     let mut screen = Screen::Menu {
         selected: Mode::Training,
@@ -750,7 +817,9 @@ async fn main() {
                 }
                 if is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) {
                     next_screen = Some(Screen::Match(Box::new(
-                        MatchState::new(*selected).with_sfx(sfx.clone()),
+                        MatchState::new(*selected)
+                            .with_sfx(sfx.clone())
+                            .with_gfx(gfx.clone()),
                     )));
                 }
                 draw_menu(*selected);
@@ -763,7 +832,9 @@ async fn main() {
                     });
                 } else if is_key_pressed(KeyCode::R) {
                     next_screen = Some(Screen::Match(Box::new(
-                        MatchState::new(ms.m.mode).with_sfx(sfx.clone()),
+                        MatchState::new(ms.m.mode)
+                            .with_sfx(sfx.clone())
+                            .with_gfx(gfx.clone()),
                     )));
                 } else {
                     if is_key_pressed(KeyCode::P) {
