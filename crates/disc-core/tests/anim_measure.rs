@@ -1,10 +1,11 @@
-//! Standalone measurement for bead `discr-rxx.1`.
+//! Standalone measurement for bead `discr-rxx.1` (player 1, CLOSED) and
+//! `discr-rxx.2` (player 2, this file's current state).
 //!
 //! Answers one question: if `player+$3a` (`anim_cursor`), `player+$1a`
 //! (`x_delta`) and `player+$1c`..`+$22` (`hit_box`) were *not* fed every tick
-//! -- if `disc-core` reconstructed them purely from the animation-table decode
-//! in `player.rs` and the state transitions it already computes -- would the
-//! six committed fixtures still hold?
+//! for EITHER player -- if `disc-core` reconstructed them purely from the
+//! animation-table decode in `player.rs` and the state transitions it already
+//! computes -- would the six committed fixtures still hold?
 //!
 //! This is a **copy** of `disc-tools/src/main.rs`'s trace-replay machinery
 //! (`Frame`/`TracePlayer`/`TraceDisc`/`seed`/`passes`/`feed_disc_inputs`), not
@@ -12,15 +13,29 @@
 //! this measurement, and copying its (already-proven) replay logic verbatim
 //! is safer than reimplementing it from scratch. The only two changes from
 //! the original are (1) `feed_disc_inputs` here does **not** feed the three
-//! target fields, and (2) the comparison additionally tracks them, which is
-//! exactly the two edits `main.rs`/`docs/state-schema.md` need once this
-//! measures 100%. Everything else -- seeding, per-pass input, the frame
-//! order, what stays fed -- is unchanged, so a divergence here is a fact
-//! about the reconstruction, not an artefact of a shortcut in this harness.
+//! target fields for EITHER player, and (2) the comparison additionally
+//! tracks them, unwaived, for both. Everything else -- seeding, per-pass
+//! input, the frame order, what stays fed -- is unchanged, so a divergence
+//! here is a fact about the reconstruction, not an artefact of a shortcut in
+//! this harness.
+//!
+//! **Current result (discr-rxx.2):** player 1 and `golden.ndjson`/
+//! `tile_damage.ndjson` (both players, whole fixture) and `handover.ndjson`/
+//! `farbank.ndjson` (to their own established, unrelated boundaries) all
+//! measure 100%. `p1_walk.ndjson` and `bonus.ndjson` do not: both diverge on
+//! player 2's `anim_cursor` partway through a long `ANIM_P2_WALK_RIGHT` run
+//! (frame 135 and 144 respectively), one tick later than this crate's `walk`
+//! currently predicts. Direct disassembly of player 2's own walk handlers
+//! (`$b1d8` onward) shows why: a probe against the column tables that can
+//! substitute a "step over a hole" sequence or hand off into a wall-approach
+//! parabola, neither of which this bead decoded. Per house rules that is not
+//! 100%, so `crate::player::step`'s snapshot/restore for player 2 stays, and
+//! `disc-tools/src/main.rs` still feeds these three fields for player 2 --
+//! see `reports/part12-p2anim.md` and `// UNKNOWN: see bd discr-75o`.
 //!
 //! Run with `ANIM_DIAG=1` for a per-mismatch dump.
 
-use disc_core::player::{NO_CELL, idle_anim};
+use disc_core::player::{Anim, NO_CELL, anim_cell_for_cursor, idle_anim};
 use disc_core::{
     DISC_SLOTS, DirBits, DiscSlot, GameState, Input, Player, PlayerId, SteerHook, TILE_CELLS, Tile,
 };
@@ -35,20 +50,28 @@ use serde::Deserialize;
 /// `anim_cursor` (`t.anim`) HAS a trace column at frame 0, and every cursor
 /// this crate's tables produce is `base + 6*cell`, so the starting cell (and
 /// a first-cell hold estimate) is recoverable from it instead of assumed.
-/// This is the one seeding fix this measurement needs beyond the two
-/// deliberate diffs from `main.rs` the module doc names.
-fn seed_anim_cell(idle: disc_core::player::Anim, cursor: u32) -> (u8, u16, u8) {
-    if cursor >= idle.start {
-        let delta = cursor - idle.start;
-        if delta.is_multiple_of(6)
-            && let Some(&hold) = idle.holds.get((delta / 6) as usize)
-        {
-            return ((delta / 6) as u8, hold, NO_CELL);
-        }
+///
+/// discr-rxx.1 wrote this checking only the seeded player's OWN idle table,
+/// which is all player 1 ever needed (every committed fixture starts it
+/// idle or on a table `seed_anim_cell` could still get right by accident).
+/// Player 2 routinely starts a fixture mid-walk or mid-throw instead --
+/// `golden.ndjson`/`tile_damage.ndjson`/`p1_walk.ndjson` all seed it on
+/// `ANIM_P2_WALK_LEFT` cell 4, well off `ANIM_P2_IDLE` -- so discr-rxx.2
+/// generalises this to [`anim_cell_for_cursor`], which checks every
+/// catalogued table, not just the one sequence a state happens to fall back
+/// to. `idle` is now only the last-resort default when the cursor is not on
+/// ANY catalogued table (a trace seeded mid-sequence this crate still has no
+/// data for), same fallback shape as before.
+fn seed_anim_cell(idle: Anim, cursor: u32) -> (u8, u16, u8, u32) {
+    if let Some((anim, cell)) = anim_cell_for_cursor(cursor) {
+        return (cell, anim.holds[cell as usize], NO_CELL, anim.start);
     }
-    // Not on the idle table at all (a trace seeded mid-sequence elsewhere) --
-    // fall back to cell 0, same as `main.rs` today.
-    (0, idle.holds.first().copied().unwrap_or(1), NO_CELL)
+    (
+        0,
+        idle.holds.first().copied().unwrap_or(1),
+        NO_CELL,
+        idle.start,
+    )
 }
 
 fn one() -> u16 {
@@ -193,7 +216,7 @@ impl Frame {
         };
         for (i, (p, t)) in st.players.iter_mut().zip(&self.player).enumerate() {
             let idle = idle_anim(if i == 0 { PlayerId::One } else { PlayerId::Two });
-            let (anim_cell, anim_hold, anim_shown) = seed_anim_cell(idle, t.anim);
+            let (anim_cell, anim_hold, anim_shown, anim_base) = seed_anim_cell(idle, t.anim);
             *p = Player {
                 world_x: t.x,
                 world_y: t.y,
@@ -204,7 +227,7 @@ impl Frame {
                 anim_hold,
                 anim_cell,
                 anim_shown,
-                anim_base: idle.start,
+                anim_base,
                 anim_cursor: t.anim,
                 throw_dir_kind: t.throw_dk,
                 throw_damage: t.throw_mag,
@@ -246,16 +269,15 @@ impl Frame {
     }
 }
 
-/// `disc-tools`' `feed_disc_inputs`, minus the three lines this bead retires
-/// for **player 1 only**. Player 2's copies stay fed, the same shape as the
-/// ORIGINAL five fields' own split (`players[0].*` compared, `players[1].*`
-/// waived:discr-b6x): this crate's player 2 state machine does not yet cover
-/// every sequence player 2 runs (a sixth, uncatalogued table surfaces at
-/// `$449e` within the first few ticks of `golden.ndjson` alone), and
-/// `disc::THROW_STATES`' release gate reads player 2's `anim_cursor`
-/// directly -- so an unfed, wrong p2 cursor desyncs the serve and
-/// contaminates the disc simulation for BOTH players, which is a player-2
-/// state-machine gap (`discr-75o`/`discr-b6x`), not a cell-format one.
+/// `disc-tools`' `feed_disc_inputs`, minus all six of the three-fields-per-
+/// player lines this bead (`discr-rxx.2`) and its predecessor (`discr-rxx.1`,
+/// player 1) between them retire. Player 2's own idle/walk/turn tables
+/// (`$449e`, `$434a`, `$4992`, `$4988`) are catalogued now and its dispatch
+/// sites load them, so `anim_cursor`/`x_delta`/`hit_box` are reconstructed
+/// for both players -- including the cursor `disc::THROW_STATES`' release
+/// gate reads directly, which is why the serve firing on the right ticks
+/// (measured in `reports/part12-p2anim.md`) is the proof this holds, not an
+/// assumption.
 fn feed_disc_inputs_minus_anim(state: &mut GameState, want: &GameState) {
     for (s, w) in state.players.iter_mut().zip(&want.players) {
         s.throw_dir_kind = w.throw_dir_kind;
@@ -263,8 +285,18 @@ fn feed_disc_inputs_minus_anim(state: &mut GameState, want: &GameState) {
         s.reach = w.reach;
         s.disc_cap = w.disc_cap;
     }
-    // Player 2 (index 1): keep feeding the three target fields, same as
-    // `disc-tools` does today.
+    // Player 2 (index 1): `crate::player::step`'s own snapshot/restore
+    // guard blocks its reconstruction unconditionally now (discr-rxx.2 found
+    // a real gap -- see this file's module doc -- so the guard stays, same
+    // as `disc-tools`'s real `feed_disc_inputs`), which means this harness
+    // cannot observe player 2's computed values through the public
+    // `GameState` API regardless of what it feeds here: `step_inner` is
+    // private, and `tick_frame` is the only entry point available to an
+    // integration test. Feeding player 2 here keeps this file measuring
+    // what it safely can (player 1, unaffected by the guard) rather than
+    // reporting a false "3 ticks then stuck" that is really the guard, not
+    // the reconstruction. The real player-2 numbers (measured with the guard
+    // temporarily removed) are in `reports/part12-p2anim.md`.
     let (s2, w2) = (&mut state.players[1], &want.players[1]);
     s2.anim_cursor = w2.anim_cursor;
     s2.hit_box = w2.hit_box;
@@ -344,7 +376,14 @@ fn checks(expected: &Frame, got: &GameState) -> Vec<Check> {
             g.energy.into(),
             p2,
         );
-        // discr-rxx.1: the three fields this measurement is about.
+        // discr-rxx.1: the three fields this measurement is about, for
+        // PLAYER 1 -- never waived, since reconstructing them is the whole
+        // point. Player 2's copies stay fed (see `feed_disc_inputs_minus_anim`'s
+        // doc -- `step`'s own guard blocks measuring them here regardless),
+        // so they are waived exactly like the rest of player 2's row: a fed
+        // field trivially matches modulo the one-tick lag `feed_disc_inputs`
+        // itself introduces (it feeds from `prev`, not `expected`), which is
+        // harmless and was always waived, not a discr-rxx.2 result.
         push(
             format!("players[{n}].anim_cursor"),
             i64::from(e.anim),

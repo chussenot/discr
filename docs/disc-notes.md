@@ -3547,3 +3547,124 @@ player.
 
 Full format spec, per-fixture numbers and the feed-retirement patch:
 `reports/part12-anim.md`.
+
+## Player 2's own animation tables, and why its feed stays (Part 12, discr-rxx.2)
+
+The direct sequel: catalogue every sequence player 2's own state handlers
+enter, reconstruct its three fields the same way, and retire its feed too --
+if it measures 100%. It does, for four of the six fixtures; the other two
+found a real, still-open mechanic this bead does not decode. Full catalogue,
+per-fixture numbers and the six bugs found: `reports/part12-p2anim.md`. This
+section is the narrative.
+
+### Six new tables, all read straight off the ROM
+
+Walking the same reader backward from where player 2's fixtures already
+start (mid-walk, mid-throw -- never conveniently at cell 0) named its own
+idle/walk/turn/up/down sequences:
+
+```
+ANIM_P2_WALK_LEFT   $449e   6 cells, hold 4 each   -- the table discr-rxx.1
+                                                       already surfaced and named
+                                                       but did not catalogue
+ANIM_P2_WALK_RIGHT  $434a   6 cells, hold 4 each
+ANIM_P2_TURN_LEFT   $4992   1 cell,  hold 4         -- turning INTO or OUT OF a left walk
+ANIM_P2_TURN_RIGHT  $4988   1 cell,  hold 4         -- the same, right
+ANIM_P2_UP          $4522   6 cells, hold 4 each    -- state 5, holding UP from standing
+ANIM_P2_DOWN        $459a   6 cells, hold 4 each    -- state 6, holding DOWN; the SAME
+                                                       six frame blocks as UP, in reverse
+```
+
+Player 1 loads one turn table (`$2f7e`) for both directions; player 2 has
+two, genuinely different tables (`$4992` vs `$4988`) -- not a simplification
+this crate imposed, a real asymmetry in the image, confirmed by `golden.
+ndjson` frame 7 (turning out of a left walk, `$4992`) and frame 86 (out of a
+right walk, `$4988`).
+
+Two more tables surfaced but stay uncatalogued-into-behaviour on purpose:
+`$463e`/`$465a` are the two checkpoints player 2's own state 19 commits on,
+reached only via a third, undecoded branch of the anticipation cascade
+(`$cc98`, installing hook `$a88a`) that `farbank.ndjson` exercises at frame
+48 -- past that fixture's own established boundary, so wiring it would be
+measuring against nothing. `$439a` (8 cells, hold 3, a visibly different
+"stumble" shape) is a "step over a hole" sequence player 2's walk-right
+handler can substitute in, under a probe no fixture's floor ever triggers.
+Both are named in `reports/part12-p2anim.md` for whoever picks up `discr-tun`.
+
+### Five bugs `discr-rxx.1` didn't catch, because player 1's own data is
+### ambiguous about them
+
+Reconstructing player 2 against these six new tables surfaced five real gaps
+in the SHARED tail/dispatch machinery -- not new code paths, existing ones
+that were subtly wrong in a way player 1's own values never exposed:
+
+* `anticipate()` dispatched `STATE_INTERCEPT`/`STATE_REACH` via a bare
+  `enter_anim`, no follow-up tick -- `enter_anim` alone never copies
+  `hit_box`/`x_delta`, only `anim_tick` does. Caught at `golden.ndjson` frame
+  22, where player 2 enters the intercept pose. (Briefly a double-tick once
+  paired with the very next bug's fix, before checking the ASM again: the
+  dispatch itself ends in `rts`, not `bra $ac40` -- the SAME-tick follow-up
+  call into `intercept()`'s own ongoing handler is what performs the copy,
+  because `GameState::update` runs the disc loop, where `anticipate` lives,
+  BEFORE the per-player dispatch, where `intercept` lives.)
+* `intercept()`'s three non-committing exits returned early with no tick at
+  all, when the ASM (`$c1b0`/`$c1b8`/`$c1cc`) shows every one of them still
+  falls through to the shared tail. Left the intercept pose's whole
+  animation frozen. Caught at the same frame, the very next tick.
+* `p2_throw_choice`'s "fire alone" and "already at the disc cap" exits had
+  the same shape of bug -- both `bra $ac40` in the real ST, neither ticked
+  here. Caught at `tile_damage.ndjson` frame 60, Part 10j's own "the AI holds
+  `$80`" frame -- previously read as "does nothing", which was only half
+  true: it does nothing to the THROW, but the tail still runs.
+* `turn()`'s idle-landing arm used `struck_down`'s verified "stale copy, no
+  second tick" shape, on the assumption both endings share it. Player 1's
+  own `ANIM_TURN` hit box happens to equal `ANIM_P1_IDLE` cell 0's, so
+  nothing in player 1's data can tell a stale reuse from a fresh tick apart.
+  `ANIM_P2_TURN_RIGHT`'s hit box does not coincide with `ANIM_P2_IDLE`'s, and
+  `golden.ndjson` frame 89 shows the FRESH value the instant `state_index`
+  changes -- so turn's two endings are symmetric (both fresh dispatches),
+  and only `struck_down`/`struck_up`'s own endings are the genuinely stale
+  ones, independently confirmed by their own differing values.
+* `walk()` ignored `anim_tick`'s `Ended` result, so a walk running longer
+  than its own table (six cells) ran `anim_cell` straight past the end.
+  Every committed player-1 walk and every SHORT player-2 walk (golden,
+  tile_damage) is short enough this never mattered before. Fixed to
+  self-wrap, fresh, the same shape as the other four fixes above -- caught
+  at `p1_walk.ndjson` frame 107, the first walk-right run long enough to
+  exhaust the table.
+* `disc::THROW_STATES`' release gate, in `GameState::update`, read
+  `anim_cursor` AFTER `player::step` ran for this tick -- using this frame's
+  freshly-ticked value where the real ST's own handler (`$c06e`) reads the
+  cursor as the PREVIOUS frame's tail left it, before running its own copy.
+  Invisible while player 2 was fed (`feed_disc_inputs` itself feeds from the
+  previous frame, reproducing the same lag by construction); the moment
+  player 2's reconstruction ran live it fired the serve one tick early.
+  Fixed by snapshotting the cursor before the per-player step loop. Caught
+  at `golden.ndjson` frame 51 (the served disc's `world_x` off by exactly
+  the thrower's own step).
+
+All five are shared code paths, fixed for both players, and player 1's own
+274/274 (`p1_walk.ndjson`, `discr-rxx.1`'s original bar) still holds
+unchanged with all five fixes in place.
+
+### What's left, and why the feed stays
+
+`p1_walk.ndjson` (frame 135) and `bonus.ndjson` (frame 144) both diverge on
+`ANIM_P2_WALK_RIGHT` exhausting a cell one tick earlier than the ST. Both are
+long walk-right runs; golden's and tile_damage's are short (2-3 ticks) and
+never reach a second cell. Reading player 2's REAL walk-right handler
+(`$b1d8`, not assumed from player 1's much simpler `$f7f6`) shows why: an
+entire extra mechanic -- a column-table probe that can substitute a "step
+over a hole" sequence, and a separate wall-approach parabola calculation --
+runs between the step and the shared tail, and nothing here says which part
+of it perturbs the hold timing. `reports/part12-p2anim.md` has the full
+disassembly excerpt and the exact addresses.
+
+House rules: 100% agreement per fixture or the feed stays. Two of six are
+short of it, so `crate::player::step`'s snapshot/restore for player 2 stays
+exactly as `discr-rxx.1` left it, and `disc-tools/src/main.rs` keeps feeding
+player 2's three fields unchanged. All ten required gates hold at their
+established numbers -- verified against the real `tracecheck`, not just the
+standalone harness. `discr-tun` (child of `discr-rxx`) is filed for the
+remaining walk mechanic, with the frames and addresses above as its starting
+point.
