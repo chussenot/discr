@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
 """Loriciel graphics depacker for "Disc" (Loriciel, 1990, Atari ST) -- discr-rxx.5.
 
-STATUS (proven vs. unresolved -- see reports/part13-depack.md for the full
-methodology and Hatari session transcripts):
+STATUS (proven vs. unresolved -- see reports/part13-depack.md for the first
+shift's methodology, and reports/part13-depack2.md for the second shift's
+findings, which OVERTURN part of the first shift's Finding 3):
+
+  SECOND SHIFT HEADLINE: the "Ice!"-class routine (low-memory $31a-$476)
+  that Part 13 called "role unconfirmed... never fired" DOES fire -- 32
+  times across a normal boot->menu->match session, 21 of them successful
+  magic matches -- and it IS the depacker for DALLES01.DAT, PLAYER01.DAT
+  and ENEMY01.DAT (and a second, independent load of DECOR00.DAT), proven
+  live via captured Ice! headers whose first size field exactly equals
+  each file's known on-disk size (12500/67211/28785/7477 bytes). The exact
+  bit-level token algorithm is still NOT round-trip-proven (see
+  reports/part13-depack2.md), so depack() still refuses these four names --
+  landing the codec here requires a proven byte-exact implementation, not
+  just a proven association between file and routine.
 
   PROVEN (round-trip against live Hatari RAM, byte-for-byte, sha256-checked):
     DECOR00.DAT, DECOR01.DAT (bytes 0..9216 of 10121; tail clobbered by a
@@ -105,12 +118,69 @@ methodology and Hatari session transcripts):
        without a proof pair would be exactly the "guess the algorithm"
        this task forbids.
 
-    Suggested follow-up (see the discr-rxx.6/.7 queue): re-run the $320
-    breakpoint across ALL match modes (challenge/tournament/championship)
-    and with `:once` capturing full register state + a source/dest
-    memdump on first hit, to get a genuine packed/unpacked byte pair for
-    DALLES01.DAT and settle whether this Ice-class routine is really the
-    mechanism.
+    SECOND SHIFT UPDATE (reports/part13-depack2.md has the full transcript):
+    the suggested follow-up above was run. `b pc = $320 :trace :lock :file
+    <script>` (registers, every hit) across a full boot->menu->CHALLENGE-
+    match session caught 32 hits, 21 of them successful ("Ice!" match).
+    Correlating each hit's captured header (12 bytes at A0-4: magic, a
+    size field, a second size field) against known file sizes gives an
+    EXACT match for three of the four still-unresolved files:
+
+        VBL 12832  dest $1D41C  header+4 = 12500  == DALLES01.DAT exactly
+        VBL 13014  dest $24FCC  header+4 = 67211  == PLAYER01.DAT exactly
+        VBL 13253  dest $4A2F4  header+4 = 28785  == ENEMY01.DAT exactly
+        VBL 12744  dest $156FC  header+4 =  7477  == DECOR00.DAT (2nd,
+                                                      independent load)
+
+    This settles the ownership question this module's docstring used to
+    call "unconfirmed": the Ice!-class routine IS the game's own graphics
+    depacker, exercised on a routine, unmodified boot of the plain floppy
+    image (not something introduced by PP's separate RUNME.TOS wrapper).
+    It does NOT settle the bit-level codec: the header's SECOND size field
+    (offset+8, used to size the destination via `a6 = a1+that field`) is
+    2.2-2.5x LARGER than header+4 for all three files, consistently, and
+    the header+4 field itself is suspiciously close to "12 (header) +
+    (original size)" -- i.e. these three files may be stored via this
+    container with near-zero compression gain, with the real transform
+    being a bitplane/format conversion (the $344-$36a block in the live
+    disasm is a 4-way bit-scatter-then-`movem.w d0-d3,(a3)` shape,
+    structurally a chunky/packed-nibble -> ST-native-bitplane converter,
+    not classic LZ token replay) rather than the backward-LZ token stream
+    Finding 3 assumed. Comparing the actual decompressed RAM bytes at each
+    destination against the source .DAT file directly (byte-for-byte AND
+    via a literal search nearby) found NO relationship at all at the raw
+    byte level -- confirming this is real reformatting, not padding or a
+    trivial reorder, and NOT yet reverse-engineered to round-trip
+    precision. DECOR02/03/04.DAT were not observed loading at all (raw OR
+    via Ice!) in this session's CHALLENGE match -- they most likely belong
+    to a different court/decor selection this scenario never visits, not
+    to any codec conclusion; a future pass should drive a scenario that
+    picks a different arena skin.
+
+    PROGRAM.HA's resident-code question (Finding 3's other open thread) is
+    ALSO settled further, in the "relocator" direction: a conditional
+    breakpoint `pc = $30c && a2 = $a4ea :once :file <script>` (the exact
+    HABS-style segmented byte-copy loop from the first bullet above) fired
+    exactly once, with A1 (source) = $42506 and A2 (dest) = $a4ea. Saving
+    both a 32 KB source window and an 8 KB dest window AT THAT INSTANT
+    shows the SOURCE bytes at $42506 are ALREADY byte-identical to the
+    resident ground truth ($4bf86e3e76074a2d...) -- meaning $30c/$2ec is a
+    pure RELOCATOR (it moves already-correct, already-depacked bytes to
+    their final low-memory home; it does no transformation of its own).
+    The true PROGRAM.HA depack step therefore happens EARLIER, writing its
+    output to a staging buffer around $42506+ (inside `DISC.ALL`'s
+    documented aliasing span, docs/loriciel-formats.md ss6) -- NOT to the
+    `$2E512` staging copy Finding 1 found (that copy's bytes never appear
+    at $42506 or anywhere the relocator reads from; it looks like a
+    discarded/unused prefetch, not the resident build's real input). This
+    earlier transformer was not caught directly in this pass (none of the
+    32 `$320` hits' destinations land at $42506), so it remains open:
+    either a distinct, uncaptured Ice! invocation, or a third mechanism.
+    Also settled: `$25c2` (one of Finding 3's four `$a4ea` writer-PC
+    candidates) is a red herring -- live disasm shows it sits inside an
+    interrupt handler (ends in `rte`, touches a PSG/blitter-style
+    destination at $10F00 via `movep`) that writes $a4ea only incidentally
+    as part of unrelated periodic work, not any kind of loader.
 
 Usage:
     loriciel_depack.py <packed> <out>       # copies (proven files only)
@@ -262,17 +332,57 @@ def decode_nsq_control_stream(src: bytes) -> bytes:
 
 def _nsq_frames(data: bytes):
     """Parse an .NSQ file's header: magic 'NSEQ', u8 frame count at +4,
-    then `count` 6-byte entries (u8 flag, 3-byte offset) starting at +8.
+    then `count` 3-byte entries (a byte-swapped file offset) starting at +8.
     Yields (index, flag, offset) tuples. See docs/loriciel-formats.md ss4.
+
+    Fixed 2026-08-31 (discr-rxx.5 second shift) per a bug report from the
+    "formats" agent (discr-rxx.6, LAUNCHER.HA disasm $1048-$10ba,
+    `mulu.w #3,d0` at $105c): the entry stride is 3 bytes, not 6 -- the
+    header's count byte is already the real entry count, no halving needed.
+    `flag` is kept for API compatibility; it aliases the offset's own top
+    byte (entries are 3 bytes total, not a separate flag+offset pair), so
+    treat it as informational only -- `_nsq_control_stream_offset()` below
+    is what actually locates the decodable stream.
     """
     if data[:4] != b"NSEQ":
         raise DepackError("not an NSQ file (missing 'NSEQ' magic)")
     count = data[4]
     for idx in range(count):
-        base = 8 + idx * 6
+        base = 8 + idx * 3
         flag = data[base]
         off = (data[base] << 16) | (data[base + 2] << 8) | data[base + 1]
         yield idx, flag, off
+
+
+def _nsq_control_stream_offset(data: bytes, entry_offset: int) -> int:
+    """Given one frame entry's file offset (from `_nsq_frames`), locate
+    where its decodable control-word stream (`decode_nsq_control_stream`'s
+    input) actually starts.
+
+    Per the same bug report: the entry offset points to a 32-byte record,
+    not straight to the control stream. Read that record's first word
+    byte-swapped (the same lo-byte-then-hi convention
+    `decode_nsq_control_stream` already uses for control words); if it
+    masks against 0xf800, there is no record here at all and the row/offset
+    table starts AT `entry_offset` -- otherwise a 32-byte record (which
+    needs `$126a`'s bit-shuffle descramble for its OWN purposes, irrelevant
+    to decoding the control stream) precedes it, so the table starts at
+    `entry_offset + 0x20`. From there, scan forward for the row/offset
+    table's `0xFFFF` terminator word; the control-word stream
+    `decode_nsq_control_stream` expects starts immediately after it.
+    """
+    first_word = (data[entry_offset + 1] << 8) | data[entry_offset]
+    table_start = entry_offset if (first_word & 0xF800) else entry_offset + 0x20
+    i = table_start
+    n = len(data)
+    while i + 1 < n:
+        w = (data[i + 1] << 8) | data[i]
+        i += 2
+        if w == 0xFFFF:
+            return i
+    raise DepackError(
+        "NSQ frame at offset $%x: no 0xFFFF row-table terminator found "
+        "from $%x" % (entry_offset, table_start))
 
 
 def main(argv=None):
