@@ -1,0 +1,73 @@
+     Disc       for Atari ST
+
+Adapted for hard disk run, TT, Falcon .
+
+
+Used tools, SW :  STX image analyser (by me),
+STX to ST converter (by me), HxD - hex and file
+editor (freeware) . Steem Debugger (main tool).
+Modded Steem Debugger for finding stackframe
+related problems. PaintShopPro for cover scan
+conversion to TGA, Photochrome for converting
+to PCS, own simple SW to depacking it to PCH.
+Devpac 3 assembler. Total Commander. Drive
+Imager for writing onto CF, SD cards and hard
+disks. Video Dub for capturing and processing
+video from oldies > YouTube . 
+Some Html editors for WEB pages.
+
+Src: STX img. of org. 
+
+Exit to Desktop and gamestate save options.
+Later is in development state in case of
+HAGA version.
+
+Extra files in archive (not belong to game self): 
+
+HAGA - new development, cmpatible with
+all decent hard disk drivers,  1GB Falcon
+partitions and/or lot of RAM
+occupied at game launch.
+HAGA is function library, for now with 12
+functions, what is enough even for gamestate
+saving.  Use RUNME.TOS for starting game.
+- exits to Desktop. Before it may want to
+save gamestate:  press / - it saves
+in aprox. 2 seconds and continues game.
+GSAU.TOS - autosave flag .
+
+Save format is TOS executable. Additional
+500 bytes spent is worth of easy usage:
+just doubleclick savefile, and you are in
+2 seconds back in game, at pos. where you
+saved state.
+Only 500 bytes ? Yes, because we use library
+calls.
+
+
+Little more about HAGA:
+Abbrev. from 'HArddisk Gaming Atari' .
+Goal is to support all common tasks
+needed by for hard disk run adapted
+old Atari ST games (made usually for
+work only from floppies).
+Additional funcions are exit to Desktop
+and gamestate saving/restoring, called
+snapshots too. Adding/viewing comments
+in snapshots. Autosave.
+
+One way of disk accessing by HAGA is
+RAM area swap, what results in high com-
+patibility (with all decent hard disk drivers).
+Speed problems are resolved by:
+Using PMMU instead SW swap on TT and Falcon.
+Direct writing to destination whenever it is
+possible - so code splits loadings by need.
+Smart MFP timer and interrupt handling
+by switch to TOS and back to game - no
+timer Data read (the slow part) at all, 
+for instance . 
+
+
+PP, Febr. 27  2012.
+
