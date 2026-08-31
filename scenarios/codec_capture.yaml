@@ -1,0 +1,44 @@
+name: codec_capture
+mode: challenge
+# discr-rxx.5 third shift (reports/part13-codec.md): the Ice! codec is
+# pinned and round-trip-proven (scripts/loriciel_depack.py's depack_ice()).
+# What's still open and this scenario helps with: PROGRAM.HA's real
+# placement step (Finding 3). The four Ice! proof-pair captures themselves
+# needed a technique this runner's fixed step vocabulary (wait/hold/dump/
+# watch/trace/seed) can't express -- compound breakpoints combining a PC
+# AND a register condition ("pc=$33a && a1=$1d41c"), :once :file scripts
+# running `savebin <path> $<literal addr> <len>` (savebin's address
+# argument does NOT accept expressions like "a5-256" -- confirmed live,
+# "Name ... contains non-alphanumeric characters!" -- only a bare register
+# name or a literal number) -- and, for the token-loop internals,
+# INTERLEAVED non-:once `:trace :lock` breakpoints on several adjacent PCs
+# read back in shared-log order (since `step` inside a `:trace` breakpoint
+# is a no-op -- confirmed empirically, 220 consecutive step+r pairs all
+# reported the identical PC/registers -- :trace never actually suspends the
+# CPU). None of that is `scripts/collect.py`'s `run_scenario()` vocabulary;
+# it used `Hatari.dbg_capture()` / `Hatari.watch()` directly from short
+# ad hoc scripts (not committed -- see reports/part13-codec.md's Method
+# section for the technique, precise enough to reproduce).
+#
+# What THIS scenario captures, using what the runner already supports:
+# a full-session write-watch on PROGRAM.HA's staging address ($42506,
+# reports/part13-depack2.md Finding D), reproducing the fresh evidence
+# reports/part13-codec.md Finding 3 used to narrow (not yet confirm) that
+# PROGRAM.HA loads RAW via ordinary disk DMA (writer PCs $668/$672, VBL
+# 1751 and 12080 -- the WD1772 FDC busy-wait poll, not a depacker) rather
+# than through a dedicated decompression step. A future pass wanting to
+# CONFIRM this should diff assets/original/PROGRAM.HA's own bytes against
+# whatever DMA lands at $42506 around those two VBLs specifically (a
+# `dump` step bracketing each write, not yet added here -- `wait` frame
+# counts below are tuned to bracket VBL 1751/12080/13076 from a normal
+# boot, but the exact VBL a given run lands on can drift a few frames;
+# widen the settle/wait windows if a rerun's watch reports 0 hits).
+settle: 4
+steps:
+  - {watch: "$42506", width: "l"}
+  - {wait: 2000}     # past VBL ~1751 (first FDC-driven write)
+  - {wait: 10500}    # past VBL ~12080 (second FDC-driven write)
+  - {wait: 1200}     # past VBL ~13076 (PLAYER01.DAT's own Ice! decode
+                      # reclaiming the same address -- NOT PROGRAM.HA)
+  - {dump: post_writes}
+  - {unwatch: true}
