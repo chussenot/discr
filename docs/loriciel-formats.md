@@ -151,6 +151,68 @@ concrete new lead for `reports/part13-depack.md`'s still-unproven
 Pack-Ice-class decoder (Finding 3), not chased further this wave. Full
 evidence chain: `reports/part13-formats.md` §2.
 
+### The TRUE Ice! containers: a constant offset from the declared directory (discr-6by)
+
+`docs/loriciel-formats.md` ss6 and `reports/part13-codec.md` established that
+the directory's own `((start_track*10)+(start_sector-1))*512` formula points
+at **decoy** bytes for the packed (flag=1) file class — the live Ice!
+depacker's real input was only found by live-capturing RAM and searching the
+disk image for the captured header. This wave (discr-6by) found the general
+rule, byte-scanning `assets/disch/DSC` (773,120 B) for every `"Ice!"` magic
+occurrence and cross-referencing against the directory:
+
+```
+true_offset = declared_offset + 404480        # 404480 B = 790 sectors, DSC only
+```
+
+Verified against **all 23** of the directory's flag=1 entries that carry an
+`"Ice!"` header at this computed position (every one: header `P` == the
+directory's own `byte_size` field, exactly) — and independently confirmed
+bit-exact against all four live-Hatari ground-truth proof pairs
+(`reports/part13-codec.md`'s DALLES01/PLAYER01/ENEMY01/DECOR00 sha256 table),
+reproduced fully offline via `scripts/loriciel_depack.py`'s new
+`extract_container()` + `depack_ice()`. Newly decoded this pass, never
+before observed loading in any live session: **DECOR01/02/03/04.DAT**, all
+four to a valid `32,032`-byte (`32` B palette + `320x200x4bpp` = `32,000` B
+screen) ST low-res picture — see `reports/part14-containers.md`.
+
+The 790-sector delta is not arbitrary: `docs/loriciel-formats.md` ss1's own
+independently-measured disc geometry is "side 0: 860 sectors, **70 bad**" —
+`860 - 70 = 790`. The true-container region begins immediately after all of
+side 0's *good* sectors in this flattened image, consistent with PP's
+hard-disk conversion having already resolved the bad-sector protection this
+disc uses (ss1).
+
+**Entries that don't carry an `"Ice!"` header at the predicted position**
+(`PROGRAM.HA`, `DESDALLE.SPL`, `GONG.SPL`, `TOUCHDEF.SPL`, `VITRE15K.SPL`,
+`DIC13.SPL`, `HEADS.DAT`) still land on real, structured content there —
+not noise. Notably: **`PROGRAM.HA`'s true position** (`DSC $68000`) carries
+a proper `HABS` header (magic + `u32`x6: load addr `$8000`, code len
+`$D6FC`) with real 68000 code immediately following (`46FC 2700` = `move
+#$2700,SR`, the same supervisor-mode-entry idiom `LAUNCHER.HA` and the boot
+sector use) — a world away from the decoy bytes at `PROGRAM.HA`'s own
+*declared* directory position, which ss4 already flags as "No HABS magic;
+high-entropy signed bytes." See `reports/part14-containers.md` for the
+discr-zg4 angle this opens (not independently live-confirmed this pass).
+
+**The bigger repo-root `.st` image (819,200 B)** carries the SAME
+containers (all four proof-pair headers found there too, at the exact
+addresses `reports/part13-codec.md` cites, e.g. `$75600` for DALLES01.DAT)
+but at a **per-file variable** delta, not a constant one — because `.st` is
+the raw physical floppy dump (protection intact) and DSC is PP's flattened,
+already-de-protected conversion. Measured directly: reading a `.st`
+container linearly reproduces the DSC ground truth for the first 5,120
+bytes (10 sectors = exactly one track, ss3's "10 sectors/track" geometry) of
+every 10-sector run, then a 10-sector (5,120 B) gap of foreign bytes
+intervenes before the next 10-sector run resumes cleanly — repeating for
+the whole container. This is the disc's own documented cylinder-major side
+interleave (ss3: "logical track = cylinder×2 + side"): the true containers
+live entirely on one side's tracks, and `.st`'s raw physical byte order
+alternates that side's 10-sector tracks with the *other* side's 10-sector
+tracks in between. `extract_container()` implements the DSC constant-delta
+form only; `.st` needs this track-degapping pass, not implemented (DSC
+alone already round-trips every proof pair, so no consumer needs it yet).
+
 ## 5. Gameplay facts from INSTRUCT.TXT relevant to disc-core
 
 - Arena: per player, 2×4 floor tiles + 2×4 back-wall tiles, wall tile N

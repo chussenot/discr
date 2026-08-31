@@ -245,6 +245,157 @@ _PROVEN_RAW_FULL_SHA256 = {
 
 
 # ---------------------------------------------------------------------------
+# Container extraction (discr-6by): locating the TRUE Ice! containers on the
+# committed disk image, offline, with no live Hatari capture needed.
+#
+# discr-rxx.5 third shift proved the Ice! depacker's real input for
+# DALLES01.DAT/PLAYER01.DAT/ENEMY01.DAT/DECOR00.DAT is NOT
+# `assets/original/*.DAT` -- those on-disk bytes at each file's own
+# directory-declared position are a *different*, 99%+-diverging byte
+# sequence, and the live-captured container that actually round-trips was
+# only found by searching the raw disk image for its "Ice!" header (e.g.
+# offset $75600 on the `.st` image for DALLES01.DAT).
+#
+# This pass (discr-6by) found the general rule, in `assets/disch/DSC` (the
+# 773,120-byte PP hard-disk adaptation -- the "flattened" image, protection
+# already resolved out): for EVERY one of the 34-entry directory's flag=1
+# entries, the true container sits at exactly
+#
+#     true_offset = declared_offset + CONTAINER_OFFSET_DELTA
+#
+# where `declared_offset` is the file's own directory-computed position
+# (`docs/loriciel-formats.md` ss3's `((start_track*10)+(start_sector-1))*512`)
+# and CONTAINER_OFFSET_DELTA = 404480 bytes = exactly 790 sectors -- a
+# SINGLE constant, verified against all 23 of the directory's flag=1 entries
+# that carry an "Ice!" header at that computed position (byte-for-byte: the
+# header's own P field equals the entry's directory-declared byte_size for
+# every one of them, and the four entries with an independent live-Hatari
+# ground truth -- DALLES01.DAT, PLAYER01.DAT, ENEMY01.DAT, DECOR00.DAT --
+# depack_ice() bit-exact, sha256-checked, from this formula alone, no
+# capture needed; see reports/part14-containers.md). 790 sectors also
+# matches `docs/loriciel-formats.md` ss1's own independently-measured "side
+# 0: 860 sectors, 70 bad" figure (860-70=790) -- the true-container region
+# begins immediately after all of side 0's *good* sectors in this flattened
+# image, consistent with the crack/PP-conversion pipeline having already
+# stripped the bad-sector protection out of DSC.
+#
+# The handful of flag=1 entries that do NOT carry an "Ice!" header at their
+# predicted position (PROGRAM.HA, DESDALLE.SPL, GONG.SPL, TOUCHDEF.SPL,
+# VITRE15K.SPL, DIC13.SPL, HEADS.DAT) are not a formula failure: the SAME
+# formula still lands on real, structured, non-decoy content for all of
+# them -- PROGRAM.HA's true position (declared $5400 + delta = DSC $68000)
+# carries a proper `HABS` executable header (magic + load addr $8000 + code
+# len $D6FC), completely absent from the decoy bytes at its OWN declared
+# directory position (`docs/loriciel-formats.md` ss4 already flags
+# PROGRAM.HA as "No HABS magic; high-entropy signed bytes" there) -- see
+# reports/part14-containers.md for the discr-zg4 angle. The others are
+# plausibly raw (uncompressed) content at the same true position, not yet
+# independently confirmed against a RAM ground truth.
+#
+# This constant delta is `assets/disch/DSC`-specific. The bigger repo-root
+# `.st` image (819,200 B) carries the SAME containers (confirmed: all four
+# proof-pair headers found there too, e.g. $75600 for DALLES01.DAT, matching
+# `reports/part13-codec.md`'s live capture exactly) but at a PER-FILE
+# variable delta, not a constant one -- because the `.st` image is the raw
+# physical floppy dump and DSC is the PP-flattened conversion that already
+# resolved the disc's own bad-sector protection (docs ss1: "70 bad sectors
+# concentrated on side 0"). Measured directly (reports/part14-containers.md):
+# reading the `.st` copy of a container linearly reproduces the DSC ground
+# truth for the FIRST 5,120 bytes (10 sectors -- exactly one track, per
+# ss3's "10 sectors/track" geometry) of every 10-sector run, then a 10-sector
+# (5,120-byte) gap of *foreign* bytes appears before the next 10-sector run
+# resumes cleanly -- a periodic, track-sized hole, repeating for the whole
+# container length. This is the disc's documented cylinder-major side
+# interleave (ss3: "logical track = cylinder*2 + side"): the true containers
+# live entirely on one side's tracks, and the `.st` image's raw physical
+# byte order alternates that side's 10-sector tracks with the OTHER side's
+# 10-sector tracks in between -- exactly a "first 512B (sector 0) matches,
+# then a jump, then clean 512-byte steps resume" pattern once you skip each
+# track-sized interleaved hole. `extract_container()` below only implements
+# the DSC constant-delta form; the `.st` image needs this track-degapping
+# pass to reproduce the same bytes and is not implemented here (no fourth
+# consumer needs it -- DSC alone already round-trips all four proof pairs).
+CONTAINER_OFFSET_DELTA = 404480  # bytes; = 790 sectors * 512 B/sector
+
+_DIR_OFFSET = 0x200
+_DIR_ENTRY_SIZE = 32
+_DIR_ENTRY_COUNT = 34
+_SECTOR_SIZE = 512
+
+
+def _parse_directory(data: bytes):
+    """Parse the 34-entry Loriciel filesystem directory (docs/loriciel-formats.md
+    ss3) at `data[0x200:]`. Returns a list of dicts: name, flag, start_track,
+    start_sector, sector_count, byte_size, offset (the linear byte offset the
+    docs formula computes -- NOT necessarily where the true bytes live, see
+    CONTAINER_OFFSET_DELTA above for the flag=1 packed-container class)."""
+    if len(data) < _DIR_OFFSET + _DIR_ENTRY_COUNT * _DIR_ENTRY_SIZE:
+        raise DepackError("image too short to hold the 34-entry directory")
+    entries = []
+    for i in range(_DIR_ENTRY_COUNT):
+        base = _DIR_OFFSET + i * _DIR_ENTRY_SIZE
+        rec = data[base:base + _DIR_ENTRY_SIZE]
+        name = rec[0:14].split(b"\x00", 1)[0].decode("ascii", "replace")
+        flag = rec[0x0F]
+        start_track, start_sector, sector_count = struct.unpack(">HHH", rec[0x10:0x16])
+        byte_size = struct.unpack(">I", rec[0x16:0x1A])[0]
+        offset = ((start_track * 10) + (start_sector - 1)) * _SECTOR_SIZE
+        entries.append({
+            "index": i, "name": name, "flag": flag,
+            "start_track": start_track, "start_sector": start_sector,
+            "sector_count": sector_count, "byte_size": byte_size,
+            "offset": offset,
+        })
+    return entries
+
+
+def extract_container(disk_image, name_or_index) -> bytes:
+    """Locate and return the TRUE on-disk container for one directory entry,
+    from `assets/disch/DSC` (or any byte-identical 773,120 B image) -- see
+    CONTAINER_OFFSET_DELTA above for the full derivation.
+
+    `disk_image` may be a path (str) or already-read `bytes`. `name_or_index`
+    selects the directory entry: an `int` (0-33) is used as a direct index;
+    a `str` is matched case-insensitively against the entry's NUL-padded
+    14-byte name field.
+
+    Returns exactly the entry's `byte_size` bytes read from
+    `declared_offset + CONTAINER_OFFSET_DELTA` -- for the flag=1 entries that
+    carry an "Ice!" header there (confirmed: the header's own P field always
+    equals `byte_size` when present), this is the complete
+    header-plus-payload container `depack_ice()` accepts directly; for the
+    handful that don't (see module comment above), it's still the entry's
+    true region, just not Ice!-compressed (feed it to `depack()` or inspect
+    its own header, e.g. PROGRAM.HA's `HABS` magic).
+
+    Raises DepackError if the name/index is not found, or if the computed
+    true-offset window falls outside the image (a sign this isn't a
+    773,120 B DSC-shaped image -- see the `.st`-image caveat above).
+    """
+    data = open(disk_image, "rb").read() if isinstance(disk_image, str) else bytes(disk_image)
+    entries = _parse_directory(data)
+    if isinstance(name_or_index, int):
+        matches = [e for e in entries if e["index"] == name_or_index]
+    else:
+        want = name_or_index.strip().upper()
+        matches = [e for e in entries if e["name"].upper() == want]
+    if not matches:
+        raise DepackError("no directory entry matches %r (have: %s)"
+                           % (name_or_index, ", ".join(e["name"] for e in entries)))
+    entry = matches[0]
+    true_off = entry["offset"] + CONTAINER_OFFSET_DELTA
+    size = entry["byte_size"]
+    if true_off < 0 or true_off + size > len(data):
+        raise DepackError(
+            "%s: computed true offset 0x%x (+%d bytes) falls outside a "
+            "%d-byte image -- extract_container() only implements the "
+            "constant-delta form measured against assets/disch/DSC "
+            "(773,120 B); see module comment for the `.st`-image caveat"
+            % (entry["name"], true_off, size, len(data)))
+    return data[true_off:true_off + size]
+
+
+# ---------------------------------------------------------------------------
 # The Ice! codec (discr-rxx.5 third shift) -- see module docstring's THIRD
 # SHIFT section for the full derivation. Bit-exact, round-trip-proven against
 # four live-captured (header+payload, expected-output) pairs. NOT wired to
@@ -675,6 +826,28 @@ def main(argv=None):
         with open(outpath, "wb") as f:
             json_lines = ["%d %d %d" % t for t in frames]
             f.write(("\n".join(json_lines) + "\n").encode())
+        return 0
+    if len(argv) == 4 and argv[0] == "--extract":
+        # loriciel_depack.py --extract <DSC image> <NAME|index> <out>
+        # Fully offline: locates the true container via extract_container()
+        # (discr-6by's constant-delta formula) and depacks it in one step
+        # when it carries an "Ice!" header, else writes the raw true-region
+        # bytes verbatim (e.g. PROGRAM.HA's HABS executable).
+        _, diskpath, sel, outpath = argv
+        try:
+            name_or_index = int(sel, 0)
+        except ValueError:
+            name_or_index = sel
+        try:
+            blob = extract_container(diskpath, name_or_index)
+            out = depack_ice(blob) if blob[:4] == ICE_MAGIC else blob
+        except DepackError as e:
+            sys.stderr.write("loriciel_depack: %s\n" % e)
+            return 1
+        with open(outpath, "wb") as f:
+            f.write(out)
+        sys.stderr.write("wrote %d bytes (sha256 %s)\n"
+                          % (len(out), hashlib.sha256(out).hexdigest()))
         return 0
     if len(argv) != 2:
         sys.stderr.write(__doc__.strip().splitlines()[-3] + "\n"
