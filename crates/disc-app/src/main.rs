@@ -46,7 +46,7 @@ use disc_core::{DirBits, Event, GameState, Input, TILE_TYPE_DESTROYED, tile};
 use macroquad::prelude::*;
 
 use audio::{Cue, Sfx};
-use gfx::{TileAtlas, TileShape};
+use gfx::{SpriteAtlas, TileAtlas, TileShape};
 use round::{Match, Mode, Phase};
 
 /// One PAL VBL. ST video is 50 Hz and `$8198` runs once per frame.
@@ -214,6 +214,9 @@ struct MatchState {
     /// The original DALLES01 wall-icon tile atlas, unloaded by default --
     /// see [`Self::with_gfx`].
     gfx: TileAtlas,
+    /// The original PLAYER01/ENEMY01 sprite textures, unloaded by default --
+    /// see [`Self::with_sprites`].
+    sprites: SpriteAtlas,
 }
 
 /// Ticks between [`MatchState::serve_workaround`] attempts: a pacing choice
@@ -235,6 +238,7 @@ impl MatchState {
             p2_serve_cooldown: 0,
             sfx: Sfx::default(),
             gfx: TileAtlas::default(),
+            sprites: SpriteAtlas::default(),
         }
     }
 
@@ -253,6 +257,15 @@ impl MatchState {
     /// back to placeholder shapes" state.
     fn with_gfx(mut self, gfx: TileAtlas) -> Self {
         self.gfx = gfx;
+        self
+    }
+
+    /// Attach the loaded original player/enemy sprite textures. Same builder
+    /// shape as [`Self::with_gfx`] and the same reason: every `#[cfg(test)]`
+    /// call site keeps working against [`SpriteAtlas::default`]'s "unloaded,
+    /// fall back to placeholder shapes" state.
+    fn with_sprites(mut self, sprites: SpriteAtlas) -> Self {
+        self.sprites = sprites;
         self
     }
 
@@ -630,30 +643,57 @@ fn draw_match(ms: &MatchState, alpha: f32) {
         let y = v.oy + (band_top + band_t * band_h) * v.s;
         let colour = if i == 0 { SKYBLUE } else { ORANGE };
         let down = q.down || q.state_index == disc_core::player::STATE_DEAD;
-        // A crude pose: a downed/dead player reads as a flattened, dimmer
-        // rectangle rather than the standing block -- state-appropriate
-        // without inventing sprite art. `q.state_index` is core's own
-        // decoded state machine cursor (see `disc_core::player`'s state
-        // constants); this is the one bucket cheap enough to be worth
-        // drawing distinctly given the fidelity budget here.
-        let (w, h, colour) = if down {
-            (
-                8.0 * v.s,
-                4.0 * v.s,
-                Color::new(colour.r, colour.g, colour.b, 0.5),
-            )
-        } else {
-            (6.0 * v.s, 10.0 * v.s, colour)
-        };
-        draw_rectangle(x - w * 0.5, y - h + h.min(10.0 * v.s), w, h, colour);
-        // A notch on the facing side; 1 = left, 2 = right (`$6ca9`).
-        if !down {
-            let notch = if q.facing == disc_core::FACING_LEFT {
-                x - 4.5 * v.s
-            } else {
-                x + 3.0 * v.s
-            };
-            draw_rectangle(notch, y - 8.0 * v.s, 1.5 * v.s, 3.0 * v.s, WHITE);
+        // The real PLAYER01/ENEMY01 art for this player's exact animation
+        // cell, if `ms.sprites` loaded one (`gfx::SpriteAtlas`'s own doc --
+        // proven against a live screenshot, `reports/part14-psprites.md`).
+        // `q.anim_cursor` already IS the frame's own identity (`base +
+        // 6*cell`, `disc_core::player::Anim`'s cursor rule), so no
+        // state-to-pose mapping is invented here, unlike `tile_shape_for_hp`.
+        match ms.sprites.texture(q.anim_cursor) {
+            Some((tex, tw, th)) => {
+                // One fixed ST-pixel-to-world-unit scale (not normalised per
+                // frame) so a frame's own height still reads as pose --
+                // idle's 48px stands tall, dead's 34px visibly shorter.
+                // Chosen so idle's own height lands close to the old
+                // placeholder's fixed 10 world units at typical view scale.
+                const SPRITE_WORLD_UNITS_PER_PX: f32 = 10.0 / 48.0;
+                let draw_h = f32::from(th) * v.s * SPRITE_WORLD_UNITS_PER_PX;
+                let draw_w = f32::from(tw) * v.s * SPRITE_WORLD_UNITS_PER_PX;
+                draw_texture_ex(
+                    tex,
+                    x - draw_w * 0.5,
+                    y,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(draw_w, draw_h)),
+                        ..Default::default()
+                    },
+                );
+            }
+            // No RAM-image capture available: the original flat-rectangle
+            // placeholder, unchanged -- a downed/dead player reads as a
+            // flattened, dimmer rectangle rather than the standing block.
+            None => {
+                let (w, h, colour) = if down {
+                    (
+                        8.0 * v.s,
+                        4.0 * v.s,
+                        Color::new(colour.r, colour.g, colour.b, 0.5),
+                    )
+                } else {
+                    (6.0 * v.s, 10.0 * v.s, colour)
+                };
+                draw_rectangle(x - w * 0.5, y - h + h.min(10.0 * v.s), w, h, colour);
+                // A notch on the facing side; 1 = left, 2 = right (`$6ca9`).
+                if !down {
+                    let notch = if q.facing == disc_core::FACING_LEFT {
+                        x - 4.5 * v.s
+                    } else {
+                        x + 3.0 * v.s
+                    };
+                    draw_rectangle(notch, y - 8.0 * v.s, 1.5 * v.s, 3.0 * v.s, WHITE);
+                }
+            }
         }
         // Energy bar above the player. 5 is the one measured starting value
         // on hand (`Player::energy`'s own doc; also `round::FRESH_ENERGY`).
@@ -800,6 +840,11 @@ async fn main() {
     // falls back to `TileAtlas::default()` (placeholder rendering) on its
     // own if no depack source is available.
     let gfx = TileAtlas::load();
+    // Same "load once, clone cheaply" shape as `gfx` above -- see
+    // `SpriteAtlas`'s own doc. Falls back to `SpriteAtlas::default()`
+    // (placeholder rendering) on its own if no RAM-image capture is
+    // available.
+    let sprites = SpriteAtlas::load();
 
     let mut screen = Screen::Menu {
         selected: Mode::Training,
@@ -819,7 +864,8 @@ async fn main() {
                     next_screen = Some(Screen::Match(Box::new(
                         MatchState::new(*selected)
                             .with_sfx(sfx.clone())
-                            .with_gfx(gfx.clone()),
+                            .with_gfx(gfx.clone())
+                            .with_sprites(sprites.clone()),
                     )));
                 }
                 draw_menu(*selected);
@@ -834,7 +880,8 @@ async fn main() {
                     next_screen = Some(Screen::Match(Box::new(
                         MatchState::new(ms.m.mode)
                             .with_sfx(sfx.clone())
-                            .with_gfx(gfx.clone()),
+                            .with_gfx(gfx.clone())
+                            .with_sprites(sprites.clone()),
                     )));
                 } else {
                     if is_key_pressed(KeyCode::P) {
