@@ -1,0 +1,33 @@
+name: program_ha_true_source
+mode: challenge
+# discr-zg4 stretch: bracket the two raw-DMA writes to $42506 (VBL ~1751 and
+# ~12080, per reports/part13-codec.md Finding 3 / scenarios/codec_capture.yaml)
+# with dumps of a window around $42506, BEFORE PLAYER01.DAT's own Ice! decode
+# reclaims that address at VBL ~13076. Goal: diff the captured bytes against
+# (a) assets/original/PROGRAM.HA (the decoy on-disk bytes at PROGRAM.HA's
+# declared directory position) and (b) the newly-found TRUE PROGRAM.HA
+# container (a HABS-header executable at DSC offset 0x68000 = declared_off +
+# 404480, discr-6by's constant-delta formula) to determine which one (if
+# either) the raw DMA actually loads.
+# NOT YET WORKING (discr-6by pass, 2026-08-31): run via
+# `run_scenario()`/`navigate_to_match()`, VBL 1751/12080 do NOT land where
+# expected -- a real run of this exact file landed the two dumps at VBL
+# 20092 and 30416, BOTH "NOT in match" (meta.json). reports/part13-codec.md
+# Finding 3's VBL 1751/12080 numbers come from an undocumented ad hoc
+# session using `Hatari.watch()`/`dbg_capture()` directly (module docstring:
+# "not committed... thin, session-specific wrappers"), not
+# `run_scenario()`'s `mode: challenge` + `navigate_to_match()` path -- the
+# two pipelines' VBL bookkeeping does not agree (navigate_to_match's own
+# menu-navigation overhead alone burns >20000 frames here, an order of
+# magnitude past the boot-time writes this scenario wants to bracket).
+# Next pass: either use `Hatari.watch()` directly like the original session
+# did (bracket the FDC busy-wait PCs $668/$672 themselves with :once
+# breakpoints, not a frame-count guess), or instrument navigate_to_match's
+# own boot phase before menu navigation starts.
+settle: 4
+range: [0x40000, 0x44000]
+steps:
+  - {wait: 1800}       # PLACEHOLDER, unverified -- see note above
+  - {dump: after_vbl1751}
+  - {wait: 10320}      # PLACEHOLDER, unverified -- see note above
+  - {dump: after_vbl12080}
