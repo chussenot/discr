@@ -10,4 +10,4 @@ disc-core = { workspace = true }
 # The only dependency. Kept out of the workspace default-members (see the root
 # Cargo.toml) so its system deps -- libGL, libX11, libasound -- can never break
 # `mise run core-check`.
-macroquad = "0.4"
+macroquad = { version = "0.4", features = ["audio"] }

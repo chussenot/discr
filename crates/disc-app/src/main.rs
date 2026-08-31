@@ -34,15 +34,17 @@
 #![forbid(unsafe_code)]
 
 mod ai_fallback;
+mod audio;
 mod hud;
 mod round;
 
 use std::mem;
 
 use disc_core::ai::Ai;
-use disc_core::{DirBits, GameState, Input, TILE_TYPE_DESTROYED, tile};
+use disc_core::{DirBits, Event, GameState, Input, TILE_TYPE_DESTROYED, tile};
 use macroquad::prelude::*;
 
+use audio::{Cue, Sfx};
 use round::{Match, Mode, Phase};
 
 /// One PAL VBL. ST video is 50 Hz and `$8198` runs once per frame.
@@ -205,6 +207,8 @@ struct MatchState {
     /// Ticks left before [`Self::serve_workaround`] will act again. See that
     /// method's docs.
     p2_serve_cooldown: u16,
+    /// The original `.SPL` samples, silent by default -- see [`Self::with_sfx`].
+    sfx: Sfx,
 }
 
 /// Ticks between [`MatchState::serve_workaround`] attempts: a pacing choice
@@ -224,7 +228,17 @@ impl MatchState {
             m: Match::new(mode),
             paused: false,
             p2_serve_cooldown: 0,
+            sfx: Sfx::default(),
         }
+    }
+
+    /// Attach the loaded original samples. A builder, not a `new` parameter,
+    /// so every existing `MatchState::new` call site (all of them in
+    /// `#[cfg(test)]`, which never touches macroquad's audio context) keeps
+    /// working unchanged -- see [`Sfx::default`]'s doc: silent, not missing.
+    fn with_sfx(mut self, sfx: Sfx) -> Self {
+        self.sfx = sfx;
+        self
     }
 
     /// Work around a `disc-core` gap that would otherwise leave a freshly
@@ -286,6 +300,9 @@ impl MatchState {
             self.cur.players[1].state_index = disc_core::disc::STATE_AFTER_THROW;
             self.cur.players[1].discs_out += 1;
             self.p2_serve_cooldown = SERVE_COOLDOWN_TICKS;
+            // Bypasses `disc-core`'s own event list (this calls `disc::serve`
+            // directly, per this method's own doc) -- cue it here instead.
+            self.sfx.play(Cue::Serve);
         }
     }
 
@@ -313,10 +330,16 @@ impl MatchState {
                 self.prev = self.cur.clone();
                 let p1 = self.pad.take();
                 let p2 = self.p2_input();
-                self.cur.tick([p1, p2]);
+                let events = self.cur.tick([p1, p2]);
+                self.cue_core_events(&events);
+                self.cue_state_edges();
                 let want_serve = ai_fallback::should_serve(&self.cur.players[1]);
                 self.serve_workaround(p2, want_serve);
+                let was_game_over = matches!(self.m.phase, Phase::GameOver { .. });
                 self.m.observe(&mut self.cur.players);
+                if !was_game_over && matches!(self.m.phase, Phase::GameOver { .. }) {
+                    self.sfx.play(Cue::Win);
+                }
             }
             Phase::RoundOver { .. } => {
                 if self.m.observe(&mut self.cur.players) {
@@ -326,9 +349,52 @@ impl MatchState {
                     self.ai = Ai::default();
                     self.p2_serve_cooldown = 0;
                     self.m.start_round();
+                    self.sfx.play(Cue::Round);
                 }
             }
             Phase::GameOver { .. } => {}
+        }
+    }
+
+    /// Cue the four `disc-core` [`Event`]s this crate has a sample for. See
+    /// [`Cue`]'s own doc for exactly why each mapping was picked.
+    fn cue_core_events(&self, events: &[Event]) {
+        for event in events {
+            match event {
+                Event::TileDamaged { .. } => self.sfx.play(Cue::Impact),
+                Event::TileDestroyed { .. } => self.sfx.play(Cue::TileDestroyed),
+                Event::DiscReflected { .. } => self.sfx.play(Cue::Block),
+                // In practice never emitted live -- `GameState::update`'s own
+                // auto-serve gate can't open outside a replayed trace (see
+                // `serve_workaround`'s doc) -- but cued here too so a future
+                // core fix that makes it fire is not silently unheard.
+                Event::DiscServed { .. } => self.sfx.play(Cue::Serve),
+                _ => {}
+            }
+        }
+    }
+
+    /// Cue the app-level state transitions `disc-core` does not surface as
+    /// events -- death, fall, and a defended catch -- by comparing this
+    /// tick's `state_index` against the one `self.prev` (this tick's
+    /// pre-tick snapshot, see [`Self::step_tick`]) captured just before.
+    fn cue_state_edges(&self) {
+        use disc_core::player::{
+            STATE_CATCH19, STATE_DEAD, STATE_INTERCEPT, STATE_STRUCK_DOWN, STATE_STRUCK_UP,
+        };
+        for (prev, cur) in self.prev.players.iter().zip(&self.cur.players) {
+            let entered = |states: &[u8]| {
+                states.contains(&cur.state_index) && !states.contains(&prev.state_index)
+            };
+            if entered(&[STATE_DEAD]) {
+                self.sfx.play(Cue::Death);
+            }
+            if entered(&[STATE_STRUCK_DOWN, STATE_STRUCK_UP]) {
+                self.sfx.play(Cue::Fall);
+            }
+            if entered(&[STATE_INTERCEPT, STATE_CATCH19]) {
+                self.sfx.play(Cue::DefendedHit);
+            }
         }
     }
 }
@@ -662,6 +728,12 @@ enum Screen {
 
 #[macroquad::main("Disc (1990, Loriciel) -- disc-core front end")]
 async fn main() {
+    // Loaded once, before the menu ever shows: `assets/original/`'s `.SPL`
+    // files decoded to macroquad `Sound`s (or silently skipped -- see
+    // `audio`'s module doc). Cheap to clone into every `MatchState` since
+    // `macroquad::audio::Sound` is itself an `Arc` internally.
+    let sfx = audio::load().await;
+
     let mut screen = Screen::Menu {
         selected: Mode::Training,
     };
@@ -677,7 +749,9 @@ async fn main() {
                     };
                 }
                 if is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) {
-                    next_screen = Some(Screen::Match(Box::new(MatchState::new(*selected))));
+                    next_screen = Some(Screen::Match(Box::new(
+                        MatchState::new(*selected).with_sfx(sfx.clone()),
+                    )));
                 }
                 draw_menu(*selected);
             }
@@ -688,7 +762,9 @@ async fn main() {
                         selected: ms.m.mode,
                     });
                 } else if is_key_pressed(KeyCode::R) {
-                    next_screen = Some(Screen::Match(Box::new(MatchState::new(ms.m.mode))));
+                    next_screen = Some(Screen::Match(Box::new(
+                        MatchState::new(ms.m.mode).with_sfx(sfx.clone()),
+                    )));
                 } else {
                     if is_key_pressed(KeyCode::P) {
                         ms.paused = !ms.paused;
