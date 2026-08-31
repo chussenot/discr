@@ -214,6 +214,166 @@ pub fn damage(
     }
 }
 
+/// `$a314 cmp.w #1,$6d9a`: while bonus code 1 is the active effect, a struck
+/// (non-flagged) cell's damage is applied **twice** before [`damage`]'s own
+/// clamp -- the disc's `+$16` field subtracted once at `$a31c`, then a second
+/// time on the `$a314` branch, per `docs/disc-notes.md`'s Part 10 table
+/// (`$6d9a==1` -> "`$a314 cmpi.w #1` applies the disc's `+$16` damage a
+/// second time") and `reports/part12-bonus.md`/`part12-z8m.md`'s prior static
+/// reads of the same branch. Every code other than 1 (0 = no effect; 2, 4, 5
+/// gate unrelated mechanics; 3 gates `$a32e`'s OWN further path, measured in
+/// `reports/part12-z8m.md` to NOT double) leaves a single application.
+///
+/// **MEASURED, not transcribed from the disassembly alone** — the bead
+/// (discr-z8m) three prior phases left open specifically because no trace on
+/// hand ever exercised `$a314`. `tests/fixtures/bonus_code1.ndjson` (minted
+/// this phase, see its provenance) does: two tiles at hp 4, same character
+/// and disc as three UNDOUBLED hits earlier in the identical trace (frames
+/// 107/535/656, each `hp4-3=1` or `hp5-3=2` exactly), are instead killed
+/// OUTRIGHT by a single strike at frames 992 and 999, both while `$6d9a==1`
+/// (code 1) is the active, not-yet-exhausted effect (`$6d9e`, the code's own
+/// "consumable count" from the `$9aa2` table, decrements 5->4->3 on exactly
+/// those two frames, matching `reports/part12-z8m.md`'s own reading of that
+/// field for code 3). A single `-3` on hp 4 leaves hp 1, as it does at
+/// frames 107/535 in the SAME fixture with the SAME damage constant; it
+/// cannot reach 0. The only damage consistent with `4 -> 0` in one hit is
+/// `-6`: `damage` applied twice. See [`crate::rng`] for how the fixture also
+/// carries the roll that minted this code, and `tile_bonus_code1` below for
+/// the frame-exact replay.
+#[must_use]
+pub fn bonus_damage_multiplier(bonus_code: i16) -> i16 {
+    if bonus_code == 1 { 2 } else { 1 }
+}
+
+#[cfg(test)]
+mod tile_bonus_code1 {
+    //! Replays `tests/fixtures/bonus_code1.ndjson`'s two code-1 hits through
+    //! [`damage`] with [`bonus_damage_multiplier`] applied, and its three
+    //! undoubled hits with the multiplier left at 1 -- the fixture's own
+    //! internal control group, same seed, same character, same per-hit
+    //! damage constant throughout. `cargo test -p disc-core --lib
+    //! tile::tile_bonus_code1 -- --nocapture` prints the replay.
+    use serde::Deserialize;
+
+    use super::{Collapse, TILE_CELLS, Tile, bonus_damage_multiplier, damage};
+    use crate::{COLLAPSE_SLOTS, Event};
+
+    #[derive(Deserialize)]
+    struct TFrame {
+        frame: u64,
+        bonus_6d9a: i16,
+        // "grid": disc-oracle's own near bank, $7616 -- the SAME 16 cells
+        // `damage`/`GameState::tiles` model (this module's own doc comment,
+        // "ST $7616"). NOT "banks" (32 cells from $7596: the far wall
+        // duplicated with $7616's copy tacked on at +16) -- a first draft of
+        // this test read `banks[cell]` directly and silently checked the far
+        // wall's OWN untouched cells instead of the near ones this fixture's
+        // hits actually landed on.
+        #[serde(default)]
+        grid: Vec<(u16, i16)>,
+    }
+
+    fn fixture() -> Vec<TFrame> {
+        let path = format!(
+            "{}/../../tests/fixtures/bonus_code1.ndjson",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{path}: {e}")))
+            .collect()
+    }
+
+    /// One case: at `frame`, the near-bank cell `cell` was struck; `code` is
+    /// that frame's own `bonus_6d9a`, and `expect_hp` is the ST's own
+    /// recorded post-hit hp (read straight from the fixture, not asserted by
+    /// hand) at `frame`. Runs [`damage`] with `base * bonus_damage_multiplier
+    /// (code)` and checks disc-core's own model reaches the same hp.
+    struct Case {
+        frame: u64,
+        cell: usize,
+        base: i16,
+    }
+
+    /// The three undoubled hits (`bonus_6d9a == 0`, multiplier 1) and the
+    /// two code-1 doubled hits (`bonus_6d9a == 1`, multiplier 2), all from
+    /// the one committed trace. `base` (the disc's own `+$16` field, per
+    /// [`damage`]'s own docs) is 3 throughout this seed's match -- read off
+    /// the three undoubled hits themselves (each is hp-3 exactly), not
+    /// assumed.
+    const CASES: [Case; 5] = [
+        Case {
+            frame: 107,
+            cell: 6,
+            base: 3,
+        },
+        Case {
+            frame: 535,
+            cell: 8,
+            base: 3,
+        },
+        Case {
+            frame: 656,
+            cell: 1,
+            base: 3,
+        },
+        Case {
+            frame: 992,
+            cell: 5,
+            base: 3,
+        },
+        Case {
+            frame: 999,
+            cell: 2,
+            base: 3,
+        },
+    ];
+
+    #[test]
+    fn replays_every_hit_frame_exact() {
+        let frames = fixture();
+        let by_frame = |f: u64| {
+            frames
+                .iter()
+                .find(|d| d.frame == f)
+                .unwrap_or_else(|| panic!("bonus_code1.ndjson: no frame {f}"))
+        };
+
+        for case in CASES {
+            let before = by_frame(case.frame - 1);
+            let after = by_frame(case.frame);
+            let (before_type, before_hp) = before.grid[case.cell];
+            let (_, want_hp) = after.grid[case.cell];
+            let mut tiles = [Tile {
+                tile_type: 0,
+                hp: 0,
+            }; TILE_CELLS];
+            tiles[case.cell] = Tile {
+                tile_type: before_type,
+                hp: before_hp,
+            };
+            let mut collapse: [Option<Collapse>; COLLAPSE_SLOTS] = Default::default();
+            let mut events: Vec<Event> = Vec::new();
+            let applied = case.base * bonus_damage_multiplier(after.bonus_6d9a);
+            damage(&mut tiles, case.cell, applied, &mut collapse, &mut events);
+            println!(
+                "frame {}: code={} base={} multiplier={} hp {before_hp} -> {} (ST: {want_hp})",
+                case.frame,
+                after.bonus_6d9a,
+                case.base,
+                bonus_damage_multiplier(after.bonus_6d9a),
+                tiles[case.cell].hp,
+            );
+            assert_eq!(
+                tiles[case.cell].hp, want_hp,
+                "frame {}: cell {} expected hp {want_hp}, modelled {}",
+                case.frame, case.cell, tiles[case.cell].hp
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

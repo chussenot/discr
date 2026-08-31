@@ -27,6 +27,25 @@
 //! *other* cannot preempt it (`$d2ec`'s identity-match check compares
 //! function pointers, and theirs are equal) until the maneuver ends on its
 //! own. This module mirrors that with one `motive` field rather than two.
+//!
+//! # discr-b6x, phase `walls`: `$6c5d` is readable, not reconstructable
+//!
+//! `reports/part12-ai.md`/`part12-rng.md` argued `$6c5d` cannot be
+//! reconstructed *after the fact* -- true, and unchanged here. What those
+//! phases did not have is a fixture that *feeds* it: the sampling window
+//! every committed fixture already lives in (`$6a00`-`$76c0`) covers `$6c5d`
+//! and `$6ab5`, so nothing stops an oracle column from reporting the byte
+//! directly instead of asking a model to predict it. `oracle/disc-oracle.c`
+//! now emits `rng_6c5d`, `latch_id`/`latch_prio` (`$6da6`/`$6daa`, the
+//! dispatch's own latch -- ground truth for "which of the 20 rows is
+//! active", sampled rather than inferred), and `mint_6e3a`/`gate_6e3c`/
+//! `code_6d9e`/`code_6d9c` (the bonus mint, `reports/part12-walls.md`).
+//! [`rng`] is the recurrence contract this unlocks, verified against
+//! `tests/fixtures/bonus_code1.ndjson` in the `rng_verify` test module below. It does
+//! not change what rows 0/1 compute (their roll was always unconditional,
+//! per the module doc above -- knowing `$6c5d` moves nothing for them) --
+//! what it unlocks is rows 6-17 and the mint gate, per
+//! `reports/part12-walls.md`.
 
 use core::cmp::Ordering;
 
@@ -271,6 +290,112 @@ impl Ai {
     }
 }
 
+/// The `$6c5d` PRNG contract: every writer, and a verifiable bound on how
+/// many rolls `$d2cc`'s own dispatch loop can burn in one pass. Address
+/// citations throughout are from a raw byte-scan of `discram.bin` for the
+/// literal `6c 5d` operand (Part 12a/b/walls's own method -- Ghidra's `xref`
+/// misses code it never disassembled, proven three times over now: `$efa8`,
+/// `$968a`, and the two new sites below).
+///
+/// **Every site found** (19 raw hits, all now attributed -- Part 12b found
+/// 19 and attributed 8; this phase attributes the remaining 11):
+///
+/// | site | what |
+/// |---|---|
+/// | `$968a` | THE RESET: `move.b $6ab5,$6c5d`, unconditional, inside an init block reached only through an unresolved indirect call (Part 12b) |
+/// | `$d2fa`/`$d302` | `$d2cc`'s own dispatch roll -- one row's reaction check, [`ROWS`] below |
+/// | `$da0e`/`$da16` | row 18's OWN test (`$da04`), a second roll inside a single row's test function, not the dispatch loop's |
+/// | `$df8c`/`$df94` | the `$deea`/`$df58` walk-cascade actions' shared retry (Part 12b) |
+/// | `$d07a`/`$d082` | a near-bank probe's retry loop (Part 12b, `reports/part12-rng.md`'s walk-cascade helper web) |
+/// | `$9ac6`/`$9ad2`(->`$6e36`, mask `$70`) | **NEW, this phase**: the bonus mint's `$9ab6` "no-bonus, low bucket" tail (`$9d38 blt.w $9ab6`, D0<4, 4/128) -- a roll consumed even on a NON-mint outcome, feeding a tease/flicker parameter, not a code |
+/// | `$9af4`/`$9afc`(->`$6e36`, mask `$07`) | the SAME mint's cell-picker, `$9aea` in `reports/part12-bonus.md`'s own citation -- picks 1 of 8 cells, reached by BOTH the low-bucket tease path and a successful mint (D0 4..14, 11/128); the 113/128 "no bonus" case (`$9d88 rts`) reaches neither and consumes nothing |
+/// | `$9d26`/`$9d2e` | the mint's OWN code roll, `reports/part12-z8m.md`'s `$9d24` |
+/// | `$11716`/`$1171e` and `$11746`/`$1174e` | **NEW, this phase**: two REJECTION-SAMPLING rolls (mask `$0f`, reroll on `==15`, i.e. uniform 1..15) inside the mode/character-select dispatch `reports/part12-dirkind.md` already opened (`$116b6`-`$1170e`) but did not finish -- `$11716` fires when flag `$6c96` is set (a path that bypasses the mode-1/2/3 checks entirely, `$116b0 tst.b $6c96; bne $11716`); `$11746` fires on mode 3 (tournament) after clearing a 16-byte "already picked" table at `$6c86`, sampling WITHOUT replacement from a 15-entry roster pool. Both write the result (`+1`) into `$6c60` -- the SAME mode-gate byte `part12-dirkind.md` already reads, now shown to be RNG-derived on at least one path, not only mode-selected. |
+///
+/// That is every one of the 19 raw hits: 1 reset, 3 dispatch/walk-cascade
+/// rolls already named by Part 12a/b, 1 row-18-local roll, 2 bonus-mint
+/// rolls (code, cell-pick/tease), and the 2 mode-select rolls found this
+/// phase -- 1 + 3 + 1 + 2 + 2 = 9 roll-or-reset SITES, each a read+write
+/// pair except the reset (write-only), matching 1 + 8*2 + 2 = 19.
+///
+/// **What this means for reconstruction**: the mode-select rolls only run
+/// during character/mode setup (well before a match's own frame 0 in every
+/// fixture on hand), and the bonus-mint rolls run on a fixed 20-tick gate
+/// this phase's own oracle columns (`gate_6e3c`, `mint_6e3a`) now expose
+/// directly. Nothing here changes Part 12b's verdict that `$6c5d` cannot be
+/// PREDICTED from nothing; it sharpens which consumers a per-frame sample
+/// has to account for to explain an observed delta -- see the `rng_verify` test module.
+pub mod rng {
+    /// The 20-row table at `$efa8` (`reports/part12-ai.md`): `(priority,
+    /// threshold, identity)`. `identity` is the row's `$e2xx`/`$e274`
+    /// function pointer as it reads in `$6da6` -- NOT modelled as an enum,
+    /// because the fixture's own `latch_id` column carries the real ST
+    /// pointer and this table exists to be compared against it, not to
+    /// replace it.
+    pub const ROWS: [(u8, u8, u32); 20] = [
+        (50, 255, 0xe290), // 0: escape ($e0d8)
+        (30, 255, 0xe290), // 1: avoid ($e158)
+        (20, 200, 0xe222), // 2
+        (20, 150, 0xe222), // 3
+        (10, 100, 0xe222), // 4
+        (12, 230, 0xe244), // 5
+        (10, 90, 0xe274),  // 6
+        (10, 90, 0xe274),  // 7
+        (10, 90, 0xe274),  // 8
+        (10, 90, 0xe274),  // 9
+        (10, 90, 0xe274),  // 10
+        (10, 90, 0xe274),  // 11
+        (10, 90, 0xe274),  // 12
+        (10, 90, 0xe274),  // 13
+        (10, 90, 0xe274),  // 14
+        (10, 90, 0xe274),  // 15
+        (10, 90, 0xe274),  // 16
+        (10, 90, 0xe274),  // 17
+        (9, 60, 0xe274),   // 18
+        (8, 50, 0xe290),   // 19
+    ];
+
+    /// An UPPER BOUND (not always exact) on how many of the 20 rows reach
+    /// the reaction roll in one `$d2cc` pass, given the latch state
+    /// ENTERING the pass. Exact whenever no row preempts the latch mid-pass
+    /// (`$d2ec`/`$d2f2`: a row rolls iff its identity differs from the
+    /// CURRENTLY latched one and its priority exceeds the CURRENTLY latched
+    /// priority -- both can change mid-pass the instant an earlier-indexed
+    /// row fires, which is why this is a bound and not a replay: knowing a
+    /// row's test PASSED would need that row's test decoded, which for 12
+    /// of the 18 RNG-gated rows this project does not have).
+    ///
+    /// A fired row can only ever REDUCE the count below this bound (by
+    /// raising the effective latch priority partway through the table, so
+    /// later rows stop being eligible) -- it can never raise it, since the
+    /// loop is a straight-line pass over exactly [`ROWS`], once. That
+    /// asymmetry is what makes "delta achievable within this bound" a
+    /// falsifiable check rather than a tautology: `$6ab5` (the stride) is
+    /// not always invertible mod 256 (even strides lose bits), so most
+    /// (stride, delta) pairs have NO solution `k` in a 21-wide window,
+    /// meany passing this check on real data is a real constraint, not a
+    /// certainty.
+    #[must_use]
+    pub fn eligible_rolls_bound(latch_priority: u16, latch_identity: u32) -> u32 {
+        ROWS.iter()
+            .filter(|&&(priority, _, identity)| {
+                identity != latch_identity && u16::from(priority) > latch_priority
+            })
+            .count() as u32
+    }
+
+    /// Does at least one `k` in `0..=bound` satisfy `(prev + k * stride) %
+    /// 256 == next`? `stride` is `$6ab5`, fixed for the whole pass (the VBL
+    /// counter's low byte does not change mid-frame).
+    #[must_use]
+    pub fn delta_reachable(prev: u8, next: u8, stride: u8, bound: u32) -> bool {
+        (0..=bound).any(|k| {
+            let acc = (u32::from(prev) + k * u32::from(stride)) % 256;
+            acc == u32::from(next)
+        })
+    }
+}
+
 /// Measures [`Ai::p2_policy`] against `ai_6da1`/`pass_ai` in the three
 /// committed fixtures, reading them directly (a handful of field-scoped
 /// structs, not `disc-tools`'s `Frame`, which `discr-b6x` does not own).
@@ -476,5 +601,100 @@ mod agreement {
         let (agree, total) = measure(&fixture("p1_walk.ndjson"));
         println!("p1_walk: {agree}/{total}");
         assert_eq!((agree, total), (22, 200));
+    }
+}
+
+/// Verifies [`rng::eligible_rolls_bound`] against `tests/fixtures/
+/// bonus_code1.ndjson` -- the first fixture with `rng_6c5d`/`latch_id`/
+/// `latch_prio`/`gate_6e3c` columns at all (`reports/part12-walls.md`).
+///
+/// This is a bound check, not a replay (see [`rng`]'s own docs for why an
+/// exact replay needs rows 6-17's undecoded tests): for every consecutive
+/// sampled pair where the dispatch ran exactly once (`updates == 1`) and the
+/// latch identity/priority the fixture itself recorded is UNCHANGED across
+/// the pair (ruling out the one case the bound is not exact for -- a row
+/// firing and unlatching again inside the same pass), the observed `$6c5d`
+/// delta must be reachable within `[rng::eligible_rolls_bound`'s value,
+/// plus up to 2 more if `gate_6e3c` shows this frame's bonus-mint gate also
+/// fired (`reports/part12-walls.md`'s new-consumer table)`]` rolls of the
+/// known stride. `cargo test -p disc-core --lib ai::rng_verify --
+/// --nocapture` prints every pair checked.
+#[cfg(test)]
+mod rng_verify {
+    use serde::Deserialize;
+
+    use super::rng::{delta_reachable, eligible_rolls_bound};
+
+    #[derive(Deserialize, Clone)]
+    struct TFrame {
+        frame: u64,
+        vbl_6ab4: u32,
+        rng_6c5d: u8,
+        latch_id: u32,
+        latch_prio: u16,
+        gate_6e3c: u16,
+        #[serde(default = "one")]
+        updates: u16,
+    }
+
+    fn one() -> u16 {
+        1
+    }
+
+    fn fixture(name: &str) -> Vec<TFrame> {
+        let path = format!("{}/../../tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{path}: {e}")))
+            .collect()
+    }
+
+    #[test]
+    fn bonus_code1_stream_within_bound() {
+        let frames = fixture("bonus_code1.ndjson");
+        let (mut checked, mut skipped_unstable, mut skipped_multipass) = (0u32, 0u32, 0u32);
+        for w in frames.windows(2) {
+            let [cur, next] = w else { unreachable!() };
+            if next.updates != 1 {
+                skipped_multipass += 1;
+                continue;
+            }
+            if next.latch_id != cur.latch_id || next.latch_prio != cur.latch_prio {
+                // The one case the bound is not exact for (a row firing and
+                // un-latching inside the same pass) -- see the module doc.
+                skipped_unstable += 1;
+                continue;
+            }
+            // The oracle samples at PC == $8198, BEFORE that VBL's own
+            // $6ab4 increment runs (`oracle/README.md`) -- so the VBL during
+            // which the pass between `cur` and `next` actually executed is
+            // the one `next`'s own sample reports, not `cur`'s.
+            let stride = (next.vbl_6ab4 & 0xff) as u8;
+            let mut bound = eligible_rolls_bound(cur.latch_prio, cur.latch_id);
+            // A bonus-mint gate-fire this frame (the countdown reloading to
+            // 20) consumes 1 roll unconditionally and up to 1 more (the
+            // cell-pick/tease tail) -- reports/part12-walls.md's `rng` doc.
+            if next.gate_6e3c == 20 && cur.gate_6e3c != 20 {
+                bound += 2;
+            }
+            let ok = delta_reachable(cur.rng_6c5d, next.rng_6c5d, stride, bound);
+            checked += 1;
+            if !ok {
+                panic!(
+                    "frame {}->{}: rng_6c5d {} -> {} not reachable within {bound} rolls of stride {stride} (latch prio={} id={:#x})",
+                    cur.frame,
+                    next.frame,
+                    cur.rng_6c5d,
+                    next.rng_6c5d,
+                    cur.latch_prio,
+                    cur.latch_id
+                );
+            }
+        }
+        println!(
+            "bonus_code1 rng bound: {checked} pairs checked, {skipped_unstable} skipped (latch changed), {skipped_multipass} skipped (multi-pass)"
+        );
+        assert!(checked > 0, "fixture produced no checkable pairs at all");
     }
 }

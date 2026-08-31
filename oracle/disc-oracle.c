@@ -545,6 +545,11 @@ static void apply_events(long frame)
 
 /* ---- state emission ---------------------------------------------------- */
 static unsigned rd16(unsigned a) { return ((unsigned)ram[a] << 8) | ram[a + 1]; }
+static unsigned rd32(unsigned a)
+{
+    return ((unsigned)ram[a] << 24) | ((unsigned)ram[a + 1] << 16) |
+           ((unsigned)ram[a + 2] << 8) | ram[a + 3];
+}
 
 static void emit_frame(FILE *out, long frame)
 {
@@ -556,14 +561,37 @@ static void emit_frame(FILE *out, long frame)
      * ($10eac).  $6d9a is the active bonus code.  Part 10. */
     fprintf(out, "{\"frame\":%ld,\"vbl_6ab4\":%u,\"joy_6c58\":%u"
                  ",\"joy_6c59\":%u,\"ai_6da1\":%u,\"mode_6da0\":%u,\"bonus_6d9a\":%d"
-                 ",\"repeat_6ab8\":%u,\"updates\":%u,\"outer\":%u",
+                 ",\"repeat_6ab8\":%u,\"updates\":%u,\"outer\":%u"
+                 /* discr-b6x (reports/part12-walls.md): the shared PRNG byte
+                  * every reader/writer above $d2cc's own roll, the bonus
+                  * placer/mint, and the mode/tournament-select rolls all
+                  * accumulate into.  $6ab5 (its stride) is already the low
+                  * byte of vbl_6ab4 above -- not re-emitted.  $6da6/$6daa are
+                  * the AI dispatch's OWN latch (identity fn ptr, priority):
+                  * sampling them directly turns "which of the 20 rows is
+                  * active" from something a model would have to infer back
+                  * into something a fixture states outright.  $6e3a/$6e3c
+                  * are the bonus mint's payload and its 20-tick reload gate
+                  * (reports/part12-bonus.md, part12-z8m.md); together they
+                  * let a script compute forward, from a fixture's own frame
+                  * 0, exactly which future gate-fire mints a given code. */
+                 ",\"rng_6c5d\":%u,\"latch_id\":%u,\"latch_prio\":%u"
+                 ",\"mint_6e3a\":%d,\"gate_6e3c\":%u,\"code_6d9e\":%d,\"code_6d9c\":%d",
             frame, rd16(0x6ab4), ram[0x6c58],
             ram[0x6c59], ram[0x6da1], ram[0x6da0], (int16_t)rd16(0x6d9a),
             /* $6ab8: the main loop at $96ba pushes this and repeats the disc
              * loop + the player dispatcher until it goes negative, so a frame
              * is $6ab8 + 1 updates.  Zero on every frame of both clean
              * fixtures; 1 on the double-step frames of p1_walk. */
-            rd16(0x6ab8), updates_since_sample, outer_since_sample);
+            rd16(0x6ab8), updates_since_sample, outer_since_sample,
+            ram[0x6c5d], rd32(0x6da6), rd16(0x6daa),
+            (int16_t)rd16(0x6e3a), rd16(0x6e3c),
+            /* $6d9e/$6d9c: the $9aa2 table's payload/duration for whichever
+             * code is active (docs/disc-notes.md's Part 10 table) -- code 1's
+             * own "consumable count" (5, no timer), so this is the direct
+             * ground truth for whether a hit under $6d9a==1 consumed a use,
+             * the same signal reports/part12-z8m.md read for code 3. */
+            (int16_t)rd16(0x6d9e), (int16_t)rd16(0x6d9c));
     {   /* one entry per update pass, in order */
         unsigned k;
         fprintf(out, ",\"pass_joy\":[");
