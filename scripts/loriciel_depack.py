@@ -1,6 +1,43 @@
 #!/usr/bin/env python3
 """Loriciel graphics depacker for "Disc" (Loriciel, 1990, Atari ST) -- discr-rxx.5.
 
+THIRD SHIFT HEADLINE (see reports/part13-codec.md for the full derivation):
+the Ice! bitstream format is now PINNED, bit-exact, round-trip-proven against
+four live-captured (header+payload -> expected-output) pairs covering all
+four files the second shift proved go through this routine (DALLES01.DAT,
+PLAYER01.DAT, ENEMY01.DAT, DECOR00.DAT's second load) -- `depack_ice()`
+below. Method: capstone-disassembled the routine from `discram.bin`, then
+resolved the DBcc/DBNE branch polarity (which the static disassembly alone
+left genuinely ambiguous -- DBcc decrements+loops on FALSE, stops on TRUE,
+the opposite of what a `bcc`-shaped reading suggests) via live Hatari PC
+breakpoints scoped by `a4==<dest>` (stable for a whole file's decode),
+:trace :lock across sequences of iterations, cross-checked byte-for-byte
+against real hardware.
+
+CRITICAL CAVEAT, and why `depack()` still refuses `DALLES01.DAT` etc. by
+name: the ACTUAL bytes the Ice! routine reads for these four files are NOT
+`assets/original/DALLES01.DAT` (etc.) -- proven by capturing the real
+in-RAM packed window (savebin'd at the exact instant `pc=$33a`, i.e. right
+after the 12-byte header is parsed) and diffing it against the on-disk file
+at the SAME byte count: >99% of bytes differ. The on-disk `.DAT` files (both
+in this repo's `.st` image and in PP's `DSC`, verified identical) are a
+genuine but DIFFERENT byte sequence from what gets fed to the depacker at
+runtime. A partial resolution: the captured window's header+payload bytes
+(the literal `Ice!`+P+Q container, not just the compressed data) WERE found
+verbatim on the `.st` image, but at a wholly undocumented disk offset
+outside all 34 of the directory's declared file ranges (e.g. `$75600` for
+DALLES01.DAT, ~350 KB past the directory's last entry) -- strongly
+suggesting the real containers live inside `DISC.ALL`'s own internal index
+(docs/loriciel-formats.md ss6 already flags `DISC.ALL` as "not a flat index
+of the 29 aliased files"), reachable through some structure this pass did
+not solve. The first 512 bytes of the found region diverge from a naive
+linear read (a single sector relocated, consistent with the disc's own
+"bad sector" protection scheme being patched around by the crack); bytes
+past that point read back in clean, contiguous 512-byte-sector steps. Filed
+as a natural follow-up (see the bead comment) rather than guessed further.
+`depack_ice(blob)` therefore takes the captured container blob directly
+(auto-detected by `depack()` via its own "Ice!" magic), not a filename.
+
 STATUS (proven vs. unresolved -- see reports/part13-depack.md for the first
 shift's methodology, and reports/part13-depack2.md for the second shift's
 findings, which OVERTURN part of the first shift's Finding 3):
@@ -12,10 +49,9 @@ findings, which OVERTURN part of the first shift's Finding 3):
   and ENEMY01.DAT (and a second, independent load of DECOR00.DAT), proven
   live via captured Ice! headers whose first size field exactly equals
   each file's known on-disk size (12500/67211/28785/7477 bytes). The exact
-  bit-level token algorithm is still NOT round-trip-proven (see
-  reports/part13-depack2.md), so depack() still refuses these four names --
-  landing the codec here requires a proven byte-exact implementation, not
-  just a proven association between file and routine.
+  bit-level token algorithm was NOT round-trip-proven this shift (see
+  reports/part13-depack2.md) -- the third shift closes that gap, see
+  THIRD SHIFT HEADLINE above.
 
   PROVEN (round-trip against live Hatari RAM, byte-for-byte, sha256-checked):
     DECOR00.DAT, DECOR01.DAT (bytes 0..9216 of 10121; tail clobbered by a
@@ -208,21 +244,265 @@ _PROVEN_RAW_FULL_SHA256 = {
 }
 
 
+# ---------------------------------------------------------------------------
+# The Ice! codec (discr-rxx.5 third shift) -- see module docstring's THIRD
+# SHIFT section for the full derivation. Bit-exact, round-trip-proven against
+# four live-captured (header+payload, expected-output) pairs. NOT wired to
+# accept assets/original/DALLES01.DAT etc. directly: those on-disk bytes are
+# proven NOT to be the Ice! container the depacker actually reads (see
+# docstring) -- depack() below auto-detects the "Ice!" magic instead, so it
+# only ever fires on the container format this codec actually understands.
+ICE_MAGIC = b"Ice!"
+
+# Length table ($4a2, 10 bytes: 5 signed extrabits + 5 unsigned baselen),
+# indexed by (unary-prefix-count + 1); distance table ($4ac) likewise.
+_LEN_EXTRA = [0x09, 0x01, 0x00, -1, -1]
+_LEN_BASE = [0x08, 0x04, 0x02, 0x01, 0x00]
+_DIST_EXTRA = [0x0B, 0x04, 0x07]
+_DIST_BASE = [0x0120, 0x0000, 0x0020]
+
+# The $394 "escalating literal-length" table: for each candidate i, read
+# (nbits+1) bits; if they equal `target` the search continues to i+1 (a
+# DBNE loops on EQUAL, not on not-equal -- confirmed live, see docstring),
+# otherwise this candidate is accepted and `addval` is added to the just-read
+# value to give the literal run's length-minus-one.
+_LIT_TABLE = [
+    (0x0001, 0x0003, 1),     # $48a: 2 bits, target 3,     +1
+    (0x0001, 0x0003, 4),     # $486: 2 bits, target 3,     +4
+    (0x0002, 0x0007, 7),     # $482: 3 bits, target 7,     +7
+    (0x0007, 0x00FF, 14),    # $47e: 8 bits, target 255,   +14
+    (0x000E, 0x7FFF, 269),   # $47a: 15 bits, target 32767,+269
+]
+
+
+class _IceDecoder:
+    """One Ice!-container decode. Mirrors the real 68000 routine's registers
+    directly (a5 = backward bit-reader cursor into `src`, d7 = 32-bit bit
+    buffer with a sentinel-bit refill convention, wpos = a6-a4 i.e. "output
+    bytes remaining to write" since the routine writes its destination
+    backward via -(a6)/-(a1) predecrement addressing)."""
+
+    def __init__(self, src, a5_start, dest_len):
+        self.src = src
+        self.a5 = a5_start
+        self.d7 = 0
+        self.dest_len = dest_len
+        self.out = bytearray(dest_len)
+        self.wpos = dest_len
+
+    def _read_byte_back(self):
+        self.a5 -= 1
+        if self.a5 < 0:
+            raise DepackError("Ice!: source underrun (a5<0)")
+        return self.src[self.a5]
+
+    def _prime(self):
+        # $3b6: 4x(move.b -(a5),d7 / ror.l #8,d7) -- net effect is a plain
+        # big-endian 4-byte backward read with NO sentinel bit inserted.
+        if self.a5 < 4:
+            raise DepackError("Ice!: source underrun at prime")
+        self.a5 -= 4
+        self.d7 = int.from_bytes(self.src[self.a5:self.a5 + 4], "big")
+
+    def _get_bit(self):
+        # $3e2/$3e8-$406: MSB-first bit reader. Shift d7 left 1 (carry =
+        # the bit); if d7 hits exactly 0 the sentinel bit (planted by the
+        # previous refill) was just consumed, so refill: read 4 fresh bytes
+        # backward, return their MSB as this call's bit, and OR in a new
+        # sentinel at bit 0 of the doubled fresh word.
+        shifted = self.d7 << 1
+        bit = (shifted >> 32) & 1
+        self.d7 = shifted & 0xFFFFFFFF
+        if self.d7 == 0:
+            if self.a5 < 4:
+                raise DepackError("Ice!: source underrun on bit refill")
+            self.a5 -= 4
+            neww = int.from_bytes(self.src[self.a5:self.a5 + 4], "big")
+            bit = (neww >> 31) & 1
+            self.d7 = ((neww << 1) | 1) & 0xFFFFFFFF
+        return bit
+
+    def _get_bits(self, n):
+        """$408: reads (n+1) bits MSB-first (matches its DBRA convention)."""
+        d1 = 0
+        for _ in range(n + 1):
+            d1 = (d1 << 1) | self._get_bit()
+        return d1
+
+    def _write_byte(self, val):
+        if self.wpos <= 0:
+            raise DepackError("Ice!: output overflow")
+        self.wpos -= 1
+        self.out[self.wpos] = val & 0xFF
+
+    def _literal_extra_length(self):
+        # $394-$3a6: escalating-width search table (see _LIT_TABLE).
+        d1 = 0
+        for nbits, target, addval in _LIT_TABLE:
+            d1 = self._get_bits(nbits)
+            if d1 != target:
+                return d1 + addval
+        # All 5 candidates read equal to their target -> DBNE's counter
+        # itself is exhausted, forcing acceptance of the last one.
+        return d1 + _LIT_TABLE[-1][2]
+
+    def _unary_prefix(self, start, count):
+        # $41a-$41e / $43c-$440: DBCC-style unary prefix. Real 68000 DBcc
+        # decrements+loops when its condition is FALSE and stops (unchanged)
+        # when TRUE -- for DBCC (carry-clear) that means: bit==0 stops
+        # immediately, bit==1 decrements and reads another bit, up to
+        # `count` times.
+        d2 = start
+        for _ in range(count):
+            if self._get_bit() == 0:
+                return d2
+            d2 -= 1
+        return d2
+
+    def _decode_length(self):
+        # $416-$436.
+        d2 = self._unary_prefix(3, 4)
+        idx = d2 + 1
+        extra = _LEN_EXTRA[idx]
+        d1 = self._get_bits(extra) if extra >= 0 else 0
+        return _LEN_BASE[idx] + d1   # match_len - 2; 0 => reduced-range case
+
+    def _decode_distance(self):
+        # $438-$454.
+        d2 = self._unary_prefix(1, 2)
+        idx = d2 + 1
+        d1 = self._get_bits(_DIST_EXTRA[idx])
+        return d1 + _DIST_BASE[idx]
+
+    def _decode_reduced_distance(self):
+        # $456-$466: one selector bit picks a plain 6-bit or a +64-biased
+        # 9-bit distance code (only reached when decode_length's d4==0).
+        if self._get_bit() == 0:
+            nbits, bias = 5, 0
+        else:
+            nbits, bias = 8, 0x40
+        return self._get_bits(nbits) + bias
+
+    def _bit_scatter(self):
+        # $344-$36c: chunky4->planar4 bit-transpose, gated by one extra bit
+        # read right after the main token loop finishes ($33e/$342). Walks
+        # backward from the destination's end in 4000 8-byte (4-word)
+        # chunks, rewriting each chunk in place.
+        a3 = self.dest_len
+        for _ in range(4000):
+            d0 = d1 = d2 = d3 = 0
+            for _ in range(4):
+                a3 -= 2
+                if a3 < 0:
+                    raise DepackError("Ice!: bit_scatter underrun")
+                word = (self.out[a3] << 8) | self.out[a3 + 1]
+                for _ in range(4):
+                    bit = (word >> 15) & 1
+                    word = (word << 1) & 0xFFFF
+                    d0 = ((d0 << 1) | bit) & 0xFFFF
+                    bit = (word >> 15) & 1
+                    word = (word << 1) & 0xFFFF
+                    d1 = ((d1 << 1) | bit) & 0xFFFF
+                    bit = (word >> 15) & 1
+                    word = (word << 1) & 0xFFFF
+                    d2 = ((d2 << 1) | bit) & 0xFFFF
+                    bit = (word >> 15) & 1
+                    word = (word << 1) & 0xFFFF
+                    d3 = ((d3 << 1) | bit) & 0xFFFF
+            pos = a3
+            for w in (d0, d1, d2, d3):
+                self.out[pos] = (w >> 8) & 0xFF
+                self.out[pos + 1] = w & 0xFF
+                pos += 2
+
+    def run(self):
+        self._prime()
+        while True:
+            bit0 = self._get_bit()
+            lit_len = None
+            if bit0:
+                lit_len = 0 if self._get_bit() == 0 else self._literal_extra_length()
+            if lit_len is not None:
+                for _ in range(lit_len + 1):
+                    self._write_byte(self._read_byte_back())
+                if self.wpos <= 0:
+                    break
+            d4 = self._decode_length()
+            distance = (self._decode_reduced_distance() if d4 == 0
+                        else self._decode_distance())
+            match_len = d4 + 2
+            # source = a6 + 2 + d4 + distance; a6 == current wpos here.
+            src_pos = self.wpos + 2 + d4 + distance
+            for _ in range(match_len):
+                if src_pos > self.dest_len:
+                    raise DepackError(
+                        "Ice!: match source out of range (%d > %d)"
+                        % (src_pos, self.dest_len))
+                src_pos -= 1
+                b = self.out[src_pos] if src_pos < self.dest_len else 0
+                self._write_byte(b)
+            if self.wpos <= 0:
+                break
+        if self._get_bit():
+            self._bit_scatter()
+        return bytes(self.out)
+
+
+def depack_ice(blob: bytes) -> bytes:
+    """Depack one Ice!-class container: 12-byte header (`b"Ice!"`, big-endian
+    u32 P, big-endian u32 Q) followed by packed payload, P bytes TOTAL
+    measured from the header's own start (confirmed live: the bit-reader's
+    start pointer equals header_address + P, so P includes the 12-byte
+    header itself). Returns exactly Q depacked bytes, byte-identical to the
+    resident RAM ground truth for all four live-captured proof pairs (see
+    module docstring, THIRD SHIFT). Raises DepackError on a bad/missing
+    magic, a truncated blob, or an internal bounds violation -- never
+    silently returns wrong bytes.
+
+    NOTE: `blob` is NOT assets/original/DALLES01.DAT (or PLAYER01.DAT/
+    ENEMY01.DAT/DECOR00.DAT) -- see module docstring for why those on-disk
+    files are proven to be a *different* byte sequence from what this
+    routine actually reads. `blob` is the 12-byte-header-prefixed capture
+    this shift's `reports/part13-codec.md` documents how to reproduce.
+    """
+    if len(blob) < 12 or blob[:4] != ICE_MAGIC:
+        raise DepackError("Ice!: bad or missing magic (need b'Ice!' + u32 P + u32 Q)")
+    p = int.from_bytes(blob[4:8], "big")
+    q = int.from_bytes(blob[8:12], "big")
+    if len(blob) < p:
+        raise DepackError("Ice!: truncated container (header says P=%d, got %d bytes)"
+                           % (p, len(blob)))
+    return _IceDecoder(blob, p, q).run()
+
+
 def depack(data: bytes, *, name: str | None = None) -> bytes:
     """Identity depack for the file classes proven raw in RAM (see module
-    docstring). Refuses (DepackError) anything not independently confirmed,
-    rather than silently returning input unchanged for an unknown/actually
-    -compressed file such as DALLES01.DAT.
+    docstring), or the Ice! codec (see `depack_ice`) when `data` carries its
+    own "Ice!" header. Refuses (DepackError) anything else not independently
+    confirmed, rather than silently returning wrong bytes -- in particular
+    this deliberately does NOT special-case DALLES01.DAT/PLAYER01.DAT/
+    ENEMY01.DAT by name: their on-disk bytes lack the Ice! magic and are
+    proven not to be what the depacker reads (see docstring), so passing
+    them through `depack_ice()` would silently produce garbage.
     """
+    if len(data) >= 12 and data[:4] == ICE_MAGIC:
+        return depack_ice(data)
     if name is not None:
         base = name.upper().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         if base in _PROVEN_RAW_FULL_SHA256:
             return data
-        if base in ("DALLES01.DAT", "PLAYER01.DAT", "ENEMY01.DAT",
-                     "DECOR02.DAT", "DECOR03.DAT", "DECOR04.DAT"):
+        if base in ("DALLES01.DAT", "PLAYER01.DAT", "ENEMY01.DAT"):
             raise DepackError(
-                "%s: no proven depacker (see UNRESOLVED in this module's "
-                "docstring and reports/part13-depack.md)" % base)
+                "%s: Ice!-packed and the codec is proven (depack_ice()), but "
+                "the on-disk bytes at this file's own directory entry are "
+                "proven NOT to be the container the depacker reads -- see "
+                "THIRD SHIFT in this module's docstring and "
+                "reports/part13-codec.md" % base)
+        if base in ("DECOR02.DAT", "DECOR03.DAT", "DECOR04.DAT"):
+            raise DepackError(
+                "%s: never observed loading (raw or Ice!) in any captured "
+                "session -- still no proven depacker; see UNRESOLVED in "
+                "this module's docstring" % base)
         if base == "DECOR01.DAT":
             return data  # proven for the first 9216/10121 bytes; see docstring
     return data
