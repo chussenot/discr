@@ -113,3 +113,15 @@ Verified in this repository against the primary bytes:
   contiguity holds for the verified examples (`LAUNCHER.HA`→`DISC.ALL`→
   `50.NSQ` by span end), but a general verifier must model overlap as
   legal, not an error. Owned by the `dscfs` tool's `verify` subcommand.
+
+- **The aliasing is wider than one pair.** `dscfs verify`'s all-pairs check
+  (run against `assets/disch/DSC`) finds `DISC.ALL`'s span containing or
+  overlapping 29 of the intervening entries, not just `PROGRAM.HA` — every
+  file between `PROGRAM.HA` and `ENEMY01.DAT` sits inside or across its
+  `0x3600`–`0x50B72` span, and `50.NSQ` in turn overlaps the tail of
+  `ENEMY01.DAT` and all of `VIC.DAT`. `DISC.ALL` reads as a master index
+  over the whole packed-data region, not a special case around one file.
+  Full span map in `reports/part13-dscfs.md`.
+- **Tool**: `cargo run -p disc-tools --bin dscfs -- {ls,extract,verify,samples} <DSC>`
+  parses this directory, extracts entries, bounds-checks + reports the span
+  map above, and decodes `*.SPL` to WAV. `crates/disc-tools/src/bin/dscfs.rs`.

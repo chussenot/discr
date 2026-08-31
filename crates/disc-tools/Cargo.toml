@@ -12,6 +12,10 @@ license.workspace = true
 name = "tracecheck"
 path = "src/main.rs"
 
+[[bin]]
+name = "dscfs"
+path = "src/bin/dscfs.rs"
+
 [dependencies]
 disc-core = { workspace = true, features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
