@@ -1,0 +1,310 @@
+Disc - Instructions
+-------------------
+
+  Disc by Loriciel is a fantastic game of action and skill that is reminiscent 
+  of the old Tron Disc's game, one of my personal old favorites.  When I asked 
+  several people how they liked the game, some of them replied: "Huh? I thought 
+  Disc was a utility."  Well despite the vagueness of it's name, this is in 
+  fact a game, and one not to be missed.
+
+  The game offers two player competition, either human vs human or human vs
+  computer.  Basically each player stands on their own platform comprised of
+  eight tiles positioned in two rows of four tiles each.  The platforms have
+  a wall of an additional eight tiles, two rows of eight like the floor, and
+  the wall is positioned directly behind each player.  The platforms are
+  suspended in mid-air and positioned face to face.  The object is to throw
+  a disc or discs at the other player and try to hit him with it, thus
+  draining his life meter.  Once the life meter is exhausted, the player
+  dies.  Ah, but this is only half the fun.  There is an additional method
+  of disposing of your opponent and that is to disintigrate the tiles that
+  comprise his platform until he has nowhere left to stand and falls to his
+  death.  To do this you must hit your opponent's back wall tiles with your
+  disc.  You will notice certain geometrical patterns are drawn on each of
+  the back wall tiles.  Each time you hit a back wall tile, the geometrical
+  pattern of that tile will change to a new pattern, until all the patterns
+  have run through their cycle.  When this happens, the back wall tile will
+  dissappear and so will the corresponding floor tile.  The back wall tiles
+  and corresponding floor tiles are labeled below:
+
+                          --- --- --- ---
+                         | 1 | 2 | 3 | 4 |  Back Wall
+                          --- --- --- ---
+                         | 5 | 6 | 7 | 8 |
+                          --- --- --- ---
+      Bottom Platform   / 1 / 2 / 3 / 4 /
+                        --- --- --- ---
+  Where you Stand     / 5 / 6 / 7 / 8 /
+                      --- --- --- ---
+
+  So hitting the number 2 tile on the back wall will disintigrate it and the
+  number 2 tile on the bottom platform.  Hitting the back wall's number 8 tile
+  will disintigrate it and the corresponding number 8 on the bottom platform.
+  Keep hitting all tiles until there is nowhere left for your opponent to
+  stand.  He will fall to his death into the great void and you will win the
+  match.  The same can happen to you, however, so practice defensive moves
+  as well as offensive.  i.e. Protect your wall by blocking your opponents
+  discs, while hammering at his wall with discs of your own.  More on this
+  later...
+
+  GEOMETRICAL PATTERNS:
+  =====================
+
+  The back wall tiles use geometrical patterns to control how many times you
+  need to hit a certain tile to disintigrate it.  In the early levels, one
+  two or three hits and a tile is gone.  In the latter levels it takes a
+  few more.  Below is a listing of the first five geometrical patterns.
+  There are more as the levels get higher, but this listing will suffice
+  to help you understand the concept:
+
+                        5 Hits Left  -  Pentagon
+                        4 Hits Left  -  Square
+                        3 Hits Left  -  Triangle
+                        2 Hits Left  -  Equals Sign "="
+                        1 Hit Left   -  Circle
+
+  The listing is showing you that when a tile starts out as a Pentagon,
+  the first time you hit it, it will change to a Square, the next hit will
+  change it to a Triangle, and so on down the line until finally it is gone.
+  After hitting a Circle tile, the back wall tile and corresponding platform
+  tile will disintegrate.
+
+  When a tile is destroyed, a high-pitched tone sounds to let you know.  If
+  you are standing on a tile and hear the tone and your tile starts to dis-
+  integrate, you'd better move quick.
+
+  There is one geometrical shape that looks like a number 8 turned sideways.
+  Tiles with this pattern on them are indestructible.
+
+
+  IMPORTANT KEYS TO KNOW:
+  =======================
+
+  ESCape    - Will quit and reset game back to title screen.
+  Backspace - Quit & Exit to DOS from almost anywhere.
+  Break Key - Pauses Game / Press any key to resume
+  TAB Key   - Pauses Game / Press TAB again to resume.
+
+  MOUSE CONTROLS:
+  ===============
+
+  This game does not appear to support mice.
+
+
+  JOYSTICK CONTROLS:
+  ==================
+
+  Use the information on keyboard controls below, just substitute moving
+  the joystick in the direction of the corresponding keyboard keys.  The
+  action button is joystick button number one.
+
+
+  KEYBOARD CONTROLS:
+  ==================
+
+  This game supports two player simultaneous combat mode so there are two
+  sets of keys on the keyboard, one for each player.  I will call the two
+  sets of keys "keymap one" and "keymap two".  I do this because keymap
+  one isn't necessarily always used by player one.  The way it works is
+  with a one player game, the player must use keymap two.  With a two
+  player game, player one uses keymap one, and player two uses keymap two.
+
+  Below are keymaps one and two.  When the action button is not being held
+  down, the following keys will move the player in their corresponding
+  directions as shown by the lines pointing to the letters:
+
+
+                 KeyMap One                   KeyMap Two
+
+                  Q  W  E                      I  O  P
+                   \ | /                        \ | /
+                 A -- -- D                    K -- -- ;
+                   / | \                        / | \
+                  Z  X  C                      ,  .  /
+
+  ACTION KEY:   Letter "S"                     <ENTER>
+
+
+             For the joystick, the directions are the same
+           but the action key is joystick button number one.
+
+
+  * The action keys for keymap one and two is the letter "S" and the <ENTER>
+    key, respectively.  Usage of the Action keys is discussed in the next
+    section.
+
+  * The player using keymap two also has the option of using either the
+    standard arrow keys or numeric keypad arrow keys for direction, the
+    action key for keymap two remains the same, however.
+
+
+  USAGE OF THE ACTION KEY:
+  ========================
+
+  When holding down the action key in conjunction with a directional key
+  you can throw the disc high or low as well as block your opponents disc
+  with your shield.  Here's how it's done:
+
+                                        Forward
+       Throw Disc High:            Left    |    Right
+                                       \   |   /
+                                         \ | /
+        Throw Disc Low:           Left ---- ---- Right
+                                         / | \
+                                       /   |   \
+            Use Shield:            Left    |  Right
+
+                                         Front
+  So, using keymap one, to throw a disc high and to the right you would
+  hold down the letter "S" key, then press the letter "E".  Using the joystick
+  you would hold down the joystick button then push the joystick diagonally up
+  and to the right.  To deflect a disc from the left you would hold down the
+  letter "S" key, then press the letter "Z".  With the joystick, you would
+  hold down the joystick button then push the joystick diagonally down and
+  to the left.  To block an oncoming direct hit, hold it straight down with
+  the button pressed, or use the "S" and "X" keys if using the keyboard under
+  keymap one.  Getting the idea of how this works?
+
+  The action key also has a stand alone function.  If a disc of your color
+  is moving near or towards you, pressing the action key by itself will
+  guide the disc towards you and help you catch it.  You do not have to
+  press the action key to catch a disc, but it seems to help you do it
+  better.  If you don't catch a disk right, either because you are not
+  centered on it, or because you're balancing yourself too close to the edge
+  of a square, the disc will hit you and take some of your power away -
+  Even if the disc is yours.  So try to get close as possible to your disc
+  and use the action button to guide it to you and catch it properly.
+
+  If the disc is not your color either dodge it or try to deflect it with
+  your shield.  If it hits you it WILL inflict damage on your life meter,
+  and if you do not deflect it with your shield, it will inflict damage to
+  your platform.
+
+
+  DISCS AND WHO THEY BELONG TO:
+  =============================
+
+  Depending on which type of game you choose to play, you and your opponent
+  may start out holding anywhere from one to five discs between you.  Look
+  at the top of the screen just under the players life meter.  A picture
+  of a disc will show up under your life meter for each disc you are holding
+  and same for your opponent.  Player one's life meter and disc status is
+  located on the top left of the screen and player two's on the top right.
+
+  When you throw a disc it will be of your color, either white or orange,
+  depending on which player you are.  Generally player one is orange and
+  player two is white.  When a disc of your color hits your opponent's body
+  or his back wall, it will inflict damage.  When the disc bounces off your
+  opponents back wall, it will come back towards you and you  must try to
+  catch it and then throw it again to try and inflict more damage.
+
+  When you or your opponent deflect a disc with the shield, the disc will
+  change from your opponents color to your color.  Also, if you fail to
+  catch or deflect a disk of your own color, it will hit your back wall,
+  and although it won't inflict damage to your wall, it will change to
+  your opponents color and fly back towards him.
+
+  Discs do not really belong to either player exclusively.  Ownership of
+  a disc is determined by what color it is, and the color of the disc
+  will change frequently as it bounces of walls and is deflected.  Always
+  try to deflect your opponent's discs, and always try to catch your own
+  discs and then line yourself up for another shot.  If you're involved
+  in a multi-disc game, be advised that you and your opponent can both
+  catch more than just one disc.  Actually a good strategy in multi-disc
+  games is to wait and catch as many discs as you can, then fling them
+  all at your opponent in rapid succession to confuse the hell out of
+  him and inflict major damage.
+
+
+  OPTIONS:
+  ========
+
+    -Two Players- (Human vs Human)
+
+  * ONE ON ONE:  By selecting the two player option from the title menu
+    you and a friend can play one on one.  Two matches are played, and at the
+    end of the first match players switch sides, so be prepared.  In the
+    event of a tie, another two matches are played.  Victory is achieved
+    by winning both matches.  Each match lasts two and a half minutes or
+    until one opponent is destroyed.
+
+
+    -One Player- (Human vs Computer)
+
+  *     TRAINING:  Start with this to get familiar with how to manuever your
+                   player and discs, and for practice with hitting targets
+                   as well as dodging and deflecting opponent discs.
+
+                   You start out with target practice.  Try to hit the tiles
+                   that have the "?" on them with your disc.  The next part
+                   is moving target practice.  An opponent will appear and
+                   try to dodge and deflect your disks as you try to hit him.
+                   The next part you get to dodge and deflect discs as your
+                   opponent trys to hit you with them.
+
+  *    CHALLENGE:  You get to pick out exactly which opponent you wish to
+                   challenge.  Move the cursor with the arrow keys or
+                   joystick until your desired opponent is highlighted, then
+                   click with your action key to select.  You will challenge
+                   this opponent to one match lasting two and a half minutes.
+
+  *   TOURNAMENT:  You play a tournament of 8 matches lasting two and a half
+                   minutes each against each opponent in succession.  It's
+                   all over when you lose your first match.
+
+  * CHAMPIONSHIP:  You play one match against each opponent in succession and
+                   each match lasts two minutes.  It's all over when you lose
+                   one match.
+
+
+  HINTS & TIPS:
+  =============
+
+  1) Matches are timed.  The timer is shown at the top center screen.  When
+     the timer counts down to zero and both players are still alive, the
+     player with the highest score will win.  Score is kept by giving the
+     player one point for every hit on the opponent's body and one point
+     for each of the opponent's tiles that the player destroys.
+
+     The Score is located to the immediate right of each of the players
+     names which are located on the top left and right of the screen for
+     players one and two, respectively.
+
+  2) You can stumble and fall!  Be careful and don't get too close to the
+     edge of your platform.  Lose your balance and you will fall right off
+     the edge and die.
+
+  3) You will not fall into the holes of missing tiles if there is a tile
+     on the other side.  i.e. If you are standing on tile 1 and tile 2 is
+     missing, if there is a tile 3 you can move towards it and the player
+     will automatically jump the gap between them.  If more than two tiles
+     form a gap, do not attempt a jump to the other side as you will fall.
+
+                          /\                                /\
+          Ok to jump -->  1 34         Not ok to jump ---> 1  4
+                          ^6 8                             ^ 78
+                           ^                                 ^
+          You could safely jump        You would die trying to
+          from tile 1 to tile 3        jump from tile 1 to tile
+          or from tile 1 to 6.         4 or from tile 1 to 7.
+
+  4) Discs can get behind you, hit the wall, bounce off, hit you in the
+     back, bounce and hit the wall again, hit your back again, etc...
+     This will cause major damage to you and your platform and may even
+     knock you clear off your platform.  Avoid this by deflecting discs
+     with your shield and by moving around often.
+
+  5) From time to time bonus tiles will appear on your opponents back  wall.
+     These tiles will look like a question mark within a circle.  If you
+     can hit this tile you will get a special option for your disc, like
+     speed disc for instance which makes your disc travel at lightining
+     speeds to cripple your opponent.  Be quick because the bonus tile
+     will not wait all day for you to hit it.  Also if you do hit it
+     and attain a bonus disc option, use it quickly as it will not last
+     long.
+
+  6) You get to choose your character from a list of 8 different ones at
+     the beginning of each game.  I have tried a few of these but not all,
+     and I haven't noticed much difference in which one you choose besides
+     the name and face.
+
+*** THE END ***

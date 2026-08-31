@@ -3668,3 +3668,20 @@ established numbers -- verified against the real `tracecheck`, not just the
 standalone harness. `discr-tun` (child of `discr-rxx`) is filed for the
 remaining walk mechanic, with the frames and addresses above as its starting
 point.
+
+## External corroboration: the original manual confirms the tile-HP model (Part 13)
+
+`assets/disch/INSTRUCT.TXT` (the game's manual, from PP's 2012 HD
+adaptation) independently corroborates two reverse-engineered findings,
+with no access to our traces: the wall/floor tiles carry a hit count
+rendered as a shape cycle -- pentagon(5) -> square(4) -> triangle(3) ->
+equals(2) -> circle(1) -> gone -- which is exactly the per-tile HP byte
+(`tile+$02`) and per-disc damage (`disc+$16`, writer `$a34c`/`$a310`) this
+project measured; and lemniscate tiles are indestructible, matching the
+type-word gate. It also states the arena as 2x4 floor + 2x4 back-wall
+tiles per player with wall tile N destroying floor tile N -- the two
+16-cell banks (`$7616`/`$7596`) read as 2x(2x4) per side. Win conditions
+per the manual: drain the life meter, or destroy all standable tiles --
+the second is the round-end condition discr-st8's decode bounded but no
+fixture crosses. `docs/loriciel-formats.md` documents the file formats
+this arrived with.
