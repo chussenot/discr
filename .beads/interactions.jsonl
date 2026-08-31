@@ -110,3 +110,4 @@
 {"id":"int-1ff5beca5730db2c92c100d3f3bae2a8","kind":"field_change","created_at":"2026-08-31T11:45:06.007139297Z","actor":"containers","issue_id":"discr-6by","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-240f3c13c4feecda45834f4e4bbf791a","kind":"field_change","created_at":"2026-08-31T11:45:06.00725686Z","actor":"containers","issue_id":"discr-6by","extra":{"field":"assignee","new_value":"containers","old_value":""}}
 {"id":"int-8dac7de3c646e8529eafa98ee326a1f1","kind":"field_change","created_at":"2026-08-31T11:45:30.184592815Z","actor":"Claude","issue_id":"discr-rxx.7","extra":{"field":"assignee","new_value":"psprites","old_value":"sprites"}}
+{"id":"int-ed827665bad1fe342dfa50596f902293","kind":"field_change","created_at":"2026-08-31T12:03:34.637386983Z","actor":"containers","issue_id":"discr-6by","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
