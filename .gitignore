@@ -42,6 +42,11 @@ oracle/*.o
 wt/
 .claude/worktrees/
 
+# bernstein runtime state: session data, the HMAC audit chain, and the MR
+# bodies scripts/loop.sh generates. All derived from a run; bernstein.yaml and
+# plans/ are the committed inputs.
+.sdd/
+
 # Rust build output
 /target/
 !tmp/.gitkeep

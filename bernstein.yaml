@@ -1,0 +1,24 @@
+# Bernstein configuration for discr.
+#
+# The coordination loop lives in scripts/loop.sh (`mise run loop`); this file
+# is what bernstein itself reads when it is invoked without a plan. The plan
+# it normally runs is plans/discr-loop.yaml.
+#
+# There is deliberately no `goal:` here. In this repository the goal is always
+# a bead -- `bd ready` is the backlog, and the loop passes the selected bead's
+# title through. A goal pinned in this file would compete with the tracker for
+# authority over what the fleet is doing, and the tracker wins.
+
+cli: auto          # bernstein picks the agent per task
+team: auto
+budget: "$10"      # per run; scripts/loop.sh overrides with --budget
+
+# Gate before merge with a pull request rather than merging automatically.
+# Everything this repository claims is measured, and a human reads the
+# measurement before it becomes master.
+approval: pr
+
+# Per-task git worktrees. This is how the fleet has always worked here: ten
+# waves of agents each on an isolated checkout, merged and re-gated centrally.
+# Anything shared is coordinated through pact leases instead.
+worktrees: true

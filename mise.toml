@@ -1,5 +1,19 @@
 [tools]
-rust = "latest"
+# rustfmt and clippy are NOT in a default rustup toolchain, and `core-check`'s
+# first two steps are `cargo fmt --check` and `cargo clippy`: without the
+# components named here, every gate run through mise dies on "'cargo-fmt' is
+# not installed for the toolchain" before it reaches a single fixture.
+rust = { version = "latest", components = "rustfmt,clippy" }
+
+# bernstein: the deterministic coordination layer the fleet loop runs on
+# (`mise run loop`; see docs/coordination-loop.md).  A Python tool, so it rides
+# mise's `pipx:` backend -- which resolves through uv, not pipx: measured here
+# on mise 2026.8.16, `mise install` fetched bernstein 3.18.2 with no pipx
+# binary present anywhere on the box (uv/uvx alone).  There is no `uvx:`
+# backend to name instead ("uvx is not a valid plugin name"), and no
+# `pipx.uvx` setting in this version -- `mise settings --all` lists only
+# `pipx.registry_url` -- so the plain backend line below IS the uvx install.
+"pipx:bernstein" = "latest"
 
 # ---------------------------------------------------------------------------
 # Tasks.  These replace the former root Makefile.
@@ -258,3 +272,27 @@ run = "cog check $CONVENTIONAL_SINCE..HEAD"
 [tasks.changelog]
 description = "Preview the changelog cog would generate (does not write)"
 run = "cog changelog $CONVENTIONAL_SINCE..HEAD"
+
+# ---------------------------------------------------------------------------
+# The coordination loop.  docs/coordination-loop.md is the prose; scripts/
+# loop.sh is the executable; plans/discr-loop.yaml is what bernstein runs
+# inside it.  PACT_AGENT and BEADS_ACTOR must be set and equal -- the loop
+# refuses to start otherwise, because an unattributed run is one this
+# repository cannot audit afterwards.
+# ---------------------------------------------------------------------------
+
+[tasks.loop]
+description = "The coordination loop: one bead, from `bd ready` to a proposed MR"
+run = "sh scripts/loop.sh"
+
+[tasks.loop-plan]
+description = "The loop, planned only: no claim, no lease, no agent, no writes"
+run = "sh scripts/loop.sh --dry-run"
+
+[tasks.loop-manual]
+description = "The loop without agents: you do the work, it gates, lands and proposes the MR"
+run = "sh scripts/loop.sh --no-agent"
+
+[tasks.bernstein-doctor]
+description = "bernstein pre-flight: adapters, API keys, ports"
+run = "bernstein doctor"
