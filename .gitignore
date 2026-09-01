@@ -52,6 +52,10 @@ wt/
 .sdd/backlog/*
 !.sdd/backlog/.gitkeep
 .sdd/mr/
+# bernstein writes its HMAC-SHA256 audit chain here as runs happen; it is
+# per-run evidence, not a committed input. (Caught the hard way: the first
+# commit of the .sdd skeleton swept a chain lock and a day's JSONL in with it.)
+.sdd/audit/
 
 # Rust build output
 /target/
