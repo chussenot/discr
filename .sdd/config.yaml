@@ -1,0 +1,17 @@
+# Bernstein workspace config for discr.
+#
+# The companion to bernstein.yaml: that file says WHAT to run, this one says
+# how this workspace runs it. Committed, unlike everything else under .sdd/
+# (runtime state, the audit chain, and generated MR bodies are derived).
+
+server_port: 8052
+
+# Four, not the default six. Ten waves of agents here ran two to four at a
+# time; the binding constraint was never worker count but merge contention on
+# docs/disc-notes.md and the shared gate suite, which more workers make worse.
+max_workers: 4
+
+# Sonnet at high effort is what every wave in this repository actually used,
+# including the ones that cracked the Ice! codec and the sprite blitter.
+default_model: sonnet
+default_effort: high

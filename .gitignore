@@ -42,6 +42,21 @@ oracle/*.o
 wt/
 .claude/worktrees/
 
+# bernstein. The workspace SKELETON is committed -- `bernstein doctor` requires
+# .sdd, .sdd/backlog and .sdd/runtime to exist (see its _doctor_check_workspace),
+# so a fresh clone that lacks them starts one issue down. Everything those
+# directories fill with is derived: session data, the HMAC audit chain, saved
+# plans, and the MR bodies scripts/loop.sh generates.
+.sdd/runtime/*
+!.sdd/runtime/.gitkeep
+.sdd/backlog/*
+!.sdd/backlog/.gitkeep
+.sdd/mr/
+# bernstein writes its HMAC-SHA256 audit chain here as runs happen; it is
+# per-run evidence, not a committed input. (Caught the hard way: the first
+# commit of the .sdd skeleton swept a chain lock and a day's JSONL in with it.)
+.sdd/audit/
+
 # Rust build output
 /target/
 !tmp/.gitkeep
