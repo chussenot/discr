@@ -3,6 +3,20 @@
 # first two steps are `cargo fmt --check` and `cargo clippy`: without the
 # components named here, every gate run through mise dies on "'cargo-fmt' is
 # not installed for the toolchain" before it reaches a single fixture.
+#
+# They are components rather than tools of their own on purpose. mise's
+# registry has no `clippy` or `rustfmt` entry (only `rust` and
+# `rust-analyzer`), and it should not: both are version-locked to rustc --
+# rustc 1.98.0, rustfmt 1.9.0 and clippy 0.1.98 here all report the same build
+# hash, 88d9e12ae -- so a separately-versioned copy earns the classic
+# "clippy-driver was built with a different version of rustc".
+#
+# The mechanism, for whoever debugs this next: mise's rust plugin is
+# rustup-based. It installs a toolchain named 1.98.0-x86_64-unknown-linux-gnu
+# and exports RUSTUP_TOOLCHAIN=1.98.0; `cargo` stays the rustup shim in
+# ~/.cargo/bin, which dispatches there. So `components` is handed to rustup,
+# and the binaries land in ~/.rustup/toolchains/1.98.0-*/bin -- NOT under
+# mise's own installs directory, where looking for them finds nothing.
 rust = { version = "latest", components = "rustfmt,clippy" }
 
 # bernstein: the deterministic coordination layer the fleet loop runs on
