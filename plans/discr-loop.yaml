@@ -10,6 +10,23 @@
 # The completion_signals below are the repository's real gates. That is the
 # whole point of writing the plan this way: bernstein cannot mark a step done
 # on an agent's say-so, only on `tracecheck` agreeing with the Atari.
+#
+# VERIFIED against bernstein 3.18.2's own source before relying on it
+# (core/planning/plan_loader.py, core/quality/janitor.py):
+#
+#   * the valid signal types in a plan file are exactly
+#     path_exists, glob_exists, test_passes, file_contains, llm_review, llm_judge;
+#   * `test_passes` takes a COMMAND and passes on exit 0 -- so an arbitrary
+#     project gate is registrable here, and `mise run core-check` below really
+#     does run;
+#   * the loader accepts `command:`, `value:`, `path:` or `contains:` as the
+#     value key, which is why the spelling copied from bernstein's own
+#     templates works.
+#
+# The hazard to respect when editing: an unrecognised `type:` is NOT an error.
+# plan_loader logs a warning and SKIPS the signal, so a typo does not fail the
+# run -- it silently removes the gate, and the step then passes on the agent's
+# say-so, which is the one thing this file exists to prevent.
 
 name: "discr: one bead, evidence to MR"
 description: >

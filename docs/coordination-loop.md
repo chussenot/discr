@@ -130,3 +130,25 @@ canary noting that the installed claude CLI is ahead of the release its
 conformance run has verified (bernstein's own projection, not something this
 repository controls), and a newer pyright being available (a Python CI tool
 this Rust project never invokes).
+
+## Are the plan's gates real? (verified, because it is the load-bearing claim)
+
+The loop's whole design rests on `plans/discr-loop.yaml`'s `completion_signals`
+being *executed*, not decorative. Read out of bernstein 3.18.2's own source
+rather than its documentation:
+
+- **`core/planning/plan_loader.py`** accepts exactly six signal types —
+  `path_exists`, `glob_exists`, `test_passes`, `file_contains`, `llm_review`,
+  `llm_judge` — and takes the value from whichever of `value:`, `path:`,
+  `command:` or `contains:` is present. That is why the `command:` spelling,
+  copied from bernstein's own bundled plan templates, works.
+- **`core/quality/janitor.py`** dispatches `test_passes` to
+  `_check_test_passes(command, workdir)` — it runs the command and passes on
+  exit 0. So an **arbitrary project gate is registrable per task**, and
+  `mise run core-check` in the measure stage genuinely runs.
+
+Worth knowing before editing that file: **an unrecognised `type:` is not an
+error.** The loader logs a warning and skips the signal, so a typo does not
+fail the run — it silently deletes the gate, and the step then passes on the
+agent's say-so, which is the single thing the plan exists to prevent. Change a
+signal type and re-read the run's warnings.
