@@ -9,7 +9,12 @@
 # title through. A goal pinned in this file would compete with the tracker for
 # authority over what the fleet is doing, and the tracker wins.
 
-cli: auto          # bernstein picks the agent per task
+# Pinned, not `auto`. This container has exactly one adapter (claude); the
+# other two bernstein knows about are absent by design, and `bernstein doctor`
+# probes all three unconditionally -- see docs/coordination-loop.md. Pinning
+# also stops a future run from silently dispatching to an adapter that has
+# never been held to this repository's house rules.
+cli: claude
 team: auto
 budget: "$10"      # per run; scripts/loop.sh overrides with --budget
 

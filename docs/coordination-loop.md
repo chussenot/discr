@@ -93,3 +93,40 @@ close a bead whose acceptance criteria are unmet — an honest partial with its
 evidence outlives a closed bead that guessed, and this repository has a
 `retract:` commit type precisely because three plausible models survived
 eleven parts before a measurement killed them.
+
+## `bernstein doctor`, and which of its complaints matter
+
+    mise run bernstein-doctor
+
+It reports five issues on a fresh checkout. **One is real and is fixed here;
+four are this container having one AI vendor's CLI instead of three.** The
+distinction is worth writing down, because chasing the four wastes an
+afternoon and installing them would be worse than wasting it.
+
+**Fixed: `.sdd workspace` — missing or incomplete.** The check wants three
+directories to exist: `.sdd`, `.sdd/backlog`, `.sdd/runtime`
+(`_doctor_check_workspace` in bernstein's `status_cmd.py`; `config.yaml` alone
+does not satisfy it, which is why adding only that file left the check red).
+The skeleton is now committed — `.sdd/config.yaml` plus a `.gitkeep` in each
+directory — so a fresh clone starts one issue down instead of being told to
+run `bernstein init`, which would also scatter twenty-odd Python and frontend
+plan templates through a Rust repository.
+
+**Expected, not fixed: `Adapter: codex`, `Adapter: gemini`, and their two
+`Auth:` rows.** `_doctor_check_adapters` loops over a hardcoded
+`("claude", "codex", "gemini")` and `shutil.which()`es each one; the auth
+check is hardcoded the same way. Neither consults `cli:` in `bernstein.yaml`,
+so no configuration can turn them green — only installing two other vendors'
+CLIs and authenticating them with keys this project does not have and must
+not invent.
+
+Nothing is degraded by their absence. `Ready to run` is computed as
+`py_ok and (any_adapter and any_key)` — **any one** authenticated adapter
+satisfies it, and claude's OAuth session does. The loop is pinned to `claude`
+in `bernstein.yaml` so dispatch never depends on the other two.
+
+Two advisories also ride along and are knowingly ignored: the last-green
+canary noting that the installed claude CLI is ahead of the release its
+conformance run has verified (bernstein's own projection, not something this
+repository controls), and a newer pyright being available (a Python CI tool
+this Rust project never invokes).
