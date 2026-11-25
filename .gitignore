@@ -60,3 +60,6 @@ wt/
 # Rust build output
 /target/
 !tmp/.gitkeep
+
+# bd's gate lock, written at the repo root on every bootstrap
+.beads.gate.lock
