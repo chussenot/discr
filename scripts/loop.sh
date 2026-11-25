@@ -235,6 +235,11 @@ if [ "$USE_AGENT" = 1 ] && have bernstein; then
     # tree, passed, and the loop went on to land and comment "gates green". A
     # gate can only judge work that exists.
     if [ -n "$PLAN" ]; then
+        # Set the previous run's orchestrator log aside, so the ERROR lines printed
+        # on failure below are THIS run's. (Without this the first line shown was a
+        # stale SeedError from an earlier attempt, next to the real cause.)
+        [ -f .sdd/runtime/orchestrator-debug.log ] \
+            && mv -f .sdd/runtime/orchestrator-debug.log .sdd/runtime/orchestrator-debug.log.prev
         note "bernstein: running $PLAN (budget \$$BUDGET soft+hard; blocks until the run is terminal)"
         # shellcheck disable=SC2086
         if ! bernstein run "$PLAN" $RUN_FLAGS; then

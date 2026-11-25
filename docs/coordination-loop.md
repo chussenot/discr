@@ -179,10 +179,11 @@ plan **and** on a copy with a deliberately wrong signal type, and re-read
 ## What the first real run found (and the dry run could not)
 
 Everything above was "verified" by `plan validate` and `--dry-run`, and the
-first three real `mise run loop` attempts all failed in stage 3 — **having
-dispatched no agent and spent nothing**. Six independent defects, each
+first four real `mise run loop` attempts all failed in stage 3 — **having
+dispatched no agent and spent nothing**. Seven independent findings, each
 invisible to the checks that had passed (the first three from run one, the
-fourth from run two, the fifth and sixth from run three):
+fourth from run two, the fifth and sixth from run three, the seventh from run
+four — the first to get an orchestrator running at all):
 
 1. **`--approval` is not a `bernstein run` option on 4.0.0.** It exists only on
    the top-level `bernstein -g` form. The loop passed it, `run` rejected it, and
@@ -240,6 +241,29 @@ fourth from run two, the fifth and sixth from run three):
    the loop that started them. The loop now runs `bernstein stop` on failure and
    prints the orchestrator's own `ERROR` lines, so "stopped" is true and the next
    diagnosis does not start from "run failed".
+
+7. **bernstein cannot spawn a Claude agent as root, and this container is
+   root.** Found by the *fourth* real run, the first where the orchestrator
+   survived (the seed fix worked). Every spawn failed at CLI start-up, before
+   any model call, so nothing was spent:
+   `--dangerously-skip-permissions cannot be used with root/sudo privileges for
+   security reasons`. The claude adapter hardcodes `--permission-mode
+   bypassPermissions` for every agent (`adapters/claude.py`), which Claude Code
+   refuses as uid 0. `--permission-profile builder` does not change that line.
+   This is not a configuration error and no flag in this repository fixes it; it
+   is a property of where the loop runs. The ways out differ in what they
+   permit, and choosing among them is a decision about a security guard, so it
+   is recorded as open rather than worked around:
+   * `IS_SANDBOX=1` — Claude Code's own opt-out of the root check for sandboxes;
+     this container is one. Untested here. Every agent would then run with
+     permission checks off, inside a container that holds this repository's push
+     credentials, and bernstein 4.0.0 has no merge gate in this configuration
+     (defect 1).
+   * a non-root user — the principled fix, but `mise`, `bd`, `pact`, the Claude
+     login and the git credentials all live under `/root`.
+   * `--no-agent` — the loop's own discipline (claim, lease, gates, land, MR)
+     around work done by Claude Code subagents under pact leases, which is how
+     every wave before this one was run.
 
 And one defect in the loop itself, which is the one that matters most: **a
 failed bernstein run was non-fatal**, so the gates ran on an unchanged tree,
