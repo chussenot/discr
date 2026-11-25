@@ -55,13 +55,21 @@ Note `--assignee` rather than `--claim`: on bd 1.2.2 `--claim` writes no
 interaction row, so `pact audit --check claim-lease-divergence` has nothing to
 read afterwards.
 
-**3. Work.** bernstein runs `plans/discr-loop.yaml` — evidence, then
-implementation, then measurement — with `--approval pr`, so nothing merges
-itself. The plan's constraints are this repository's house rules, and its
-`completion_signals` are the actual gate commands: bernstein cannot mark a
-step done on an agent's say-so, only on `tracecheck` agreeing with the Atari.
-`--no-agent` skips this stage entirely when a human or a Claude Code subagent
-is doing the work and only wants the loop's discipline around it.
+**3. Work.** The plan is first *rendered for the bead* by
+`scripts/render_plan.py`, then bernstein runs the rendered copy — evidence,
+then implementation, then measurement — under a soft and a hard budget. The
+render step is not decoration: a plan cannot name its own bead, and
+`bernstein run` does **not** apply a plan's `constraints:` (see "What the first
+real run found", below), so the renderer writes the bead, the leased paths and
+every house rule into the description of every step. The plan's
+`completion_signals` are the actual gate commands: bernstein cannot mark a step
+done on an agent's say-so, only on `tracecheck` agreeing with the Atari.
+`--no-agent` skips the agent entirely when a human or a Claude Code subagent is
+doing the work and only wants the loop's discipline around it.
+
+The stage **fails closed**. If bernstein exits non-zero, or exits zero having
+changed none of the leased paths, the loop stops: bead commented, nothing
+committed, leases held. A gate can only judge work that exists.
 
 **4. Verify.** `mise run core-check`. If the gates fail, the loop stops with
 the bead commented, **nothing committed and the leases still held** — the
@@ -167,3 +175,39 @@ that is a measurement to repeat on a toolchain bump, not a guarantee.
 To bump bernstein: change the pin, run `bernstein plan validate` on the real
 plan **and** on a copy with a deliberately wrong signal type, and re-read
 `core/planning/signal_contract.py` before trusting the new answer.
+
+## What the first real run found (and the dry run could not)
+
+Everything above was "verified" by `plan validate` and `--dry-run`, and the
+first real `mise run loop` still failed in stage 3 — **having dispatched no
+agent and spent nothing**. Three independent defects, each invisible to the
+checks that had passed:
+
+1. **`--approval` is not a `bernstein run` option on 4.0.0.** It exists only on
+   the top-level `bernstein -g` form. The loop passed it, `run` rejected it, and
+   the loop treated the non-zero exit as non-fatal. The approval gate for a plan
+   run comes from `bernstein.yaml` (`approval: pr`). Whether that file is read
+   when `run` is given a plan is **not verified** — it needs a live run to see.
+2. **`bernstein run` does not apply a plan's `constraints:`.** Its source names
+   `("max_agents", "repos", "constraints")` as settings it does not apply, and
+   `--from-plan` refuses a plan that sets one. Our house rules were in exactly
+   that key, so they would never have reached an agent — the same class of
+   failure as the 3.18.2 silent skip, and the plan header claimed the opposite.
+   (`plan validate` accepts the key; only the run path refuses it.) Fix: the
+   renderer removes the key and prepends the rules to every step description.
+3. **A plan cannot name its own bead.** The steps said "read the bead" and
+   nothing said which. The renderer fills it in, together with the leased paths.
+
+And one defect in the loop itself, which is the one that matters most: **a
+failed bernstein run was non-fatal**, so the gates ran on an unchanged tree,
+passed, and the loop carried on to land — it died only because a leased path
+happened to not exist yet. Had one existed it would have committed nothing and
+commented "gates green" on the bead. The loop now stops if bernstein fails, and
+again if no leased path changed, because green gates on untouched code prove
+nothing.
+
+**Why the dry run missed all of it:** `--dry-run` called `bernstein --plan-only
+-g` — a different command with a different flag set from the real `bernstein
+run PLAN`. It now runs `bernstein run <rendered plan> <the same flags>
+--dry-run`, so a dry run exercises what a real run will. It still cannot catch
+a defect that only exists once agents are running.

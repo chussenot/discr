@@ -5,7 +5,9 @@
 # reverse-engineers a 1990 Atari ST game, so evidence comes before code and a
 # measurement decides whether the code is right.
 #
-#   bernstein run plans/discr-loop.yaml --approval pr
+#   scripts/loop.sh renders this file for one bead (scripts/render_plan.py) and
+#   runs the RENDERED copy:  bernstein run <rendered> --budget N --hard-budget N
+#   Do not run this file directly -- see "constraints" below for why.
 #
 # The completion_signals below are the repository's real gates. That is the
 # whole point of writing the plan this way: bernstein cannot mark a step done
@@ -40,6 +42,14 @@ description: >
   primary sources, implement only what the decode proves, and let the gates
   decide. The bead's own acceptance criteria are the definition of done.
 
+# NOT APPLIED BY bernstein. `bernstein run` lists "constraints" among the plan
+# settings it does not apply (run_bootstrap._UNAPPLIED_PLAN_SETTINGS), and
+# `--from-plan` refuses a plan that sets it. Left to bernstein these house rules
+# would never have reached an agent. They live here as the single source of
+# truth; scripts/render_plan.py removes this key and writes every rule into the
+# description of every step, which is task text agents do read. Found by running
+# the loop for real -- the dry run passed because it uses a looser loader.
+# `<bead>` in a step is likewise a placeholder the renderer fills.
 constraints:
   - "Every behavioural claim ties to an ST address and a measurement -- never to plausibility."
   - "docs/disc-notes.md is the evidence base: implement from a citation in it, never from memory. If a note and the code disagree, the note wins until someone re-measures."
