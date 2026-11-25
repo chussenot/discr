@@ -18,7 +18,7 @@ sh "$CLAUDE_PROJECT_DIR/scripts/setup_container.sh"
 # Tool locations for the rest of the session: bd lands in ~/go/bin, pact in
 # ~/.cargo/bin, and scripts/ghidra/env.sh honours a preset JAVA_HOME.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-  echo 'export PATH="$PATH:$HOME/go/bin:$HOME/.cargo/bin"' >> "$CLAUDE_ENV_FILE"
+  echo 'export PATH="$PATH:$HOME/go/bin:$HOME/.cargo/bin:$HOME/.local/bin:$HOME/.local/share/mise/shims"' >> "$CLAUDE_ENV_FILE"
   if [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
     echo 'export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> "$CLAUDE_ENV_FILE"
   fi

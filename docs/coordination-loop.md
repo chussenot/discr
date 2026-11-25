@@ -134,21 +134,36 @@ this Rust project never invokes).
 ## Are the plan's gates real? (verified, because it is the load-bearing claim)
 
 The loop's whole design rests on `plans/discr-loop.yaml`'s `completion_signals`
-being *executed*, not decorative. Read out of bernstein 3.18.2's own source
-rather than its documentation:
+being *executed*, not decorative. Checked against bernstein **4.0.0** — the
+version `mise.toml` pins — by running its own validator and reading its source:
 
-- **`core/planning/plan_loader.py`** accepts exactly six signal types —
-  `path_exists`, `glob_exists`, `test_passes`, `file_contains`, `llm_review`,
-  `llm_judge` — and takes the value from whichever of `value:`, `path:`,
-  `command:` or `contains:` is present. That is why the `command:` spelling,
-  copied from bernstein's own bundled plan templates, works.
-- **`core/quality/janitor.py`** dispatches `test_passes` to
-  `_check_test_passes(command, workdir)` — it runs the command and passes on
-  exit 0. So an **arbitrary project gate is registrable per task**, and
-  `mise run core-check` in the measure stage genuinely runs.
+- **`test_passes` runs a command and passes on exit 0**
+  (`core/quality/janitor.py`), and the plan accepts `command:`, `value:`,
+  `path:` or `contains:` as its value. So an **arbitrary project gate is
+  registrable per task**, and `mise run core-check` in the measure stage
+  genuinely runs.
+- **`bernstein plan validate plans/discr-loop.yaml`** accepts the committed plan
+  (3 stages, 5 tasks) and **rejects a typo**: with `test_passes` mis-spelled
+  `tests_pass` it exits 1 with `expected a supported completion signal, got
+  'tests_pass'`. `scripts/loop.sh` runs it before every `bernstein run` and
+  stops on failure.
 
-Worth knowing before editing that file: **an unrecognised `type:` is not an
-error.** The loader logs a warning and skips the signal, so a typo does not
-fail the run — it silently deletes the gate, and the step then passes on the
-agent's say-so, which is the single thing the plan exists to prevent. Change a
-signal type and re-read the run's warnings.
+### Why bernstein is pinned: the same check gave the opposite answer on 3.18.2
+
+This section originally warned that **an unrecognised `type:` is not an error**.
+That was true of bernstein **3.18.2**, read out of its `plan_loader.py`: the
+loader logged a warning and *skipped* the signal, so a typo silently deleted a
+gate and the step passed on the agent's say-so.
+
+Between two container restarts `latest` resolved to **4.0.0**, and the
+behaviour reversed: signals now go through a strict `parse_completion_signal`
+and an invalid one fails validation and loading. The earlier warning became
+wrong without anyone changing a line of this repository — which is the case for
+pinning: a claim about a tool's behaviour is a claim about a version. rust is
+**not** pinned the same way and moved from 1.98 to 1.100 across the same
+restart; the gate suite was re-run on 1.100 and every number is unchanged, but
+that is a measurement to repeat on a toolchain bump, not a guarantee.
+
+To bump bernstein: change the pin, run `bernstein plan validate` on the real
+plan **and** on a copy with a deliberately wrong signal type, and re-read
+`core/planning/signal_contract.py` before trusting the new answer.

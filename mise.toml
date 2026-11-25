@@ -27,7 +27,12 @@ rust = { version = "latest", components = "rustfmt,clippy" }
 # backend to name instead ("uvx is not a valid plugin name"), and no
 # `pipx.uvx` setting in this version -- `mise settings --all` lists only
 # `pipx.registry_url` -- so the plain backend line below IS the uvx install.
-"pipx:bernstein" = "latest"
+# PINNED, not `latest`: `latest` silently moved 3.18.2 -> 4.0.0 between two
+# container restarts, and this repo's claims about bernstein are verified
+# against a specific version's source. Bump deliberately: re-run
+# `bernstein plan validate plans/discr-loop.yaml` and re-read the signal grammar
+# (core/planning/signal_contract.py) before changing the number.
+"pipx:bernstein" = "4.0.0"
 
 # ---------------------------------------------------------------------------
 # Tasks.  These replace the former root Makefile.
