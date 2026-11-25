@@ -159,6 +159,12 @@ say "3. work"
 if [ "$USE_AGENT" = 1 ] && have bernstein; then
     PLAN=plans/discr-loop.yaml
     if [ -f "$PLAN" ]; then
+        # Validate first, and stop on failure. On bernstein 4.0.0 an unknown
+        # completion-signal type is a hard error here, so a typo that would
+        # delete a gate is caught before an agent is spent on it.
+        bernstein plan validate "$PLAN" >/dev/null 2>&1 \
+            || { bernstein plan validate "$PLAN" 2>&1 | tail -8; die "plan failed validation: $PLAN"; }
+        note "bernstein: $PLAN validates"
         note "bernstein: running $PLAN (budget \$$BUDGET, approval=pr)"
         bernstein run "$PLAN" --budget "$BUDGET" --approval pr --auto-approve || \
             note "bernstein: returned non-zero -- the gates below are the arbiter"

@@ -127,6 +127,27 @@ else
     say "pact: cargo not found, skipped"
 fi
 
+# ---- mise, and everything mise.toml declares -------------------------------
+# The gate suite (`mise run core-check`), the coordination loop and bernstein
+# all run through mise, and a container restart drops it along with everything
+# else: this script once rebuilt Hatari, Ghidra, dolt, bd and pact and left the
+# box unable to run the gates. `mise install` is what brings back the rust
+# toolchain WITH rustfmt/clippy and bernstein (the pipx: backend, which
+# resolves through uv).
+export PATH="$PATH:$HOME/.local/bin"
+if have mise; then
+    say "mise: $(mise --version | head -1)"
+else
+    say "mise: installing"
+    curl -fsSL https://mise.run | sh >/dev/null 2>&1 || { say "mise: install failed"; exit 1; }
+fi
+mise trust >/dev/null 2>&1 || true
+if mise install >/dev/null 2>&1; then
+    say "mise: tools installed ($(mise exec -- bernstein --version 2>/dev/null | head -1))"
+else
+    say "mise: install incomplete -- run \`mise install\` to see why"
+fi
+
 # ---- beads database (dolt server mode) ------------------------------------
 # bd bootstrap hydrates from refs/dolt/data on the git origin when present.
 # NOTE: in the remote container the git proxy accepts pushes to branch heads

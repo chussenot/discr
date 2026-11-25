@@ -11,22 +11,28 @@
 # whole point of writing the plan this way: bernstein cannot mark a step done
 # on an agent's say-so, only on `tracecheck` agreeing with the Atari.
 #
-# VERIFIED against bernstein 3.18.2's own source before relying on it
-# (core/planning/plan_loader.py, core/quality/janitor.py):
+# VERIFIED against bernstein 4.0.0 (the version mise.toml pins), by running
+# `bernstein plan validate plans/discr-loop.yaml` and reading
+# core/planning/signal_contract.py and core/quality/janitor.py:
 #
-#   * the valid signal types in a plan file are exactly
-#     path_exists, glob_exists, test_passes, file_contains, llm_review, llm_judge;
 #   * `test_passes` takes a COMMAND and passes on exit 0 -- so an arbitrary
 #     project gate is registrable here, and `mise run core-check` below really
 #     does run;
-#   * the loader accepts `command:`, `value:`, `path:` or `contains:` as the
+#   * `command:`, `value:`, `path:` and `contains:` are all accepted as the
 #     value key, which is why the spelling copied from bernstein's own
 #     templates works.
 #
-# The hazard to respect when editing: an unrecognised `type:` is NOT an error.
-# plan_loader logs a warning and SKIPS the signal, so a typo does not fail the
-# run -- it silently removes the gate, and the step then passes on the agent's
-# say-so, which is the one thing this file exists to prevent.
+# An unrecognised `type:` is a HARD ERROR on 4.0.0 -- `plan validate` exits 1
+# ("expected a supported completion signal, got 'tests_pass'") and the loader
+# parses signals through the same strict parse_completion_signal.
+# scripts/loop.sh runs `plan validate` before every run, so a typo cannot
+# remove a gate unnoticed.
+#
+# That was NOT true of 3.18.2, whose plan_loader logged a warning and SKIPPED an
+# invalid signal -- a typo silently deleted the gate and the step passed on the
+# agent's say-so. It is the reason the pin in mise.toml exists: do not unpin
+# bernstein without re-running `plan validate` against a deliberately broken
+# copy of this file.
 
 name: "discr: one bead, evidence to MR"
 description: >
