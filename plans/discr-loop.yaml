@@ -1,0 +1,123 @@
+# The discr coordination plan.
+#
+# `scripts/loop.sh` runs this once a bead is claimed and its files leased.
+# It is deliberately NOT a generic "build a feature" plan: this repository
+# reverse-engineers a 1990 Atari ST game, so evidence comes before code and a
+# measurement decides whether the code is right.
+#
+#   bernstein run plans/discr-loop.yaml --approval pr
+#
+# The completion_signals below are the repository's real gates. That is the
+# whole point of writing the plan this way: bernstein cannot mark a step done
+# on an agent's say-so, only on `tracecheck` agreeing with the Atari.
+#
+# VERIFIED against bernstein 3.18.2's own source before relying on it
+# (core/planning/plan_loader.py, core/quality/janitor.py):
+#
+#   * the valid signal types in a plan file are exactly
+#     path_exists, glob_exists, test_passes, file_contains, llm_review, llm_judge;
+#   * `test_passes` takes a COMMAND and passes on exit 0 -- so an arbitrary
+#     project gate is registrable here, and `mise run core-check` below really
+#     does run;
+#   * the loader accepts `command:`, `value:`, `path:` or `contains:` as the
+#     value key, which is why the spelling copied from bernstein's own
+#     templates works.
+#
+# The hazard to respect when editing: an unrecognised `type:` is NOT an error.
+# plan_loader logs a warning and SKIPS the signal, so a typo does not fail the
+# run -- it silently removes the gate, and the step then passes on the agent's
+# say-so, which is the one thing this file exists to prevent.
+
+name: "discr: one bead, evidence to MR"
+description: >
+  Take one claimed bead from evidence to a proposed MR. Decode from the
+  primary sources, implement only what the decode proves, and let the gates
+  decide. The bead's own acceptance criteria are the definition of done.
+
+constraints:
+  - "Every behavioural claim ties to an ST address and a measurement -- never to plausibility."
+  - "docs/disc-notes.md is the evidence base: implement from a citation in it, never from memory. If a note and the code disagree, the note wins until someone re-measures."
+  - "Never guess semantics to move a gate number. A documented wall with its evidence is a landable result; a speculative implementation is not."
+  - "Gate numbers may grow, never shrink. A clean run can only get shorter, and the number says by how much."
+  - "Tables and packed data are read as raw bytes (xxd/python). Ghidra's disassembler silently fails on data addresses and misses whole code regions -- three separate rounds were cost by trusting it."
+  - "Append to docs/disc-notes.md as ONE self-contained section; concurrent agents append to the same tail and anything else conflicts on every merge."
+  - "Commit with explicit pathspecs and --trailer Pact-Agent=$PACT_AGENT. Never `git commit` bare, never --amend in a fleet: both target whatever the shared checkout is at that instant."
+
+stages:
+  - name: evidence
+    description: "Establish the facts from primary sources. No production code changes."
+    steps:
+      - title: "Read the bead, its comments, and every report it cites"
+        description: >
+          `bd -C . show <bead>` including all comments -- prior shifts record
+          the walls they hit and the methods that failed, and repeating a
+          documented dead end is the most expensive mistake available here.
+          Then read the reports/ and docs/ the bead names. Write down what is
+          already proven, so the decode below only chases what is not.
+        role: backend
+        scope: small
+        complexity: low
+
+      - title: "Decode from the primary sources"
+        description: >
+          The instruments, cheapest first: the raw image
+          (tmp/ghidra_proj/discram.bin, 1 MB of ST RAM at address 0) read with
+          xxd/python for tables; capstone or scripts/ghidra/q.sh for code; and
+          live Hatari (scripts/collect.py) with PC breakpoints, write-watches
+          and savebin when static reading is ambiguous -- the running game is
+          the only authority on what actually executes. Deliverable: a
+          reports/ entry naming every address, with the listing that proves
+          each claim.
+        role: backend
+        scope: large
+        complexity: high
+        files:
+          - "reports/"
+
+  - name: implement
+    description: "Implement exactly what the evidence proves, and nothing else."
+    depends_on: [evidence]
+    steps:
+      - title: "Implement in disc-core, citing an address per rule"
+        description: >
+          Integer arithmetic, no dependencies, one ST address in a comment per
+          rule -- match the crate's existing voice. Where the evidence stops,
+          the code stops: leave the field fed and the waiver standing rather
+          than inventing the missing half. If the decode contradicts something
+          the crate does today, that is a `retract:`-grade finding: say so and
+          fix it only if the gates prove the fix.
+        role: backend
+        scope: large
+        complexity: high
+        completion_signals:
+          - type: test_passes
+            command: "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
+
+  - name: measure
+    description: "The gates decide. Numbers move up or the change is wrong."
+    depends_on: [implement]
+    steps:
+      - title: "Run the whole gate suite"
+        description: >
+          Every fixture, both modes. The two clean fixtures are inviolate:
+          if golden or tile_damage regress, the change is wrong -- the Atari
+          runs one code path, not two. If a prefix-gated number GREW, raise it
+          in mise.toml with a one-clause history line saying what moved it.
+        role: qa
+        scope: medium
+        complexity: medium
+        completion_signals:
+          - type: test_passes
+            command: "mise run core-check"
+
+      - title: "Record the measurement where the next agent will find it"
+        description: >
+          Update docs/state-schema.md if a row changed status, append the ONE
+          self-contained section to docs/disc-notes.md, and comment the bead
+          with the numbers -- per fixture, n/total. Close the bead only if its
+          own acceptance criteria are met; otherwise leave it in_progress with
+          the wall documented and file the successor bead. An honest partial
+          with its evidence is worth more than a closed bead that guessed.
+        role: backend
+        scope: small
+        complexity: low
