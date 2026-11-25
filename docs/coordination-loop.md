@@ -179,15 +179,23 @@ plan **and** on a copy with a deliberately wrong signal type, and re-read
 ## What the first real run found (and the dry run could not)
 
 Everything above was "verified" by `plan validate` and `--dry-run`, and the
-first real `mise run loop` still failed in stage 3 — **having dispatched no
-agent and spent nothing**. Three independent defects, each invisible to the
-checks that had passed:
+first two real `mise run loop` attempts both failed in stage 3 — **having
+dispatched no agent and spent nothing**. Four independent defects, each
+invisible to the checks that had passed (the first three from run one, the
+fourth from run two):
 
 1. **`--approval` is not a `bernstein run` option on 4.0.0.** It exists only on
    the top-level `bernstein -g` form. The loop passed it, `run` rejected it, and
-   the loop treated the non-zero exit as non-fatal. The approval gate for a plan
-   run comes from `bernstein.yaml` (`approval: pr`). Whether that file is read
-   when `run` is given a plan is **not verified** — it needs a live run to see.
+   the loop treated the non-zero exit as non-fatal. The obvious fallback —
+   `approval: pr` in `bernstein.yaml` — **does not work either**: the second
+   real run printed `Ignoring unknown top-level key 'approval'` (and the same for
+   `worktrees`). Both keys were dead config, and the comments beside them
+   described a merge gate that never existed. They are removed, with a note not
+   to re-add them. The "did you mean" spellings (`approvals`, `worktree_setup`)
+   are different features, not renames. **There is no bernstein-side merge gate
+   in this loop.** What protects master is outside bernstein: the loop commits
+   only the leased paths, only after the gates pass, onto a feature branch, and
+   a human merges the PR.
 2. **`bernstein run` does not apply a plan's `constraints:`.** Its source names
    `("max_agents", "repos", "constraints")` as settings it does not apply, and
    `--from-plan` refuses a plan that sets one. Our house rules were in exactly
@@ -197,6 +205,17 @@ checks that had passed:
    renderer removes the key and prepends the rules to every step description.
 3. **A plan cannot name its own bead.** The steps said "read the bead" and
    nothing said which. The renderer fills it in, together with the leased paths.
+
+4. **`bernstein run` detaches unless given `--wait`.** Found by the *second*
+   real run, which got past all of the above: it posted five tasks, started a
+   background task server and orchestrator, printed "Run continues in the
+   background", and returned exit 0 after zero seconds with nothing done. The
+   loop's new guard correctly stopped ("no work product") — but the orchestrator
+   was still alive behind it, free to start spending against the budget while
+   the loop reported that it had stopped and left the leases held. It was shut
+   down by hand (`bernstein stop`: 0 tasks done, 0 branches merged, nothing
+   spent). `--wait 3600` blocks until the run is terminal and exits with its
+   outcome, so the loop's stages are now actually sequential.
 
 And one defect in the loop itself, which is the one that matters most: **a
 failed bernstein run was non-fatal**, so the gates ran on an unchanged tree,

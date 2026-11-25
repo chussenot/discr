@@ -136,9 +136,21 @@ note "title: $TITLE"
 PLAN_SRC=plans/discr-loop.yaml
 PLAN=""
 # --budget is a SOFT cap (halts new work at 100%); --hard-budget is the kill
-# switch. An unattended run gets both. --approval is not a `run` option on
-# bernstein 4.0.0; the approval gate comes from bernstein.yaml.
-RUN_FLAGS="--budget $BUDGET --hard-budget $BUDGET --auto-approve"
+# switch. An unattended run gets both.
+#
+# --wait is load-bearing. Without it `bernstein run` DETACHES: it posts the
+# tasks, starts a background orchestrator and returns exit 0 after zero
+# seconds with nothing done -- the loop would then verify and land a tree no
+# agent had touched yet, while the agents ran on unsupervised behind it. With
+# it the command blocks until the run is terminal and exits with its OUTCOME
+# (ceiling in seconds; 3600 is also the default).
+#
+# --approval is not a `run` option on bernstein 4.0.0 (only on the top-level
+# `bernstein -g` form), and `approval:`/`worktrees:` in bernstein.yaml are
+# unknown keys that 4.0.0 ignores. So there is NO bernstein-side merge gate
+# here; what protects master is that this loop commits only the leased paths,
+# only after the gates, onto a feature branch -- and a human merges the PR.
+RUN_FLAGS="--budget $BUDGET --hard-budget $BUDGET --auto-approve --wait 3600"
 if [ "$USE_AGENT" = 1 ] && have bernstein && [ -f "$PLAN_SRC" ]; then
     mkdir -p .sdd/runtime/plans
     PLAN=.sdd/runtime/plans/loop-$BEAD.yaml
@@ -213,7 +225,7 @@ if [ "$USE_AGENT" = 1 ] && have bernstein; then
     # tree, passed, and the loop went on to land and comment "gates green". A
     # gate can only judge work that exists.
     if [ -n "$PLAN" ]; then
-        note "bernstein: running $PLAN (budget \$$BUDGET soft+hard; approval from bernstein.yaml)"
+        note "bernstein: running $PLAN (budget \$$BUDGET soft+hard; blocks until the run is terminal)"
         # shellcheck disable=SC2086
         bernstein run "$PLAN" $RUN_FLAGS || stop_unlanded "bernstein run failed"
     else

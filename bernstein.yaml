@@ -18,12 +18,21 @@ cli: claude
 team: auto
 budget: "$10"      # per run; scripts/loop.sh overrides with --budget
 
-# Gate before merge with a pull request rather than merging automatically.
-# Everything this repository claims is measured, and a human reads the
-# measurement before it becomes master.
-approval: pr
-
-# Per-task git worktrees. This is how the fleet has always worked here: ten
-# waves of agents each on an isolated checkout, merged and re-gated centrally.
-# Anything shared is coordinated through pact leases instead.
-worktrees: true
+# DELIBERATELY ABSENT: `approval: pr` and `worktrees: true`. This file used to
+# carry both, and the first real `bernstein run` on 4.0.0 printed
+#
+#   Ignoring unknown top-level key 'approval' in seed file; did you mean 'approvals'?
+#   Ignoring unknown top-level key 'worktrees' in seed file; did you mean 'worktree_setup'?
+#
+# i.e. they were never applied, and the comments that used to sit here claiming
+# "gate before merge with a pull request" described a protection that did not
+# exist. The suggested spellings are NOT the same settings: `approvals:` is a
+# queue for gating individual tool calls by trust class (core/approval/gate.py),
+# and `worktree_setup:` configures how a worktree is prepared. The pr/review/
+# auto merge-gate mode exists only as the top-level `bernstein -g --approval`
+# flag, which `bernstein run` does not take.
+#
+# Do not re-add them without a live run showing the warning gone AND a
+# behaviour that differs. What actually protects master is outside bernstein:
+# scripts/loop.sh commits only the leased paths, only after the gates pass,
+# onto a feature branch, and a human merges the PR.
