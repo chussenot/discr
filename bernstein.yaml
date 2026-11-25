@@ -8,6 +8,20 @@
 # a bead -- `bd ready` is the backlog, and the loop passes the selected bead's
 # title through. A goal pinned in this file would compete with the tracker for
 # authority over what the fleet is doing, and the tracker wins.
+#
+# But bernstein 4.0.0 REQUIRES one: in plan-file mode `bernstein run` hands the
+# spawned orchestrator no seed path, so that process re-reads this file and dies
+# with "Seed file must contain a non-empty 'goal' string" (the watchdog then
+# records `invalid-seed-configuration` and does not restart it). So scripts/
+# loop.sh writes a per-run copy of this file plus `goal: <bead>: <title>` and
+# points every bernstein subprocess at it via BERNSTEIN_SEED_PATH. Running
+# `bernstein run` by hand in this directory fails for exactly that reason --
+# use `mise run loop`.
+
+# No third-party LLM provider. bernstein defaults this to `openrouter_free` and
+# warns that evolution/auto_decompose stay disabled until an OpenRouter key is
+# exported. This project does not use one and must not invent one; say so.
+internal_llm_provider: none
 
 # Pinned, not `auto`. This container has exactly one adapter (claude); the
 # other two bernstein knows about are absent by design, and `bernstein doctor`

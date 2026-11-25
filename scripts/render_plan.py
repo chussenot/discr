@@ -61,6 +61,16 @@ def main():
     ap.add_argument("--bead", required=True)
     ap.add_argument("--title", required=True)
     ap.add_argument("--files", default="")
+    # The per-run SEED. In plan-file mode `bernstein run` bootstraps from the
+    # plan's name and passes the spawned orchestrator NO seed path, so the
+    # orchestrator re-reads ./bernstein.yaml -- and dies with
+    # "Seed file must contain a non-empty 'goal' string" if it has none. The
+    # committed bernstein.yaml deliberately has no goal (the tracker owns it),
+    # so the loop supplies one per run: this seed is that file plus
+    # `goal: <bead>: <title>`, handed over via BERNSTEIN_SEED_PATH, which every
+    # bernstein subprocess resolves first (core/config/seed.py:resolve_seed_path).
+    ap.add_argument("--seed-in", default="")
+    ap.add_argument("--seed-out", default="")
     a = ap.parse_args()
 
     with open(a.plan, encoding="utf-8") as fh:
@@ -80,6 +90,18 @@ def main():
 
     with open(a.out, "w", encoding="utf-8") as fh:
         fh.write(text)
+
+    if a.seed_out:
+        base = {}
+        if a.seed_in:
+            with open(a.seed_in, encoding="utf-8") as fh:
+                base = yaml.safe_load(fh) or {}
+            if not isinstance(base, dict):
+                sys.exit(f"render_plan: {a.seed_in} is not a mapping")
+        # The bead IS the goal. Overrides anything the base file carried.
+        base["goal"] = f"{a.bead}: {a.title}"
+        with open(a.seed_out, "w", encoding="utf-8") as fh:
+            fh.write(yaml.safe_dump(base, sort_keys=False, allow_unicode=True, width=10_000))
 
 
 if __name__ == "__main__":

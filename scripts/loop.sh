@@ -154,14 +154,24 @@ RUN_FLAGS="--budget $BUDGET --hard-budget $BUDGET --auto-approve --wait 3600"
 if [ "$USE_AGENT" = 1 ] && have bernstein && [ -f "$PLAN_SRC" ]; then
     mkdir -p .sdd/runtime/plans
     PLAN=.sdd/runtime/plans/loop-$BEAD.yaml
+    # An ABSOLUTE path: every bernstein subprocess inherits it, and they do not
+    # all share this cwd.
+    SEED=$ROOT/.sdd/runtime/seed-$BEAD.yaml
     python3 scripts/render_plan.py "$PLAN_SRC" "$PLAN" \
         --bead "$BEAD" --title "$TITLE" --files "$FILES" \
+        --seed-in bernstein.yaml --seed-out "$SEED" \
         || die "could not render $PLAN_SRC for $BEAD"
+    # In plan-file mode `bernstein run` gives the spawned orchestrator no seed
+    # path; it re-reads ./bernstein.yaml, which has no goal on purpose, and dies
+    # with "Seed file must contain a non-empty 'goal' string" -- after `--wait`
+    # has already returned a failure, so the loop sees only "run failed". The
+    # env var is what every bernstein subprocess resolves first.
+    export BERNSTEIN_SEED_PATH=$SEED
     # On bernstein 4.0.0 an unknown completion-signal type is a hard error here,
     # so a typo that would delete a gate is caught before an agent is spent on it.
     bernstein plan validate "$PLAN" >/dev/null 2>&1 \
         || { bernstein plan validate "$PLAN" 2>&1 | tail -8; die "rendered plan failed validation: $PLAN"; }
-    note "plan: rendered for $BEAD and validated ($PLAN)"
+    note "plan: rendered for $BEAD and validated ($PLAN); seed: $SEED"
 fi
 
 if [ "$DRY_RUN" = 1 ]; then
@@ -227,7 +237,17 @@ if [ "$USE_AGENT" = 1 ] && have bernstein; then
     if [ -n "$PLAN" ]; then
         note "bernstein: running $PLAN (budget \$$BUDGET soft+hard; blocks until the run is terminal)"
         # shellcheck disable=SC2086
-        bernstein run "$PLAN" $RUN_FLAGS || stop_unlanded "bernstein run failed"
+        if ! bernstein run "$PLAN" $RUN_FLAGS; then
+            # `--wait` reports only "run did not meet its goal"; the cause is in
+            # the orchestrator's own log (the first of these was a rejected seed).
+            note "--- orchestrator errors (.sdd/runtime/orchestrator-debug.log) ---"
+            grep -h ' ERROR ' .sdd/runtime/orchestrator-debug.log 2>/dev/null | tail -5 | cut -c1-220
+            # A failed run leaves its task server and watchdog alive (found the
+            # hard way: both outlived the loop that started them). Stop them, so
+            # a "stopped" loop is not silently still running something.
+            bernstein stop >/dev/null 2>&1 || true
+            stop_unlanded "bernstein run failed"
+        fi
     else
         note "bernstein: inline goal (budget \$$BUDGET, approval=pr)"
         bernstein -g "${GOAL:-$TITLE}" --budget "$BUDGET" --approval pr --auto-approve \

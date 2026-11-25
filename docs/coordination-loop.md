@@ -179,10 +179,10 @@ plan **and** on a copy with a deliberately wrong signal type, and re-read
 ## What the first real run found (and the dry run could not)
 
 Everything above was "verified" by `plan validate` and `--dry-run`, and the
-first two real `mise run loop` attempts both failed in stage 3 — **having
-dispatched no agent and spent nothing**. Four independent defects, each
+first three real `mise run loop` attempts all failed in stage 3 — **having
+dispatched no agent and spent nothing**. Six independent defects, each
 invisible to the checks that had passed (the first three from run one, the
-fourth from run two):
+fourth from run two, the fifth and sixth from run three):
 
 1. **`--approval` is not a `bernstein run` option on 4.0.0.** It exists only on
    the top-level `bernstein -g` form. The loop passed it, `run` rejected it, and
@@ -216,6 +216,30 @@ fourth from run two):
    down by hand (`bernstein stop`: 0 tasks done, 0 branches merged, nothing
    spent). `--wait 3600` blocks until the run is terminal and exits with its
    outcome, so the loop's stages are now actually sequential.
+
+5. **The spawned orchestrator re-reads `bernstein.yaml`, which has no `goal:` —
+   and 4.0.0 requires one.** Found by the *third* real run, which blocked
+   correctly under `--wait` and then failed with "orchestrator pid=… observed
+   gone", 0 of 5 tasks started. In plan-file mode `bernstein run` bootstraps
+   from the plan's *name* and hands the orchestrator it spawns no seed path; that
+   process falls back to `./bernstein.yaml` and dies with `Seed file must contain
+   a non-empty 'goal' string` — and the watchdog records
+   `invalid-seed-configuration` and deliberately does not restart it. The cause
+   was in `.sdd/runtime/orchestrator-debug.log`, not in anything `--wait`
+   printed. `--seed` cannot fix this (plan mode ignores it). What every bernstein
+   subprocess does resolve first is the `BERNSTEIN_SEED_PATH` environment variable
+   (`core/config/seed.py: resolve_seed_path`). So the renderer now also writes a
+   per-run seed — the committed `bernstein.yaml` plus `goal: <bead>: <title>` —
+   and the loop exports it. The committed file stays goal-free on purpose: the
+   tracker owns the goal, and a static one would compete with it. Verified with
+   the real `parse_seed` and `resolve_seed_path`; the committed file alone still
+   fails, so the variable is what fixes it. It also pins
+   `internal_llm_provider: none`, so bernstein does not default to a provider
+   whose key this project does not have and must not invent.
+6. **A failed run leaves its task server and watchdog running.** Both outlived
+   the loop that started them. The loop now runs `bernstein stop` on failure and
+   prints the orchestrator's own `ERROR` lines, so "stopped" is true and the next
+   diagnosis does not start from "run failed".
 
 And one defect in the loop itself, which is the one that matters most: **a
 failed bernstein run was non-fatal**, so the gates ran on an unchanged tree,
