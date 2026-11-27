@@ -55,13 +55,21 @@ Note `--assignee` rather than `--claim`: on bd 1.2.2 `--claim` writes no
 interaction row, so `pact audit --check claim-lease-divergence` has nothing to
 read afterwards.
 
-**3. Work.** bernstein runs `plans/discr-loop.yaml` — evidence, then
-implementation, then measurement — with `--approval pr`, so nothing merges
-itself. The plan's constraints are this repository's house rules, and its
-`completion_signals` are the actual gate commands: bernstein cannot mark a
-step done on an agent's say-so, only on `tracecheck` agreeing with the Atari.
-`--no-agent` skips this stage entirely when a human or a Claude Code subagent
-is doing the work and only wants the loop's discipline around it.
+**3. Work.** The plan is first *rendered for the bead* by
+`scripts/render_plan.py`, then bernstein runs the rendered copy — evidence,
+then implementation, then measurement — under a soft and a hard budget. The
+render step is not decoration: a plan cannot name its own bead, and
+`bernstein run` does **not** apply a plan's `constraints:` (see "What the first
+real run found", below), so the renderer writes the bead, the leased paths and
+every house rule into the description of every step. The plan's
+`completion_signals` are the actual gate commands: bernstein cannot mark a step
+done on an agent's say-so, only on `tracecheck` agreeing with the Atari.
+`--no-agent` skips the agent entirely when a human or a Claude Code subagent is
+doing the work and only wants the loop's discipline around it.
+
+The stage **fails closed**. If bernstein exits non-zero, or exits zero having
+changed none of the leased paths, the loop stops: bead commented, nothing
+committed, leases held. A gate can only judge work that exists.
 
 **4. Verify.** `mise run core-check`. If the gates fail, the loop stops with
 the bead commented, **nothing committed and the leases still held** — the
@@ -167,3 +175,140 @@ that is a measurement to repeat on a toolchain bump, not a guarantee.
 To bump bernstein: change the pin, run `bernstein plan validate` on the real
 plan **and** on a copy with a deliberately wrong signal type, and re-read
 `core/planning/signal_contract.py` before trusting the new answer.
+
+## What the first real run found (and the dry run could not)
+
+Everything above was "verified" by `plan validate` and `--dry-run`, and the
+first four real `mise run loop` attempts all failed in stage 3 — **having
+dispatched no agent and spent nothing**. Eight independent findings, each
+invisible to the checks that had passed (the first three from run one, the
+fourth from run two, the fifth and sixth from run three, the seventh from run
+four — the first to get an orchestrator running at all — and the eighth from
+the first run to land):
+
+1. **`--approval` is not a `bernstein run` option on 4.0.0.** It exists only on
+   the top-level `bernstein -g` form. The loop passed it, `run` rejected it, and
+   the loop treated the non-zero exit as non-fatal. The obvious fallback —
+   `approval: pr` in `bernstein.yaml` — **does not work either**: the second
+   real run printed `Ignoring unknown top-level key 'approval'` (and the same for
+   `worktrees`). Both keys were dead config, and the comments beside them
+   described a merge gate that never existed. They are removed, with a note not
+   to re-add them. The "did you mean" spellings (`approvals`, `worktree_setup`)
+   are different features, not renames. **There is no bernstein-side merge gate
+   in this loop.** What protects master is outside bernstein: the loop commits
+   only the leased paths, only after the gates pass, onto a feature branch, and
+   a human merges the PR.
+2. **`bernstein run` does not apply a plan's `constraints:`.** Its source names
+   `("max_agents", "repos", "constraints")` as settings it does not apply, and
+   `--from-plan` refuses a plan that sets one. Our house rules were in exactly
+   that key, so they would never have reached an agent — the same class of
+   failure as the 3.18.2 silent skip, and the plan header claimed the opposite.
+   (`plan validate` accepts the key; only the run path refuses it.) Fix: the
+   renderer removes the key and prepends the rules to every step description.
+3. **A plan cannot name its own bead.** The steps said "read the bead" and
+   nothing said which. The renderer fills it in, together with the leased paths.
+
+4. **`bernstein run` detaches unless given `--wait`.** Found by the *second*
+   real run, which got past all of the above: it posted five tasks, started a
+   background task server and orchestrator, printed "Run continues in the
+   background", and returned exit 0 after zero seconds with nothing done. The
+   loop's new guard correctly stopped ("no work product") — but the orchestrator
+   was still alive behind it, free to start spending against the budget while
+   the loop reported that it had stopped and left the leases held. It was shut
+   down by hand (`bernstein stop`: 0 tasks done, 0 branches merged, nothing
+   spent). `--wait 3600` blocks until the run is terminal and exits with its
+   outcome, so the loop's stages are now actually sequential.
+
+5. **The spawned orchestrator re-reads `bernstein.yaml`, which has no `goal:` —
+   and 4.0.0 requires one.** Found by the *third* real run, which blocked
+   correctly under `--wait` and then failed with "orchestrator pid=… observed
+   gone", 0 of 5 tasks started. In plan-file mode `bernstein run` bootstraps
+   from the plan's *name* and hands the orchestrator it spawns no seed path; that
+   process falls back to `./bernstein.yaml` and dies with `Seed file must contain
+   a non-empty 'goal' string` — and the watchdog records
+   `invalid-seed-configuration` and deliberately does not restart it. The cause
+   was in `.sdd/runtime/orchestrator-debug.log`, not in anything `--wait`
+   printed. `--seed` cannot fix this (plan mode ignores it). What every bernstein
+   subprocess does resolve first is the `BERNSTEIN_SEED_PATH` environment variable
+   (`core/config/seed.py: resolve_seed_path`). So the renderer now also writes a
+   per-run seed — the committed `bernstein.yaml` plus `goal: <bead>: <title>` —
+   and the loop exports it. The committed file stays goal-free on purpose: the
+   tracker owns the goal, and a static one would compete with it. Verified with
+   the real `parse_seed` and `resolve_seed_path`; the committed file alone still
+   fails, so the variable is what fixes it. It also pins
+   `internal_llm_provider: none`, so bernstein does not default to a provider
+   whose key this project does not have and must not invent.
+6. **A failed run leaves its task server and watchdog running.** Both outlived
+   the loop that started them. The loop now runs `bernstein stop` on failure and
+   prints the orchestrator's own `ERROR` lines, so "stopped" is true and the next
+   diagnosis does not start from "run failed".
+
+7. **bernstein cannot spawn a Claude agent as root, and this container is
+   root.** Found by the *fourth* real run, the first where the orchestrator
+   survived (the seed fix worked). Every spawn failed at CLI start-up, before
+   any model call, so nothing was spent:
+   `--dangerously-skip-permissions cannot be used with root/sudo privileges for
+   security reasons`. The claude adapter hardcodes `--permission-mode
+   bypassPermissions` for every agent (`adapters/claude.py`), which Claude Code
+   refuses as uid 0. `--permission-profile builder` does not change that line.
+   This is not a configuration error and no flag in this repository fixes it; it
+   is a property of where the loop runs. The ways out differ in what they
+   permit, and choosing among them is a decision about a security guard, so it
+   is recorded as open rather than worked around:
+   * `IS_SANDBOX=1` — Claude Code's own opt-out of the root check for sandboxes;
+     this container is one. Untested here. Every agent would then run with
+     permission checks off, inside a container that holds this repository's push
+     credentials, and bernstein 4.0.0 has no merge gate in this configuration
+     (defect 1).
+   * a non-root user — the principled fix, but `mise`, `bd`, `pact`, the Claude
+     login and the git credentials all live under `/root`.
+   * `--no-agent` — the loop's own discipline (claim, lease, gates, land, MR)
+     around work done by Claude Code subagents under pact leases, which is how
+     every wave before this one was run.
+
+8. **The MR filename was built from the branch name, which contains a `/`.**
+   Found by the first run to get as far as stage 6 (below). It crashed with
+   `Directory nonexistent` — after the push, before the MR body existed.
+   Slashes are now flattened for the filename; git and the MR head still use the
+   real name.
+
+### The first run that landed (`--no-agent`, bead `discr-lul`)
+
+Because bernstein cannot spawn agents as root here, stages 4–6 were exercised by
+doing stage 3 with a Claude Code subagent under the loop's pact leases. That run
+is the evidence that the *rest* of the loop works on real changes:
+
+- **Gates (stage 4):** `mise run core-check` green; the loop proceeded only
+  because they were.
+- **Land (stage 5):** one commit with explicit pathspecs and the `Pact-Agent`
+  trailer, a ledger checkpoint, leases released *after* the commit, pushed.
+- **Verification did not rest on the agent's report.** Its own accounting check
+  was defined by the same agent that wrote the decoder, so it was necessarily
+  partly circular. The orchestrator re-ran it, and added two checks it could not
+  have shaped: the `depack_ice` round-trip against full sha256s committed in a
+  *previous* report (4/4), and rendering the decoded frames and looking at them
+  (the DISC title screen; the Loriciel logo). A wrong decoder produces noise.
+- **The bead's premise turned out to be wrong** — `$1170` is not a continuation —
+  and the subagent said so, retracted a documented finding of ours, and filed
+  what it could not establish instead of guessing. That is the behaviour the
+  plan's house rules exist to produce.
+
+One thing is still a gap: the ledger lines written by the release and the
+completion message land *after* the checkpoint commit, so the tree is dirty again
+by exactly those lines. Committing before releasing is the rule; recording the
+release itself necessarily lags one step, and the next run's checkpoint picks it
+up.
+
+And one defect in the loop itself, which is the one that matters most: **a
+failed bernstein run was non-fatal**, so the gates ran on an unchanged tree,
+passed, and the loop carried on to land — it died only because a leased path
+happened to not exist yet. Had one existed it would have committed nothing and
+commented "gates green" on the bead. The loop now stops if bernstein fails, and
+again if no leased path changed, because green gates on untouched code prove
+nothing.
+
+**Why the dry run missed all of it:** `--dry-run` called `bernstein --plan-only
+-g` — a different command with a different flag set from the real `bernstein
+run PLAN`. It now runs `bernstein run <rendered plan> <the same flags>
+--dry-run`, so a dry run exercises what a real run will. It still cannot catch
+a defect that only exists once agents are running.

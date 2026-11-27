@@ -47,15 +47,22 @@ wt/
 # so a fresh clone that lacks them starts one issue down. Everything those
 # directories fill with is derived: session data, the HMAC audit chain, saved
 # plans, and the MR bodies scripts/loop.sh generates.
-.sdd/runtime/*
-!.sdd/runtime/.gitkeep
+#
+# Ignore EVERYTHING under .sdd/ and re-include only the three tracked skeleton
+# files. This used to name runtime directories one by one (runtime/, backlog/,
+# mr/, audit/), and each real `bernstein run` created more it had not heard of:
+# the first one added .schema_version, a2a/, agents/, default/, index/,
+# invariants.lock and metrics/ in a single run. An allowlist cannot be outrun by
+# a tool that invents directories; a blocklist can. (The audit chain was swept
+# into a commit once already, for exactly this reason.)
+.sdd/*
+!.sdd/config.yaml
+!.sdd/backlog/
 .sdd/backlog/*
 !.sdd/backlog/.gitkeep
-.sdd/mr/
-# bernstein writes its HMAC-SHA256 audit chain here as runs happen; it is
-# per-run evidence, not a committed input. (Caught the hard way: the first
-# commit of the .sdd skeleton swept a chain lock and a day's JSONL in with it.)
-.sdd/audit/
+!.sdd/runtime/
+.sdd/runtime/*
+!.sdd/runtime/.gitkeep
 
 # Rust build output
 /target/
