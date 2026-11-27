@@ -180,10 +180,11 @@ plan **and** on a copy with a deliberately wrong signal type, and re-read
 
 Everything above was "verified" by `plan validate` and `--dry-run`, and the
 first four real `mise run loop` attempts all failed in stage 3 — **having
-dispatched no agent and spent nothing**. Seven independent findings, each
+dispatched no agent and spent nothing**. Eight independent findings, each
 invisible to the checks that had passed (the first three from run one, the
 fourth from run two, the fifth and sixth from run three, the seventh from run
-four — the first to get an orchestrator running at all):
+four — the first to get an orchestrator running at all — and the eighth from
+the first run to land):
 
 1. **`--approval` is not a `bernstein run` option on 4.0.0.** It exists only on
    the top-level `bernstein -g` form. The loop passed it, `run` rejected it, and
@@ -264,6 +265,39 @@ four — the first to get an orchestrator running at all):
    * `--no-agent` — the loop's own discipline (claim, lease, gates, land, MR)
      around work done by Claude Code subagents under pact leases, which is how
      every wave before this one was run.
+
+8. **The MR filename was built from the branch name, which contains a `/`.**
+   Found by the first run to get as far as stage 6 (below). It crashed with
+   `Directory nonexistent` — after the push, before the MR body existed.
+   Slashes are now flattened for the filename; git and the MR head still use the
+   real name.
+
+### The first run that landed (`--no-agent`, bead `discr-lul`)
+
+Because bernstein cannot spawn agents as root here, stages 4–6 were exercised by
+doing stage 3 with a Claude Code subagent under the loop's pact leases. That run
+is the evidence that the *rest* of the loop works on real changes:
+
+- **Gates (stage 4):** `mise run core-check` green; the loop proceeded only
+  because they were.
+- **Land (stage 5):** one commit with explicit pathspecs and the `Pact-Agent`
+  trailer, a ledger checkpoint, leases released *after* the commit, pushed.
+- **Verification did not rest on the agent's report.** Its own accounting check
+  was defined by the same agent that wrote the decoder, so it was necessarily
+  partly circular. The orchestrator re-ran it, and added two checks it could not
+  have shaped: the `depack_ice` round-trip against full sha256s committed in a
+  *previous* report (4/4), and rendering the decoded frames and looking at them
+  (the DISC title screen; the Loriciel logo). A wrong decoder produces noise.
+- **The bead's premise turned out to be wrong** — `$1170` is not a continuation —
+  and the subagent said so, retracted a documented finding of ours, and filed
+  what it could not establish instead of guessing. That is the behaviour the
+  plan's house rules exist to produce.
+
+One thing is still a gap: the ledger lines written by the release and the
+completion message land *after* the checkpoint commit, so the tree is dirty again
+by exactly those lines. Committing before releasing is the rule; recording the
+release itself necessarily lags one step, and the next run's checkpoint picks it
+up.
 
 And one defect in the loop itself, which is the one that matters most: **a
 failed bernstein run was non-fatal**, so the gates ran on an unchanged tree,

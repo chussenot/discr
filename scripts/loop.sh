@@ -337,7 +337,11 @@ git push -u origin "$BRANCH" >/dev/null 2>&1 && note "pushed $BRANCH" \
 # ---- 6. propose the MR ---------------------------------------------------
 say "6. propose the MR"
 mkdir -p .sdd/mr
-MR=.sdd/mr/$BRANCH.md
+# Branch names contain slashes (`claude/<topic>-<id>`), which are directories in
+# a path: the first landed run died here, AFTER the push, with "Directory
+# nonexistent". Flatten them for the filename; the real name is still used for
+# git and the MR head below.
+MR=.sdd/mr/$(printf '%s' "$BRANCH" | tr '/' '-').md
 {
     printf '# %s\n\n' "$TITLE"
     printf '**Bead:** `%s` — landed by `scripts/loop.sh` as `%s`.\n\n' "$BEAD" "$PACT_AGENT"
