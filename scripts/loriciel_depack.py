@@ -105,8 +105,9 @@ findings, which OVERTURN part of the first shift's Finding 3):
        "NSEQ" magic match at register A0 = $1AF00) and blits it into a
        fixed destination canvas at $10F00, re-executed every ~5 VBLs
        (animation playback, not a one-shot unpack-to-buffer).  This is a
-       real, working decoder -- see `_decode_nsq_frame_stream()` below,
-       which round-trips against 50.NSQ -- but it is the *animation
+       real, working decoder -- see `nsq_decode_frame()` below, whose
+       output renders 50.NSQ's/LORI.NSQ's pictures (discr-lul) -- but it is
+       the *animation
        sequence* format (per docs/loriciel-formats.md ss4, `*.NSQ`), not
        the `.DAT` graphics format the bead asks for.  Landed anyway
        because "document what resists" and because it rules out the
@@ -221,6 +222,8 @@ findings, which OVERTURN part of the first shift's Finding 3):
 Usage:
     loriciel_depack.py <packed> <out>       # copies (proven files only)
     loriciel_depack.py --nsq <in.NSQ> <out.raw>  # NSQ frame-stream dump
+    loriciel_depack.py --nsq-check <DSC image>   # strict NSQ accounting (discr-lul)
+    loriciel_depack.py --nsq-ppm <in.NSQ> <frame> <out.ppm>  # render one frame
 """
 import hashlib
 import struct
@@ -660,105 +663,372 @@ def depack(data: bytes, *, name: str | None = None) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# LAUNCHER.HA's NSQ animation-sequence decoder ($1000+0xc4 .. $1000+0x268).
+# LAUNCHER.HA's NSQ frame routine: $1048 (the whole routine), its tile-bank
+# stream decoder $10c4-$116c and its screen blitter $1170-$125c.
 #
-# Proven live via Hatari PC breakpoints (reports/part13-depack.md): reads a
-# .NSQ file's header (magic "NSEQ" + u8 frame count at +4, then a table of
-# u8-flag + 3-byte-offset 6-byte entries at +8 per frame), descrambles each
-# frame's 32-byte directory-style record via a bit-shuffle at $126a, then
-# for a *selected* frame, decodes a stream of control words starting right
-# after the frame's own 0xFFFF-terminated row-offset table:
+# Addresses are LAUNCHER.HA RUNTIME addresses (HABS load addr $1000; file
+# offset = address - $1000 + 28).  Every claim below is read off a capstone
+# disassembly of assets/original/LAUNCHER.HA; reports/part14-nsq.md prints the
+# listings.  Earlier shifts (reports/part13-*.md) read the structure as a
+# "control-word stream whose W==0 falls through to an unimplemented $1170
+# next-block reader".  discr-lul re-read it: one call of $1048 draws ONE frame
+# as TWO passes over that frame's bytes, and W==0 is exactly the end of pass 1.
 #
-#   each 16-bit control word W (read as hi-byte-then-lo-byte, i.e. from an
-#   odd source alignment -- W = (src[1]<<8)|src[0], "ror.w #8" in the 68k):
-#     W == 0            -> end of this control stream, fall through to the
-#                           $1170 "next block" reader (not decoded here --
-#                           this module only implements the $10c4 branch,
-#                           the plain block/row form, which is what the
-#                           traced 50.NSQ playback actually used).
-#     nib  = W & 0xF                      (a repeat-block index, 0..15)
-#     doff = (W & 0x7FF0)                 (destination WORD offset * 2,
-#                                           i.e. byte offset = W & 0x7FF0)
-#     rle  = W & 0x8000                   (compressed-block flag)
-#   if rle:
-#     count = (nib + 1) * 16               ; units of source bytes to consume
-#     while count > 0:
-#       ctrl = next source byte
-#       if ctrl & 0x80:                    ; literal run
-#         n = (ctrl & 0x7f) + 1
-#         copy n WORDS (2 bytes each) literally, dest += 2 each
-#         count -= n
-#       else:
-#         n = ctrl + 1
-#         fill n WORDS with the next source word (constant), dest += 2 each
-#         count -= n
-#   else:
-#     copy (nib + 1) * 32 bytes literally to dest, dest advances 1:1
-#   dest base for this control word = (a3 - 0x2000) + doff*2   -- a3 is the
-#   caller's fixed canvas pointer (observed constant $10F00 across many
-#   calls during 50.NSQ playback, i.e. one shared destination canvas).
+#   setup   $1060-$1072  a5 = file base + entry offset.  $1076-$109a: if the
+#           record's first word (byte-swapped) & $f800 == $f800, a4 := 0 and
+#           a5 stays; else the 32-byte record is bit-descrambled by $126a into
+#           the caller's buffer a4 (a palette, see nsq_descramble_palette) and
+#           a5 += 32.  $10a0-$10a8: frame index 0 first clears the caller's
+#           screen a2 with $1004 (250 * 128 = 32000 bytes).  $10ac: d1 := $FFFF
+#           (never written again by $10c4-$125c).  $10b0/$10b2: a5 already at
+#           $FFFF -> $1260 return (empty frame).  $10b6-$10ba: a4 scans a5's
+#           words up to and past the first $FFFF.  a5 is NOT advanced by the
+#           scan -- it still points at the row table's first word.
+#           $10bc: a3 -= $2000 (the tile bank base, below).
+#   PASS 1  $10c4-$116c, reads a4 (the bytes AFTER the table's $FFFF):
+#           W = (src[i+1]<<8)|src[i]            ($10c4-$10ca, 'ror.w #8' idiom)
+#           W == 0  -> $10d0/$10d2 `cmp.w d3,d0 / beq.w $1170` with d3 == 0
+#                      ($10c0): END OF THE a4 STREAM.  Control passes to pass 2;
+#                      nothing more is ever read through a4.  ($111e and $116c
+#                      are only the two block types' "next control word" jumps
+#                      back to $10c4; $1170-$125c never branches there.)
+#           nib  = W & 15                       ($10d6/$10d8)
+#           tile = (W & $7ff0) >> 4             ($10dc/$10de/$10e4/$10e6: the
+#                  byte offset (W&$7ff0)*2 is added to the bank base, so the
+#                  bank is an array of 32-byte tiles and `tile` indexes it)
+#           W & $8000 == 0 (raw, $1120-$1168): copy (nib+1)*32 bytes verbatim
+#                      to bank[tile*32:], dbra d2 with d2 = nib.
+#           W & $8000 != 0 (RLE, $10e4-$111e): d2 = (nib+1)*16 WORDS
+#                      ($10ec/$10ee) are produced, as runs, until d2 == 0
+#                      exactly ($111a/$111c `tst.w d2 / bne.b $10f2`):
+#             ctrl = next byte ($10f4/$10f6)
+#             ctrl & $80 == 0  -> FILL : n = ctrl words, all equal to the next
+#                      source word ($10fc: sub.w d0,d2 -- d0 is ctrl itself;
+#                      $10fe: subq.w #1,d0; $1106/$1108: dbra loop => ctrl
+#                      iterations; NOT ctrl+1)
+#             ctrl & $80 != 0  -> LITERAL: n = ctrl & $7f words copied from the
+#                      source ($110e-$1116, same count shape; NOT n+1)
+#             (n == 0 would wrap dbra and run 65536 times, n > d2 would never
+#              reach d2 == 0: neither can occur in a valid stream, so both are
+#              refused here.)
+#           The earlier shifts' decoder used ctrl+1 and (ctrl&$7f)+1: that
+#           overshoots d2 in 47/50 of 50.NSQ's streams and 25/27 of LORI.NSQ's
+#           and only "terminated" because it tolerated the overshoot and
+#           wandered on to some later zero word (reports/part14-nsq.md).
+#   PASS 2  $1170-$125c, reads a5 -- the ROW TABLE, the very words that
+#           precede the control stream.  It is a list of screen-blit records
+#           over a 40x25 grid of 8x8-pixel cells, ending at the same $FFFF the
+#           $10b8 scan found:
+#           $1170-$1174: word == d1 ($FFFF) -> $1260 return.
+#           w = byte-swapped word ($1178).  If (w & $f800) == $f800
+#           ($117c-$1184) it is a POSITION word and one more word follows
+#           ($11ac): cell = w & $7ff ($1186 eor); row,col = divmod(cell, 40)
+#           ($118c divu.w #$28); screen byte offset = row*$500 + (col&~1)*4
+#           + (col&1) ($1196-$11a8; a2 is the screen).  Otherwise the word is
+#           itself the next record, continuing at the cell after the previous
+#           record's last (a0/d7 carry over, $123c-$1246).
+#           record: tile = w & $7ff ($11bc); reps = ((w & $7800) >> 11) + 1
+#           ($11b2, $1254/$1258 `subi.w #$800,d5 / bcc.w $11ca`); w & $8000
+#           ($11b8, $124a-$1250) set -> tile += 1 after each cell (a run of
+#           consecutive tiles), clear -> the same tile repeated.
+#           Each cell blit ($11ca-$1228): 8 rows; row r takes bank-tile words
+#           [r] and [8+r] ($11cc/$11d0, $e(a1) after the (a1)+) and movep.l's
+#           them (4 bytes, one per plane, stride 2) at screen row r*160.
+#           $125c: bra.w $1170 -- the loop.  $1260-$1268: return.
+#   The caller ($2c3e-$2e2e): a0 = NSQ file base, a2 = screen, a3 = bank, a4 =
+#   palette buffer; after each call the 16 palette words are copied to
+#   $ff8240 ($2c7e-$2c82: movem.l (a0)+,d0-d7 / movem.l d0-d7,-(a1) with
+#   a1 = $ff8260) -- when the frame carried a palette record ($2cb8-$2cc2
+#   skip the update when $1260 hands back a0 == 0).
 #
-# This function reproduces the algorithm faithfully but only as a
-# structural decoder (bytes-consumed / bytes-produced accounting) for
-# verification; it does not need real destination memory to prove the
-# byte-stream framing is understood, since the true proof (this module's
-# job) is the DAT-file identity transform above.  It is included because
-# the bead explicitly asks that partial/adjacent findings be landed, not
-# discarded, and because it rules out LAUNCHER.HA's directory walker as a
-# candidate for the DALLES01.DAT-class decoder (its control-word format is
-# NSQ-specific: it consumes the NSEQ per-frame 0xFFFF-terminated table,
-# which none of the target .DAT files have).
-def decode_nsq_control_stream(src: bytes) -> bytes:
-    """Decode one NSQ control-word block stream (the $10c4 branch only).
+# The decode below is a faithful structural port.  The bank, screen and
+# palette it produces render the intro/Loriciel-logo pictures recognisably
+# (reports/part14-nsq.md).  What it does NOT model is the caller's two-screen
+# swap ($12a0/$12a4 are exchanged after every call): see the report.
+NSQ_TILE_BYTES = 32
+_NSQ_BANK_TILES = 0x800 + 16   # 11-bit tile index + a 16-tile block's tail
+NSQ_COLS, NSQ_ROWS = 40, 25    # 40 * 8 = 320 px, 25 * 8 = 200 px
+NSQ_SCREEN_BYTES = 32000
 
-    `src` must start at the first control word (i.e. right after a frame's
-    0xFFFF-terminated row-offset table). Returns the reconstructed bytes in
-    DESTINATION-OFFSET order is NOT attempted (this is a structural decode,
-    not a placement into a canvas) -- returns the literal byte payload
-    stream in source-consumption order, which is what a round-trip length
-    check can validate against the source.
-    """
+
+def _nsq_walk_control_stream(src: bytes, i: int = 0, bank=None, written=None):
+    """PASS 1 ($10c4-$116c) over `src` from byte `i`.  Returns
+    (payload, end) where `payload` is the literal byte stream in source
+    consumption order and `end` is the index just past the W==0 terminator.
+    With `bank` (a bytearray) the blocks are also placed at tile*32; with
+    `written` (a set) every tile index a block covers is added to it.
+    Raises DepackError for anything the 68k loop could not finish cleanly:
+    running off `src` before W==0, a zero-length run, or a run that
+    overshoots its block's word budget."""
     out = bytearray()
-    i = 0
     n = len(src)
-    while i + 1 < n:
-        w = (src[i + 1] << 8) | src[i]  # hi-byte-then-lo-byte per the 68k code
+
+    def put(dest, chunk):
+        if bank is not None:
+            if dest + len(chunk) > len(bank):
+                raise DepackError("NSQ block at bank offset $%x overruns the "
+                                   "tile bank" % dest)
+            bank[dest:dest + len(chunk)] = chunk
+
+    while True:
+        if i + 1 >= n:
+            raise DepackError("NSQ control stream ran off the end "
+                               "(no W==0 terminator)")
+        w = (src[i + 1] << 8) | src[i]
         i += 2
         if w == 0:
-            break
+            return bytes(out), i
         nib = w & 0xF
-        rle = w & 0x8000
-        if rle:
-            count = (nib + 1) * 16
-            while count > 0:
-                if i >= n:
-                    raise DepackError("NSQ control stream ran off the end")
-                ctrl = src[i]
-                i += 1
-                if ctrl & 0x80:
-                    reps = (ctrl & 0x7F) + 1
-                    for _ in range(reps):
-                        if i + 1 >= n:
-                            raise DepackError("NSQ literal run ran off the end")
-                        out += src[i:i + 2]
-                        i += 2
-                    count -= reps
-                else:
-                    reps = ctrl + 1
-                    if i + 1 >= n:
-                        raise DepackError("NSQ RLE fill ran off the end")
-                    word = src[i:i + 2]
-                    i += 2
-                    for _ in range(reps):
-                        out += word
-                    count -= reps
-        else:
-            length = (nib + 1) * 32
+        dest = (w & 0x7FF0) * 2
+        if written is not None:
+            written.update(range(dest // NSQ_TILE_BYTES,
+                                 dest // NSQ_TILE_BYTES + nib + 1))
+        if not w & 0x8000:
+            length = (nib + 1) * NSQ_TILE_BYTES
             if i + length > n:
                 raise DepackError("NSQ literal block ran off the end")
-            out += src[i:i + length]
+            chunk = src[i:i + length]
             i += length
+            out += chunk
+            put(dest, chunk)
+            continue
+        count = (nib + 1) * 16
+        while count:
+            if i >= n:
+                raise DepackError("NSQ control stream ran off the end")
+            ctrl = src[i]
+            i += 1
+            if ctrl & 0x80:
+                reps = ctrl & 0x7F
+                width = 2 * reps
+                if reps == 0 or reps > count or i + width > n:
+                    raise DepackError("NSQ literal run (%d words, %d left) "
+                                       "invalid" % (reps, count))
+                chunk = src[i:i + width]
+            else:
+                reps = ctrl
+                if reps == 0 or reps > count or i + 2 > n:
+                    raise DepackError("NSQ fill run (%d words, %d left) "
+                                       "invalid" % (reps, count))
+                width = 2
+                chunk = src[i:i + 2] * reps
+            i += width
+            count -= reps
+            out += chunk
+            put(dest, chunk)
+            dest += len(chunk)
+
+
+def decode_nsq_control_stream(src: bytes) -> bytes:
+    """Decode one NSQ frame's PASS-1 control stream ($10c4-$116c).
+
+    `src` must start at the first control word (right after a frame's
+    0xFFFF-terminated row table).  Returns the literal byte payload in
+    source-consumption order (no placement -- see `nsq_decode_frame` for
+    that).  W == 0 IS the end of this stream ($10d0/$10d2, d3 == 0); the
+    row table that $1170 then walks lies BEFORE the stream (see
+    `nsq_blit_list`), so nothing follows the terminator in `src` that this
+    frame needs.  Raises DepackError if the stream does not terminate
+    cleanly inside `src` (the pre-discr-lul version silently accepted that,
+    and used run lengths one too long)."""
+    return _nsq_walk_control_stream(src, 0)[0]
+
+
+def nsq_blit_list(data: bytes, table_start: int):
+    """PASS 2's record parser ($1170-$125c) over the row table at
+    `table_start`.  Returns (records, end): `records` is a list of
+    (cell, tile, reps, run) -- start cell (row*40+col), bank tile index, cell
+    count, and whether the tile index advances per cell -- and `end` is the
+    index just past the terminating $FFFF word."""
+    recs = []
+    cell = None
+    i = table_start
+    n = len(data)
+    while True:
+        if i + 1 >= n:
+            raise DepackError("NSQ row table ran off the end")
+        raw = data[i:i + 2]
+        i += 2
+        if raw == b"\xff\xff":
+            return recs, i
+        w = (raw[1] << 8) | raw[0]
+        if (w & 0xF800) == 0xF800:
+            cell = w ^ 0xF800
+            if i + 1 >= n:
+                raise DepackError("NSQ row table ran off the end")
+            w = (data[i + 1] << 8) | data[i]
+            i += 2
+        elif cell is None:
+            raise DepackError("NSQ row table starts without a position word")
+        reps = ((w & 0x7800) >> 11) + 1
+        recs.append((cell, w & 0x7FF, reps, bool(w & 0x8000)))
+        cell += reps
+
+
+def nsq_descramble_palette(rec: bytes) -> bytes:
+    """$126a: the 32-byte record -> 32 bytes (16 big-endian ST palette words
+    0RGB, 3 bits per gun).  Per input byte pair (in0, in1): out0 = (in0>>3)&7;
+    out1 = (((X:in0) roxr.b #2) & $70) | (in0 & 7) with X = in1 bit 0
+    ($1270-$128e)."""
+    if len(rec) != 32:
+        raise DepackError("NSQ palette record must be 32 bytes")
+    out = bytearray()
+    for k in range(16):
+        in0, in1 = rec[2 * k], rec[2 * k + 1]
+        v = ((in1 & 1) << 8) | in0           # 9-bit rotate through X
+        v = ((v >> 2) | ((v & 3) << 7)) & 0x1FF
+        out.append((in0 >> 3) & 7)
+        out.append((v & 0x70) | (in0 & 7))
     return bytes(out)
+
+
+def _nsq_entry_offset(data: bytes, idx: int) -> int:
+    if not 0 <= idx < data[4]:
+        raise DepackError("NSQ frame index %d out of range" % idx)
+    base = 8 + idx * 3
+    return (data[base] << 16) | (data[base + 2] << 8) | data[base + 1]
+
+
+def nsq_frame_layout(data: bytes, idx: int):
+    """Locate frame `idx`'s parts exactly as $1076-$10ba do.  Returns a dict:
+    off (entry offset), palette (the 32-byte scrambled record or None),
+    table (row-table start), empty (True when the table is just $FFFF), cs
+    (control-stream start, None when empty)."""
+    off = _nsq_entry_offset(data, idx)
+    first = (data[off + 1] << 8) | data[off]
+    if (first & 0xF800) == 0xF800:
+        pal, table = None, off
+    else:
+        pal, table = data[off:off + 32], off + 0x20
+    if data[table:table + 2] == b"\xff\xff":
+        return {"off": off, "palette": pal, "table": table,
+                "empty": True, "cs": None}
+    return {"off": off, "palette": pal, "table": table, "empty": False,
+            "cs": _nsq_control_stream_offset(data, off)}
+
+
+def _nsq_blit_cell(screen: bytearray, cell: int, tile: bytes):
+    row, col = divmod(cell, NSQ_COLS)
+    if row >= NSQ_ROWS:
+        raise DepackError("NSQ blit cell %d is off the 40x25 screen" % cell)
+    a0 = row * 0x500 + (col & ~1) * 4 + (col & 1)
+    for r in range(8):
+        o = a0 + r * 160
+        screen[o] = tile[2 * r]
+        screen[o + 2] = tile[2 * r + 1]
+        screen[o + 4] = tile[16 + 2 * r]
+        screen[o + 6] = tile[16 + 2 * r + 1]
+
+
+def nsq_decode_frame(data: bytes, idx: int, bank: bytearray,
+                     screen: bytearray):
+    """One $1048 call for frame `idx`, applied to the caller's tile bank
+    (bytearray of at least (0x800+16)*32 bytes) and screen (32000 bytes).
+    Returns the frame's descrambled 32-byte palette, or None when it has no
+    record.  Frame index 0 clears the screen first ($10a0-$10a8)."""
+    lay = nsq_frame_layout(data, idx)
+    pal = nsq_descramble_palette(lay["palette"]) if lay["palette"] else None
+    if idx == 0:
+        screen[:] = bytes(NSQ_SCREEN_BYTES)
+    if lay["empty"]:
+        return pal
+    _nsq_walk_control_stream(data, lay["cs"], bank)
+    recs, _ = nsq_blit_list(data, lay["table"])
+    for cell, tile, reps, run in recs:
+        for k in range(reps):
+            t = tile + (k if run else 0)
+            _nsq_blit_cell(screen, cell + k,
+                           bank[t * NSQ_TILE_BYTES:(t + 1) * NSQ_TILE_BYTES])
+    return pal
+
+
+def nsq_play(data: bytes):
+    """Yield (idx, screen_bytes, palette_bytes_or_None) for frames 0..count-1,
+    one persistent tile bank and ONE persistent screen.  palette is the last
+    one seen (the hardware palette after the caller's $ff8240 copy), None
+    before the first.  Single-screen model: the caller's two-screen swap is
+    not modelled (see the NSQ comment block above)."""
+    bank = bytearray(_NSQ_BANK_TILES * NSQ_TILE_BYTES)
+    screen = bytearray(NSQ_SCREEN_BYTES)
+    pal = None
+    for idx in range(data[4]):
+        p = nsq_decode_frame(data, idx, bank, screen)
+        pal = p or pal
+        yield idx, bytes(screen), pal
+
+
+def nsq_screen_to_rgb(screen: bytes, palette) -> bytes:
+    """ST low-res planar screen (4 interleaved planes per 16 px) + palette
+    -> 320x200 RGB bytes.  With palette None, a grey ramp is used."""
+    cols = []
+    for k in range(16):
+        if palette:
+            cols.append(((palette[2 * k] & 7) * 36,
+                         ((palette[2 * k + 1] >> 4) & 7) * 36,
+                         (palette[2 * k + 1] & 7) * 36))
+        else:
+            cols.append((k * 17,) * 3)
+    out = bytearray()
+    for y in range(200):
+        for gx in range(20):
+            o = y * 160 + gx * 8
+            p = [(screen[o + 2 * k] << 8) | screen[o + 2 * k + 1]
+                 for k in range(4)]
+            for x in range(16):
+                v = sum(((p[k] >> (15 - x)) & 1) << k for k in range(4))
+                out += bytes(cols[v])
+    return bytes(out)
+
+
+def nsq_check(data: bytes):
+    """Account for every frame of one NSQ file given as EXACTLY its own
+    `byte_size` bytes (so any read past its end is an error, not a quiet
+    read into the next file on disk).  A frame is 'accounted' only if ALL of:
+      1. its pass-1 stream terminates by W==0 inside the file, every RLE
+         block landing on d2 == 0 exactly (or the frame is empty: table ==
+         just $FFFF);
+      2. pass 2's record parse ends on the very $FFFF the $10b8 scan found;
+      3. every tile pass 2 blits was written to the bank by this or an
+         earlier frame (frames in index order);
+      4. the frame's data ends -- after its terminator, rounded up to an even
+         address -- exactly at the next entry's offset (entries sorted by
+         offset); the last one ends exactly at the file's end.
+    Returns (n_frames, n_empty, accounted, failures) with failures a list of
+    (idx, reason)."""
+    n = data[4]
+    entries = sorted((_nsq_entry_offset(data, i), i) for i in range(n))
+    nxt = {i: (entries[k + 1][0] if k + 1 < n else len(data))
+           for k, (_, i) in enumerate(entries)}
+    bank = bytearray(_NSQ_BANK_TILES * NSQ_TILE_BYTES)
+    written = set()
+    empty = accounted = 0
+    failures = []
+    for idx in range(n):
+        try:
+            lay = nsq_frame_layout(data, idx)
+            if lay["empty"]:
+                empty += 1
+                end = lay["table"] + 2
+            else:
+                _, end = _nsq_walk_control_stream(data, lay["cs"], bank,
+                                                  written)
+                recs, tend = nsq_blit_list(data, lay["table"])
+                if tend != lay["cs"]:
+                    raise DepackError("row table ends at $%x, scan found "
+                                       "$FFFF at $%x" % (tend, lay["cs"]))
+                for cell, tile, reps, run in recs:
+                    for k in range(reps):
+                        t = tile + (k if run else 0)
+                        if t not in written:
+                            raise DepackError("tile $%x blitted before any "
+                                               "frame wrote it" % t)
+            if end + (end & 1) != nxt[idx]:
+                raise DepackError("frame ends at $%x, next data starts at $%x"
+                                   % (end, nxt[idx]))
+            accounted += 1
+        except (DepackError, IndexError) as e:
+            failures.append((idx, str(e) or "ran off the file"))
+    return n, empty, accounted, failures
 
 
 def _nsq_frames(data: bytes):
@@ -827,6 +1097,33 @@ def main(argv=None):
             json_lines = ["%d %d %d" % t for t in frames]
             f.write(("\n".join(json_lines) + "\n").encode())
         return 0
+    if len(argv) == 2 and argv[0] == "--nsq-check":
+        # Strict NSQ accounting (see nsq_check()) for every *.NSQ directory
+        # entry of a DSC-shaped image, each read as exactly its own byte_size.
+        data = open(argv[1], "rb").read()
+        bad = 0
+        for e in _parse_directory(data):
+            if not e["name"].upper().endswith(".NSQ"):
+                continue
+            f = data[e["offset"]:e["offset"] + e["byte_size"]]
+            n, empty, ok, fails = nsq_check(f)
+            print("%-10s frames=%d empty=%d accounted=%d/%d"
+                  % (e["name"], n, empty, ok, n))
+            for idx, why in fails:
+                print("  frame %d: %s" % (idx, why))
+            bad += len(fails)
+        return 1 if bad else 0
+    if len(argv) == 4 and argv[0] == "--nsq-ppm":
+        _, inpath, sel, outpath = argv
+        data = open(inpath, "rb").read()
+        want = int(sel, 0)
+        for idx, screen, pal in nsq_play(data):
+            if idx == want:
+                with open(outpath, "wb") as f:
+                    f.write(b"P6 320 200 255\n" + nsq_screen_to_rgb(screen, pal))
+                return 0
+        sys.stderr.write("loriciel_depack: no frame %d\n" % want)
+        return 1
     if len(argv) == 4 and argv[0] == "--extract":
         # loriciel_depack.py --extract <DSC image> <NAME|index> <out>
         # Fully offline: locates the true container via extract_container()

@@ -3685,3 +3685,64 @@ per the manual: drain the life meter, or destroy all standable tiles --
 the second is the round-end condition discr-st8's decode bounded but no
 fixture crosses. `docs/loriciel-formats.md` documents the file formats
 this arrived with.
+
+## NSQ frames decode to pictures: `$1170` is the blit pass, and the old run lengths were one too long (Part 14, discr-lul)
+
+Evidence base for `*.NSQ` playback in `LAUNCHER.HA` (load `$1000`; `capstone`
+over the raw bytes; full listings in `reports/part14-nsq.md`). Supersedes the
+Part 13 reading (`reports/part13-codec.md` Finding 4, `reports/part13-formats.md`
+§1), which took `W == 0` for an unfinished hand-off to a second stream reader
+and put the leftover accounting disagreement down to that.
+
+- **One `$1048` call = one frame = two passes.** After `$10ac` (`d1 := $FFFF`)
+  and the scan `$10b6`-`$10ba`, `a5` still points at the frame's row table
+  (the words before the first `$FFFF`) and `a4` at the byte after that
+  `$FFFF`. Pass 1 (`$10c4`-`$116c`, reads `a4`) fills a bank of 32-byte
+  tiles; `W == 0` (`$10d0`/`$10d2`, `d3 == 0`) ends it and enters pass 2
+  (`$1170`-`$125c`, reads `a5`), which walks the row table as screen-blit
+  records and ends at that table's own `$FFFF` (`cmp.w d1,d0` at `$1172`;
+  `d1` is touched nowhere else between `$10ac` and the `$1264` restore). Nothing
+  after `W == 0` is read through `a4`, and no branch in `$1170`-`$1268` goes
+  back to `$10c4` (`$111e`/`$116c` are pass 1's own loop).
+- **Pass 1** (`W = src[i+1]<<8|src[i]`): `tile = (W & $7ff0) >> 4`, `nib = W & 15`.
+  `W & $8000 == 0`: `(nib+1)*32` raw bytes. Else `(nib+1)*16` words as runs until
+  the budget is exactly zero (`$111a`/`$111c`): control byte `c < $80` is a fill
+  of **`c`** copies of the next word, `c >= $80` is **`c & $7f`** literal words
+  (`$10fc`-`$1108`, `$110e`-`$1116`: `d2 -= d0` before `subq.w #1,d0`, then a
+  `dbra` loop). The previous decoder used `+1` on both; with that, 47/50 of
+  `50.NSQ`'s and 25/27 of `LORI.NSQ`'s non-empty streams overshoot their budget
+  and "finished" only by tolerating it and wandering to a later zero word.
+- **Pass 2**: word `(w & $f800) == $f800` is a position (`cell = w & $7ff`;
+  40x25 grid of 8x8-pixel cells, `row,col = divmod(cell, 40)`, `$118c divu #$28`)
+  followed by a record word; any other word is a record continuing at the next
+  cell. Record: `tile = w & $7ff`, `reps = ((w & $7800) >> 11) + 1`, `w & $8000`
+  -> tile index advances per cell. Cell blit = 8 rows of `movep.l` (one byte per
+  plane, stride 2) from bank words `[r]` and `[8+r]`.
+- **Palette**: a frame whose first record word is not `$f800`-masked starts with
+  a 32-byte record that `$126a` bit-descrambles to 16 ST `0RGB` words; the
+  caller copies it to `$ff8240` (`$2c7e`/`$2c82`, source `[$2e8a]`, updated only
+  when `$1260` returns a non-null `a0`, `$2cb8`-`$2cc2`).
+- **Measured, strict, each file as exactly its `byte_size`, `assets/disch/DSC`**
+  (`python3 scripts/loriciel_depack.py --nsq-check assets/disch/DSC`):
+  `50.NSQ` 50/50, `LORI.NSQ` 36/36 (27 + 9 empty), where "accounted" requires
+  all of: pass 1 reaches `W == 0` in the file with every budget exactly zero;
+  pass 2 ends on the same `$FFFF` the scan found; every blitted tile was
+  written by this or an earlier frame (4250 and 2332 blits, 0 violations);
+  frame data ends (even-rounded) exactly at the next entry's offset, the last
+  frame exactly at `byte_size` (`$10f34` = 69428, `$63f8` = 25592). With the old
+  run lengths the same test passes 3/50 and 2/27 (+9 empty). The earlier
+  "streams run 40-340 bytes past the end of `50.NSQ`" (the "10th offset") was an
+  artifact of that bug and is retracted: no stream leaves its file.
+- The old figures reproduce as: 50/50 + 36/36 (buffer runs on to the end of the
+  disk image, decoder merely returned), 38/50 + 32/36 (file bytes only). The
+  third (34/50 + 30/36) did not reproduce under any variant tried.
+- Rendering the decoded bank/screen/palette gives the DISC title and arena with
+  the three fighters (`50.NSQ`) and the Loriciel panther logo with "PRESENTS"
+  (`LORI.NSQ`). Frame 0 blits all 1000 cells (and clears the screen, `$10a0`-
+  `$10a8`); later frames are 2-86-cell deltas.
+- **Open**: the caller exchanges `[$12a0]`/`[$12a4]` after every `$1048`
+  (`$2cc8`-`$2cd8`), so successive frames land in alternating screens; the
+  port uses one screen. Whether the second screen starts as a copy of frame 0
+  or the deltas are against frame k-2 is not settled statically. Next
+  measurement: Hatari breakpoint at `$1048`, log `a2` and a hash of the 32000
+  bytes at `a2` on entry for the first six calls.

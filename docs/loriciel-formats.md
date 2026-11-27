@@ -107,29 +107,61 @@ Per frame index, `off` points at a 32-byte record. If the record's first
 16-bit word (byte-swapped) masked with `$f800` equals `$f800`, the record is
 skipped structurally (no descrambling) and the frame's row-offset table
 starts *at* `off` itself; otherwise the 32 bytes are bit-unscrambled via
-`LAUNCHER.HA`'s `$126a` into a fixed shared destination (animation-wide
-state, not needed for byte accounting) and the row-offset table starts at
+`LAUNCHER.HA`'s `$126a` into the caller's palette buffer (see below) and the
+row-offset table starts at
 `off + 0x20`. From there, 16-bit words (same byte-swap) are scanned until a
 literal `0xFFFF` terminator; if the very first word already *is* `0xFFFF`,
 the frame is legitimately empty (a "hold" frame — `LAUNCHER.HA`'s `$10ac`/
-`$10b2`, a clean early return, not an error). Otherwise, immediately after
-the terminator, the control-word stream begins — already documented and
-implemented in `scripts/loriciel_depack.py`'s `decode_nsq_control_stream()`
-(`$10c4`-`$1170`), unchanged by this pass.
+`$10b2`, a clean early return, not an error).
 
-Validated end-to-end against the real disk image: **50/50** of `50.NSQ`'s
-frames decode cleanly (a clean control-word terminator or a legitimate empty
-frame) and **36/36** of `LORI.NSQ`'s (27 clean decodes + 9 legitimate empty
-frames) — zero unaccounted frames, zero decode failures, in either file.
-Several of `50.NSQ`'s later frames' control-word streams read a few dozen to
-~340 bytes past `50.NSQ`'s own declared end, directly into the following
-file on disk (`LORI.NSQ`'s header, confirmed by literal `NSEQ` magic match)
-— this is the original session's one unresolved "10th offset": not a
-different record type or a second table, just `LAUNCHER.HA` never
-bounds-checking a frame's control stream against its own file's
-`byte_size`, harmless on real hardware since the whole region loads into one
-contiguous buffer. Full evidence chain and validation script:
-`reports/part13-formats.md` §1.
+**What those words are, and what follows (discr-lul, supersedes the earlier
+reading).** The words before the `0xFFFF` are not a skipped prefix: they are
+the frame's **screen-blit list**, walked by `LAUNCHER.HA`'s `$1170`-`$125c`
+*after* the stream that follows the terminator has been decoded. One frame is
+two passes:
+
+1. *Tile bank* (`$10c4`-`$116c`, reads the bytes after the `0xFFFF`): control
+   words `W = src[i+1]<<8 | src[i]`; `W == 0` is the **end of this stream**
+   (`$10d0`/`$10d2`, `d3 == 0`) and falls into pass 2 — nothing more is read
+   from it. `tile = (W & $7ff0) >> 4`, `nib = W & 15`. `W & $8000 == 0`: copy
+   `(nib+1)*32` raw bytes to bank tile `tile`. `W & $8000 != 0`: produce
+   exactly `(nib+1)*16` words as runs — a control byte `c`: `c & $80 == 0` →
+   `c` copies of the next word; `c & $80 != 0` → `c & $7f` literal words
+   (**no `+1` on either**, `$10fc`-`$1108`, `$110e`-`$1116`; the count must hit
+   zero exactly, `$111a`/`$111c`).
+2. *Blits* (`$1170`-`$125c`, reads the row table, ends at its `0xFFFF`): a word
+   with `(w & $f800) == $f800` is a position (`cell = w & $7ff`, cell grid
+   40x25 of 8x8-pixel cells, `row,col = divmod(cell, 40)`) followed by one
+   more word; every other word is itself a record continuing at the next
+   cell. Record: `tile = w & $7ff`, `reps = ((w & $7800) >> 11) + 1`, `w &
+   $8000` → tile index advances per cell (else the same tile repeated). Each
+   cell is 8 rows, `movep.l`-written one byte per plane.
+
+The first 32-byte record (non-`$f800` case) is the frame's palette (16 ST
+words), bit-descrambled by `$126a`; the caller copies it to `$ff8240`.
+
+`scripts/loriciel_depack.py` implements both passes (`nsq_decode_frame`,
+`nsq_blit_list`, `decode_nsq_control_stream`) and renders recognisable
+pictures (the DISC title over the arena for `50.NSQ`; the Loriciel panther
+logo and "PRESENTS" for `LORI.NSQ`). Strict accounting
+(`loriciel_depack.py --nsq-check assets/disch/DSC`; each file read as
+exactly its own `byte_size`): **50/50** `50.NSQ` frames and **36/36**
+`LORI.NSQ` frames (27 decoded + 9 empty) satisfy all of: stream ends at
+`W==0` inside the file with every run block landing on zero, the blit list
+ends on the same `0xFFFF` the scan found, every blitted tile was written by an
+earlier-or-same frame, and each frame's data ends (rounded up to even)
+exactly where the next entry begins — the last frame of each file ending
+exactly at its `byte_size`. Full evidence: `reports/part14-nsq.md`.
+
+**Retraction.** The earlier text here claimed several `50.NSQ` control
+streams "read a few dozen to ~340 bytes past `50.NSQ`'s own declared end,
+into `LORI.NSQ`'s header" (`reports/part13-formats.md` §1, the "10th
+offset"). That was an artifact of a decoder whose run lengths were one too
+long (`ctrl+1` and `(ctrl&$7f)+1`): it overshot every RLE block and only
+looked clean because it ran on to some later zero word. With the real counts
+no stream leaves its own file. The earlier "50/50 + 36/36" was therefore not
+evidence of a correct decoder; the number that is — see above — happens to
+read the same but now means something.
 
 ### `DISC.ALL`'s internal header (discr-rxx.6)
 
